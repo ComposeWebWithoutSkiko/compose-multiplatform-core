@@ -28,6 +28,7 @@ import androidx.compose.ui.semantics.SemanticsConfiguration
 import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsOwner
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.WebSemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.util.fastForEach
 import androidx.compose.ui.util.fastJoinToString
@@ -359,11 +360,20 @@ internal class ComposeWebSemanticsListener(
         isA11YReachable: Boolean = true,
     ): HTMLElement {
         val currentId = semanticsNode.id
+        val tagName = if (config.contains(WebSemanticsProperties.LinkUrl)) "a" else "div"
 
         var htmlNode = idToA11YNode[currentId]
+        if (htmlNode != null && !htmlNode.tagName.equals(tagName, ignoreCase = true)) {
+            // A node id outlives the content it described, so a reused id can turn a link into a
+            // plain node and back. The element is recreated when its tag no longer fits.
+            htmlNode.remove()
+            a11yNodeToSemanticsNode.remove(htmlNode)
+            a11YScrollController.onNodeRemoved(currentId, htmlNode)
+            htmlNode = null
+        }
         val isExistingNode = htmlNode != null
         if (!isExistingNode) {
-            htmlNode = document.createElement("div") as HTMLElement
+            htmlNode = document.createElement(tagName) as HTMLElement
             htmlNode.style.apply {
                 position = "fixed"
                 whiteSpace = "pre"
@@ -435,6 +445,10 @@ internal class ComposeWebSemanticsListener(
             htmlNode.setAttribute("aria-label", ariaLabel)
         } else {
             htmlNode.removeAttribute("aria-label")
+        }
+
+        if (config.contains(WebSemanticsProperties.LinkUrl)) {
+            htmlNode.setAttribute("href", config[WebSemanticsProperties.LinkUrl])
         }
 
         if (config.contains(SemanticsProperties.TestTag)) {
