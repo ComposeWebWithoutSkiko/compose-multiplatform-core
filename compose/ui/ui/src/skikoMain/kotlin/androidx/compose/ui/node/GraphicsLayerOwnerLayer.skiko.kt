@@ -27,7 +27,6 @@ import androidx.compose.ui.graphics.GraphicsContext
 import androidx.compose.ui.graphics.Matrix
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.ReusableGraphicsLayerScope
-import androidx.compose.ui.graphics.SkiaGraphicsContext
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -36,6 +35,7 @@ import androidx.compose.ui.graphics.isIdentity
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.layer.setOutline
+import androidx.compose.ui.graphics.platform.PlatformGraphicsContext
 import androidx.compose.ui.internal.checkPreconditionNotNull
 import androidx.compose.ui.internal.requirePrecondition
 import androidx.compose.ui.platform.invertTo
@@ -427,7 +427,7 @@ internal class GraphicsLayerOwnerLayer(
     }
 }
 
-internal fun SkiaGraphicsContext.setLightingInfo(
+internal fun PlatformGraphicsContext.setLightingInfo(
     canvasOffset: Offset,
     density: Density,
     containerSize: IntSize

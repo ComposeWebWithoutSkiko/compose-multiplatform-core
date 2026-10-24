@@ -73,7 +73,6 @@ androidXMultiplatform {
             dependsOn(commonMain)
             dependencies {
                 implementation(libs.atomicFu)
-                implementation(project(":compose:ui:ui-skiko"))
 
                 // Required to properly resolve supertypes of DefaultArchitectureComponentsOwner
                 // Keep in sync with :ui:ui module
@@ -99,8 +98,17 @@ androidXMultiplatform {
             }
         }
 
+        // The Skia-based targets (desktop and native). The web targets don't use Skia.
+        nonAndroidExcludingWebMain {
+            dependsOn(skikoMain)
+            dependencies {
+                implementation(project(":compose:ui:ui-skiko"))
+            }
+        }
+
         desktopMain {
             dependsOn(skikoMain)
+            dependsOn(nonAndroidExcludingWebMain)
             dependencies {
                 implementation(libs.junit)
                 implementation(libs.skiko)
@@ -124,6 +132,7 @@ androidXMultiplatform {
 
         nativeMain {
             dependsOn(nonJvmMain)
+            dependsOn(nonAndroidExcludingWebMain)
         }
 
         nativeTest {

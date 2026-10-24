@@ -17,7 +17,6 @@
 package androidx.compose.mpp.demo
 
 import androidx.compose.mpp.demo.bugs.BugsScreen
-import androidx.compose.mpp.demo.components.text.loadResource
 import androidx.compose.mpp.demo.interops.HtmlInteropDemos
 import androidx.compose.mpp.demo.webgl.PlainWebGlScreen
 import androidx.compose.mpp.demo.webgl.ThreeJsTextureAdoptionScreen
@@ -26,21 +25,13 @@ import androidx.compose.mpp.demo.webgl.HtmlInCanvasWebGlScreen
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.mpp.demo.embedded.embeddedScrollDemo
 import androidx.compose.mpp.demo.webgl.WebGLDemoScreen
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.ExperimentalComposeUiApi
-import androidx.compose.ui.platform.LocalFontFamilyResolver
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.platform.Font
 import androidx.compose.ui.window.ComposeViewport
 import androidx.navigation.ExperimentalBrowserHistoryApi
 import androidx.navigation.bindToBrowserNavigation
 import androidx.navigation.compose.rememberNavController
 import kotlinx.browser.window
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 
 private fun queryParams(): Map<String, String> {
     return window.location.search
@@ -66,8 +57,6 @@ fun main() {
 fun defaultComposeDemo() {
     ComposeViewport {
         val navController = rememberNavController()
-        val fontFamilyResolver = LocalFontFamilyResolver.current
-        val fontsLoaded = remember { mutableStateOf(false) }
         val app = remember { App(
             extraScreens = listOf(
                 WebGLDemoScreen,
@@ -80,27 +69,13 @@ fun defaultComposeDemo() {
             )
         ) }
 
-        if (fontsLoaded.value) {
-            app.Content(navController)
+        // The browser renders text with the system fonts, emoji and CJK included: unlike with Skia,
+        // no fallback fonts need to be downloaded before showing the content.
+        app.Content(navController)
 
-            // TODO: possibly suboptimal workaround for https://youtrack.jetbrains.com/issue/CMP-7136/web-Its-non-trivial-to-bind-to-navigation-if-NavHost-is-called-asynchronously
-            LaunchedEffect(Unit) {
-                navController.bindToBrowserNavigation()
-            }
-        }
-
+        // TODO: possibly suboptimal workaround for https://youtrack.jetbrains.com/issue/CMP-7136/web-Its-non-trivial-to-bind-to-navigation-if-NavHost-is-called-asynchronously
         LaunchedEffect(Unit) {
-            val manifestString = async { loadResource("./fonts-manifest.json") !! }.await().decodeToString()
-
-            val manifest = Json.decodeFromString<FontsManifest>(manifestString)
-
-            awaitAll(*manifest.fonts.map { async { loadResource("./$it.ttf")!! } }.toTypedArray())
-                .forEachIndexed { index, font ->
-                    val fontFamily = FontFamily(listOf(Font(manifest.fonts[index], font)))
-                    fontFamilyResolver.preload(fontFamily)
-                }
-
-            fontsLoaded.value = true
+            navController.bindToBrowserNavigation()
         }
 
         LaunchedEffect(Unit) {
@@ -108,6 +83,3 @@ fun defaultComposeDemo() {
         }
     }
 }
-
-@Serializable
-private data class FontsManifest(val fonts: List<String>)

@@ -103,7 +103,6 @@ androidXMultiplatform {
         skikoMain {
             dependsOn(commonMain)
             dependencies {
-                api(project(":compose:ui:ui-skiko"))
                 implementation(libs.atomicFu)
 
                 implementation("org.jetbrains.androidx.navigationevent:navigationevent-compose:1.1.0")
@@ -124,12 +123,27 @@ androidXMultiplatform {
             }
         }
 
+        // The Skia-based targets (desktop and native). The web targets don't use Skia: they draw
+        // through the browser's Canvas 2D API (see ui-web-canvas in webMain).
+        nonAndroidExcludingWebMain {
+            dependsOn(skikoMain)
+            dependencies {
+                api(project(":compose:ui:ui-skiko"))
+            }
+        }
+
+        nonAndroidExcludingWebTest {
+            dependsOn(skikoTest)
+        }
+
         desktopMain {
             dependsOn(skikoMain)
+            dependsOn(nonAndroidExcludingWebMain)
         }
 
         desktopTest {
             dependsOn(skikoTest)
+            dependsOn(nonAndroidExcludingWebTest)
             dependencies {
                 // TODO: Move to jvmTest?
                 implementation(libs.truth)
@@ -164,10 +178,12 @@ androidXMultiplatform {
 
         nativeMain {
             dependsOn(nonJvmMain)
+            dependsOn(nonAndroidExcludingWebMain)
         }
 
         nativeTest {
             dependsOn(nonJvmTest)
+            dependsOn(nonAndroidExcludingWebTest)
         }
 
         iosMain {
@@ -188,10 +204,7 @@ androidXMultiplatform {
 
         webMain.dependencies {
             api(libs.kotlinXw3c)
-        }
-
-        wasmJsMain.dependencies {
-            implementation(libs.skikoWasmJs)
+            api(project(":compose:ui:ui-web-canvas"))
         }
 
         // TODO: Align it with AOSP or make explicit

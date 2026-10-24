@@ -23,21 +23,16 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.layout.FirstBaseline
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
-import kotlin.math.abs
 import kotlin.test.Test
+import kotlin.test.assertTrue
 
 class TextTests : OnCanvasTests {
 
-    companion object {
-        private fun assertApproximatelyEqual(
-            expected: Float,
-            actual: Float,
-            tolerance: Float = 1f
-        ) {
-            if (abs(expected - actual) > tolerance) {
-                throw AssertionError("Expected $expected but got $actual. Difference is more than the allowed delta $tolerance")
-            }
-        }
+    private fun assertBaselineFitsFontSize(fontSize: Float, baseline: Float) {
+        assertTrue(
+            baseline in fontSize * 0.7f..fontSize * 1.4f,
+            "The baseline $baseline doesn't match the ascent of a $fontSize font",
+        )
     }
 
     @Test
@@ -70,7 +65,10 @@ class TextTests : OnCanvasTests {
 
         awaitIdle()
 
-        assertApproximatelyEqual(29f, headingOnPositioned.value)
-        assertApproximatelyEqual(17.5f, subtitleOnPositioned.value)
+        // The exact baselines depend on the font, which is the browser's system font, and on the
+        // line height of the style: check that they are where the ascent of a font of that size
+        // puts them, give or take the extra line height (h4: 34sp, subtitle1: 16sp).
+        assertBaselineFitsFontSize(fontSize = 34f, baseline = headingOnPositioned.value)
+        assertBaselineFitsFontSize(fontSize = 16f, baseline = subtitleOnPositioned.value)
     }
 }

@@ -77,22 +77,27 @@ androidXMultiplatform {
             dependsOn(commonTest)
             dependencies {
                 implementation(project(":compose:ui:ui-test"))
-                implementation(project(":compose:ui:ui-skiko"))
                 implementation(project(":kruth:kruth"))
             }
         }
 
-        // Skia-bearing compatibility layer between the skia-free nonAndroidMain and the platform
-        // leaves. Holds public skia-typed API structurally pinned to ui-graphics (deprecated
-        // skia-returning members + Native* typealiases).
-        // commonMain -> nonAndroidMain -> skikoMain -> (desktop/native/web).
+        // Skia-bearing compatibility layer between the skia-free nonAndroidMain and the Skia-based
+        // platform leaves. Holds public skia-typed API structurally pinned to ui-graphics
+        // (deprecated skia-returning members + Native* typealiases).
+        // commonMain -> nonAndroidMain -> skikoMain -> (desktop/native).
+        // The web targets don't use Skia: commonMain -> nonAndroidMain -> nonJvmMain -> webMain.
         skikoMain {
             dependsOn(nonAndroidMain)
             dependencies {
                 api(libs.skiko)
             }
         }
-        skikoTest.dependsOn(nonAndroidTest)
+        skikoTest {
+            dependsOn(nonAndroidTest)
+            dependencies {
+                implementation(project(":compose:ui:ui-skiko"))
+            }
+        }
 
         nonAndroidExcludingWebMain {
             dependsOn(skikoMain)
@@ -120,7 +125,7 @@ androidXMultiplatform {
         }
 
         nonJvmMain {
-            dependsOn(skikoMain)
+            dependsOn(nonAndroidMain)
             dependencies {
                 // To comply with Klib resolver until https://youtrack.jetbrains.com/issue/KT-61096 is fixed
                 implementation("org.jetbrains.compose.collection-internal:collection:1.10.0")
@@ -128,7 +133,7 @@ androidXMultiplatform {
         }
 
         nonJvmTest {
-            dependsOn(skikoTest)
+            dependsOn(nonAndroidTest)
         }
 
         nativeMain {
@@ -141,9 +146,9 @@ androidXMultiplatform {
             dependsOn(nonAndroidExcludingWebTest)
         }
 
-        wasmJsMain {
+        webTest {
             dependencies {
-                implementation(libs.skikoWasmJs)
+                implementation(project(":compose:ui:ui-web-canvas"))
             }
         }
     }

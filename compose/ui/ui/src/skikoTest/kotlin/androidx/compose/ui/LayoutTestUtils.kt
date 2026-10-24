@@ -43,7 +43,6 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.test.assertEquals
-import org.jetbrains.skia.Bitmap
 
 // A copy from androidInstrumentedTest/kotlin/androidx/compose/ui/AndroidLayoutDrawTest.kt
 

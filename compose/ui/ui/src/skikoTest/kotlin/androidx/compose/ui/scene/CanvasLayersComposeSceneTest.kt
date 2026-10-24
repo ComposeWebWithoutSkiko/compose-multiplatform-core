@@ -21,7 +21,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.SkikoComposeTestBase
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.asComposeCanvas
+import androidx.compose.ui.graphics.TestSurface
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.platform.FrameRecomposer
 import androidx.compose.ui.unit.IntSize
@@ -34,7 +34,6 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.runTest
-import org.jetbrains.skia.Surface
 
 class CanvasLayersComposeSceneTest : SkikoComposeTestBase() {
 
@@ -88,7 +87,7 @@ class CanvasLayersComposeSceneTest : SkikoComposeTestBase() {
         var drawInvalidations = 0
         var layer: ComposeSceneLayer? = null
         val frameRecomposer = FrameRecomposer(coroutineContext)
-        val surface = Surface.makeRasterN32Premul(100, 100)
+        val surface = TestSurface(100, 100)
         CanvasLayersComposeScene(
             frameRecomposer = frameRecomposer,
             size = IntSize(100, 100),
@@ -102,7 +101,7 @@ class CanvasLayersComposeSceneTest : SkikoComposeTestBase() {
             // Settle measure/layout/draw so every owner's pending-draw flag is cleared; otherwise
             // the close below would invalidate simply because an owner was still dirty.
             scene.measureAndLayout()
-            scene.draw(surface.canvas.asComposeCanvas())
+            scene.draw(surface.canvas)
             assertFalse(scene.hasPendingMeasureOrLayout)
             assertFalse(scene.hasPendingDraw)
 

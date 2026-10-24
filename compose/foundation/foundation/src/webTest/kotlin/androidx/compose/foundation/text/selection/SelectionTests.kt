@@ -37,12 +37,11 @@ import androidx.compose.ui.test.runComposeUiTest
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import kotlin.test.Test
-import org.jetbrains.skiko.OS
-import org.jetbrains.skiko.hostOs
+import androidx.compose.foundation.text.HostOs
 
 private val ResolvedKeyboardActions
-    get() = when (hostOs) {
-        OS.MacOS -> MacosKeyboardActions
+    get() = when (HostOs.current) {
+        HostOs.MacOS -> MacosKeyboardActions
         else -> DefaultKeyboardActions
     }
 

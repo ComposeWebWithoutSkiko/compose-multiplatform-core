@@ -31,8 +31,6 @@ androidXMultiplatform {
     desktop()
     mac()
     ios()
-    js()
-    wasmJs()
 
     defaultPlatform(PlatformIdentifier.ANDROID)
 

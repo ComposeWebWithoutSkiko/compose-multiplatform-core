@@ -29,7 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asSkiaBitmap
+import androidx.compose.foundation.toTestPixels
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.platform.LocalDensity
@@ -79,7 +79,7 @@ class CanvasTest {
         val paintBoxColor = Color.Red.toArgb()
         val containerBgColor = Color.White.toArgb()
         val strokeOffset = (strokeWidth / 2).toInt() + 3
-        captureToImage().asSkiaBitmap().apply {
+        captureToImage().toTestPixels().apply {
             val imageStartX = width / 2 - boxWidth / 2
             val imageStartY = height / 2 - boxHeight / 2
 

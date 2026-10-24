@@ -42,7 +42,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Canvas
 import androidx.compose.ui.graphics.Matrix
-import androidx.compose.ui.graphics.SkiaGraphicsContext
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.input.key.Key
@@ -68,6 +67,8 @@ import androidx.compose.ui.layout.areWindowInsetsRulersEnabled
 import androidx.compose.ui.modifier.ModifierLocalManager
 import androidx.compose.ui.platform.DelegatingSoftwareKeyboardController
 import androidx.compose.ui.platform.PlatformContext
+import androidx.compose.ui.platform.createPlatformFontLoader
+import androidx.compose.ui.platform.createPlatformGraphicsContext
 import androidx.compose.ui.platform.PlatformRootForTest
 import androidx.compose.ui.platform.PlatformTextInputMethodRequest
 import androidx.compose.ui.platform.PlatformTextInputSessionScope
@@ -136,7 +137,7 @@ internal class RootNodeOwner(
 
     private val rootSemanticsNode = EmptySemanticsModifier()
     private val snapshotObserver = OwnerSnapshotObserver(onChangedExecutor)
-    private val graphicsContext = SkiaGraphicsContext(
+    private val graphicsContext = createPlatformGraphicsContext(
         measureDrawBounds = platformContext.measureDrawLayerBounds,
         snapshotCache = ComposeUiFlags.useSnapshotCache,
     )
@@ -553,7 +554,7 @@ internal class RootNodeOwner(
         override val retainedValuesStore: RetainedValuesStore get() = ForgetfulRetainedValuesStore
         override val rectManager = RectManager(layoutNodes)
         @Suppress("OVERRIDE_DEPRECATION", "DEPRECATION")
-        override val fontLoader = androidx.compose.ui.text.platform.FontLoader()
+        override val fontLoader = createPlatformFontLoader()
         override val fontFamilyResolver: FontFamily.Resolver get() = platformContext.fontFamilyResolver
         override val layoutDirection get() = _layoutDirection
         override val localeList get() = platformContext.localeList

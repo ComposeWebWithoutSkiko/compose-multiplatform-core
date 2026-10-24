@@ -39,7 +39,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalTextInputService
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
-import org.jetbrains.skiko.currentNanoTime
+import kotlin.time.TimeSource
 
 //TODO This sample should be adapted to multiplatform usage
 //private val modifierKeys = setOf(
@@ -173,7 +173,7 @@ private fun DemoTextField(
 
 private data class KeyState(
     val keyEvent: KeyEvent,
-    val downTime: Long = currentNanoTime(),
+    val downTime: TimeSource.Monotonic.ValueTimeMark = TimeSource.Monotonic.markNow(),
     val isUp: Boolean = false
 )
 

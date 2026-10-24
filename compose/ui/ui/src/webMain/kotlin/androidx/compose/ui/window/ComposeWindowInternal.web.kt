@@ -30,12 +30,10 @@ import androidx.compose.runtime.ProvidableCompositionLocal
 import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.LocalSystemTheme
-import androidx.compose.ui.asComposeSystemTheme
 import androidx.compose.ui.draganddrop.WebDragAndDropManager
 import androidx.compose.ui.events.EventTargetListener
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.graphics.SkiaCanvasHolder
 import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEvent
@@ -69,11 +67,12 @@ import androidx.compose.ui.platform.WebTextInputService
 import androidx.compose.ui.platform.WebTextToolbar
 import androidx.compose.ui.platform.WebWakeLockManager
 import androidx.compose.ui.platform.WebWindowInsetsManager
+import androidx.compose.ui.platform.webgl.WebGLInteropContext
 import androidx.compose.ui.platform.WindowInfoImpl
-import androidx.compose.ui.platform.registerSkikoComposeImplementation
+import androidx.compose.ui.platform.registerWebCanvasComposeImplementation
 import androidx.compose.ui.platform.accessibility.ComposeWebSemanticsListener
+import androidx.compose.ui.platform.isMacOsHost
 import androidx.compose.ui.platform.isPostingTasksSupported
-import androidx.compose.ui.platform.installFallbackFontDownloader
 import androidx.compose.ui.scene.CanvasLayersComposeScene
 import androidx.compose.ui.platform.FrameRecomposer
 import androidx.compose.ui.platform.PlatformOutOfFrameExecutor
@@ -101,6 +100,8 @@ import androidx.compose.ui.viewinterop.InteropViewGroup
 import androidx.compose.ui.viewinterop.LocalInteropContainer
 import androidx.compose.ui.viewinterop.TrackInteropPlacementContainer
 import androidx.compose.ui.viewinterop.WebInteropContainer
+import androidx.compose.ui.webcanvas.HtmlCanvasRenderer
+import androidx.compose.ui.webcanvas.addImageDecodedListener
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.enableSavedStateHandles
 import kotlin.js.ExperimentalWasmJsInterop
@@ -110,10 +111,6 @@ import kotlinx.browser.document
 import kotlinx.browser.window
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
-import org.jetbrains.skia.DirectContext
-import org.jetbrains.skiko.SkiaLayer
-import org.jetbrains.skiko.SkikoRenderDelegate
-import org.jetbrains.skiko.hostOs
 import org.w3c.dom.DocumentReadyState
 import org.w3c.dom.Element
 import org.w3c.dom.HTMLCanvasElement
@@ -272,10 +269,13 @@ internal class ComposeWindow(
 
     private val clipTarget = clipTargetElement(canvas)
 
+    /** Draws the frames, at most one per animation frame of the browser. */
+    private val renderScheduler = RenderScheduler(::renderFrame)
+
     // TODO: It must be shared between Compose instances.
     //  It's supposed to be stored in platform's root view or window.
     private val frameRecomposer =
-        FrameRecomposer(Dispatchers.Main, invalidate = { skiaLayer.needRender() })
+        FrameRecomposer(Dispatchers.Main, invalidate = { renderScheduler.needRender() })
 
     // TODO: It cannot be used in case of shared [FrameRecomposer], replace this helper with calling
     //  - [frameRecomposer.performFrame] once per frame (across all instances) before platform views layout phase
@@ -283,7 +283,7 @@ internal class ComposeWindow(
     //    by platform view invalidation (which is triggered by [scene.invalidateLayout] OR by regular platform invalidation)
     //  - [scene.draw] during drawing phase of platform views (which is triggered by [scene.invalidateDraw]).
     //    Note that in case of custom GPU surface/V-Sync handling, it needs to be handled differently.
-    private val sceneRenderingScope = SingleComposeSceneRenderingScope { skiaLayer.needRender() }
+    private val sceneRenderingScope = SingleComposeSceneRenderingScope { renderScheduler.needRender() }
 
     private val platformContext: PlatformContext =
         object : PlatformContext by PlatformContext.Empty() {
@@ -418,32 +418,31 @@ internal class ComposeWindow(
                 get() = configuration.isClearFocusOnMouseDownEnabled
         }
 
-    private val canvasHolder = SkiaCanvasHolder()
-
     internal val htmlCanvas: HTMLCanvasElement get() = canvas
 
-    /**
-     * Skia's GPU context, captured from the surface canvas on the first rendered frame;
-     * It's used by WebGL texture adoption demo.
-     */
-    internal var skiaDirectContext: DirectContext? = null
-        private set
+    /** The WebGL2 context of embedded WebGL content, or `null` if the browser lacks WebGL2. */
+    internal val webGLInterop: WebGLInteropContext? by lazy(LazyThreadSafetyMode.NONE) {
+        WebGLInteropContext.sharedOrNull()
+    }
 
-    private val skiaLayer: SkiaLayer = SkiaLayer().apply {
-        renderDelegate = SkikoRenderDelegate { canvas, _, _, nanoTime ->
-            if (skiaDirectContext == null) {
-                skiaDirectContext = canvas.recordingContext
-            }
-            canvasHolder.drawInto(canvas) {
-                with(sceneRenderingScope) {
-                    scene.render(frameRecomposer, this@drawInto, nanoTime)
-                }
+    init {
+        registerWebCanvasComposeImplementation()
+    }
+
+    private val renderer = HtmlCanvasRenderer(canvas)
+
+    private fun renderFrame(nanoTime: Long) {
+        if (isDisposed) return
+        renderer.render { composeCanvas ->
+            with(sceneRenderingScope) {
+                scene.render(frameRecomposer, composeCanvas, nanoTime)
             }
         }
     }
 
-    init {
-        registerSkikoComposeImplementation()
+    // Browsers decode images asynchronously: draw a new frame when their pixels arrive.
+    private val removeImageDecodedListener = addImageDecodedListener {
+        renderScheduler.needRender()
     }
 
     private val scene = CanvasLayersComposeScene(
@@ -485,7 +484,7 @@ internal class ComposeWindow(
         }
     }
 
-    private val isMacOS = hostOs.isMacOS
+    private val isMacOS = isMacOsHost
 
     private var canvasFocused = false
 
@@ -667,12 +666,11 @@ internal class ComposeWindow(
         scene.setContent {
             CompositionLocalProvider(
                 @Suppress("DEPRECATION")
-                LocalSystemTheme provides systemThemeObserver.currentSystemTheme.value.asComposeSystemTheme(),
+                LocalSystemTheme provides systemThemeObserver.currentSystemTheme.value,
                 LocalInteropContainer provides interopContainer,
                 LocalActiveClipEventsTarget provides clipEventsTargetProvider,
                 LocalComposeWindow provides this,
                 content = {
-                    installFallbackFontDownloader(configuration.fontFallbackUrl)
                     WithNestedScrollObserver(rootScrollObserver) {
                         interopContainer.TrackInteropPlacementContainer {
                             content()
@@ -775,9 +773,8 @@ internal class ComposeWindow(
         _windowInfo.containerDpSize = dpSize
 
         // TODO: Align with Container/Mediator architecture
-        skiaLayer.attachTo(canvas)
         scene.size = sizeInPx
-        skiaLayer.needRender()
+        renderScheduler.needRender()
 
         insetsManager?.onCanvasResized(canvas)
     }
@@ -798,7 +795,8 @@ internal class ComposeWindow(
         webOutOfFrameExecutor?.dispose()
         scene.close()
         frameRecomposer.close()
-        skiaLayer.detach()
+        renderScheduler.dispose()
+        removeImageDecodedListener()
 
         insetsManager?.dispose()
         systemThemeObserver.dispose()
@@ -1112,11 +1110,31 @@ private external class ResizeObserver(callback: () -> Unit) : JsAny {
 //https://developer.mozilla.org/en-US/docs/Web/API/Document/visibilityState
 internal fun documentIsVisible(): Boolean = js("document.visibilityState === 'visible'")
 
-// In K/JS target, an application can't start right away. We should wait until skiko.wasm is ready.
-// We'll do it implicitly, rather than asking the app developers to call it.
-internal fun onSkikoReady(block: () -> Unit) {
-    @Suppress("INVISIBLE_REFERENCE")
-    org.jetbrains.skiko.wasm.onWasmReady { block() }
+/**
+ * Schedules drawing with `requestAnimationFrame`: [needRender] requests a frame, and [onFrame]
+ * draws it with the frame time in nanoseconds. Requests made while a frame is pending (or being
+ * drawn) are merged into one frame.
+ */
+internal class RenderScheduler(private val onFrame: (nanoTime: Long) -> Unit) {
+    private var isScheduled = false
+    private var isDisposed = false
+
+    private val frameCallback: (Double) -> Unit = { timestamp ->
+        isScheduled = false
+        if (!isDisposed) {
+            onFrame((timestamp * 1_000_000.0).toLong())
+        }
+    }
+
+    fun needRender() {
+        if (isScheduled || isDisposed) return
+        isScheduled = true
+        window.requestAnimationFrame(frameCallback)
+    }
+
+    fun dispose() {
+        isDisposed = true
+    }
 }
 
 internal fun onDomReady(block: () -> Unit) {

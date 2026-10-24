@@ -14,11 +14,13 @@
  * limitations under the License.
  */
 
+@file:Suppress("DEPRECATION")
+
 package androidx.compose.ui.window
 
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
-import org.jetbrains.skiko.SystemTheme
+import androidx.compose.ui.SystemTheme
 
 internal interface SystemThemeObserver {
     val currentSystemTheme: State<SystemTheme>
@@ -32,15 +34,15 @@ private class SystemThemeObserverImpl : SystemThemeObserver {
 
     private val mediaQueryListener: MediaQueryListener = object : MediaQueryListener("(prefers-color-scheme: dark)") {
         override fun onChange(matches: Boolean) {
-            _currentSystemTheme.value = if (matches) SystemTheme.DARK else SystemTheme.LIGHT
+            _currentSystemTheme.value = if (matches) SystemTheme.Dark else SystemTheme.Light
         }
     }
 
     private val _currentSystemTheme = mutableStateOf(
         when(mediaQueryListener.matches()) {
-            MediaQueryStatus.MATCH -> SystemTheme.DARK
-            MediaQueryStatus.NO_MATCH -> SystemTheme.LIGHT
-            MediaQueryStatus.UNSUPPORTED -> SystemTheme.UNKNOWN
+            MediaQueryStatus.MATCH -> SystemTheme.Dark
+            MediaQueryStatus.NO_MATCH -> SystemTheme.Light
+            MediaQueryStatus.UNSUPPORTED -> SystemTheme.Unknown
         }
     )
 

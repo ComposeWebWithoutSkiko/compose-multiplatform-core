@@ -22,11 +22,13 @@ import androidx.compose.ui.graphics.Canvas
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathFillType
+import androidx.compose.ui.graphics.PathIterator
+import androidx.compose.ui.graphics.PathSegment
 import androidx.compose.ui.graphics.PixelMap
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.addOutline
-import androidx.compose.ui.graphics.asSkiaPath
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
@@ -143,8 +145,91 @@ private fun ImageBitmap.containsColor(expectedColor: Color): Boolean {
  * Returns true if the point is in the path, and false otherwise.
  */
 fun Path.contains(offset: Offset): Boolean {
-    return asSkiaPath().contains(offset.x, offset.y)
+    // The winding number of the finely flattened outline around the point, counting points on
+    // the outline as inside, like Skia. It only uses the common Path API, so it works with every
+    // graphics implementation.
+    val x = offset.x
+    val y = offset.y
+    var winding = 0
+    var onEdge = false
+    fun edge(x0: Float, y0: Float, x1: Float, y1: Float) {
+        val dx = x1 - x0
+        val dy = y1 - y0
+        val lengthSquared = dx * dx + dy * dy
+        if (lengthSquared > 0f) {
+            val t = (((x - x0) * dx + (y - y0) * dy) / lengthSquared).coerceIn(0f, 1f)
+            val ex = x0 + t * dx - x
+            val ey = y0 + t * dy - y
+            if (ex * ex + ey * ey < OnEdgeDistance * OnEdgeDistance) onEdge = true
+        }
+        if ((y0 <= y) == (y1 <= y)) return
+        val crossX = x0 + (y - y0) / dy * dx
+        if (crossX > x) winding += if (dy > 0) 1 else -1
+    }
+    var startX = 0f
+    var startY = 0f
+    var lastX = 0f
+    var lastY = 0f
+    fun lineTo(x1: Float, y1: Float) {
+        edge(lastX, lastY, x1, y1)
+        lastX = x1
+        lastY = y1
+    }
+    val points = FloatArray(8)
+    val iterator = iterator(PathIterator.ConicEvaluation.AsConic)
+    while (iterator.hasNext()) {
+        when (iterator.next(points)) {
+            PathSegment.Type.Move -> {
+                lineTo(startX, startY)
+                startX = points[0]
+                startY = points[1]
+                lastX = startX
+                lastY = startY
+            }
+            PathSegment.Type.Line -> lineTo(points[2], points[3])
+            PathSegment.Type.Quadratic -> for (step in 1..CurveSteps) {
+                val t = step.toFloat() / CurveSteps
+                val u = 1 - t
+                lineTo(
+                    u * u * points[0] + 2 * u * t * points[2] + t * t * points[4],
+                    u * u * points[1] + 2 * u * t * points[3] + t * t * points[5],
+                )
+            }
+            PathSegment.Type.Conic -> {
+                val weight = points[6]
+                for (step in 1..CurveSteps) {
+                    val t = step.toFloat() / CurveSteps
+                    val u = 1 - t
+                    val denominator = u * u + 2 * weight * u * t + t * t
+                    lineTo(
+                        (u * u * points[0] + 2 * weight * u * t * points[2] + t * t * points[4]) /
+                            denominator,
+                        (u * u * points[1] + 2 * weight * u * t * points[3] + t * t * points[5]) /
+                            denominator,
+                    )
+                }
+            }
+            PathSegment.Type.Cubic -> for (step in 1..CurveSteps) {
+                val t = step.toFloat() / CurveSteps
+                val u = 1 - t
+                lineTo(
+                    u * u * u * points[0] + 3 * u * u * t * points[2] + 3 * u * t * t * points[4] +
+                        t * t * t * points[6],
+                    u * u * u * points[1] + 3 * u * u * t * points[3] + 3 * u * t * t * points[5] +
+                        t * t * t * points[7],
+                )
+            }
+            PathSegment.Type.Close -> lineTo(startX, startY)
+            else -> Unit
+        }
+    }
+    lineTo(startX, startY)
+    if (onEdge) return true
+    return if (fillType == PathFillType.EvenOdd) winding % 2 != 0 else winding != 0
 }
+
+private const val CurveSteps = 64
+private const val OnEdgeDistance = 1e-3f
 
 /**
  * Asserts that the given [shape] is drawn within the bitmap with the size the dimensions

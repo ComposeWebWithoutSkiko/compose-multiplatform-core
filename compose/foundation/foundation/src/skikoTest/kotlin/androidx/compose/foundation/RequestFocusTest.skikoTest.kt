@@ -30,14 +30,12 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.use
 import kotlin.test.Test
-import org.jetbrains.skiko.KotlinBackend
-import org.jetbrains.skiko.kotlinBackend
 
 class RequestFocusSkikoTest {
 
     @Test
     fun clickable_should_request_focus_on_click() {
-        if (kotlinBackend == KotlinBackend.Native) return
+        if (isNativeTestTarget) return
 
         ImageComposeScene(
             width = 100,
@@ -70,7 +68,7 @@ class RequestFocusSkikoTest {
 
     @Test
     fun toggleable_should_request_focus_on_click() {
-        if (kotlinBackend == KotlinBackend.Native) return
+        if (isNativeTestTarget) return
 
         ImageComposeScene(
             width = 100,

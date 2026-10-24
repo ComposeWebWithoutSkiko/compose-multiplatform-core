@@ -35,7 +35,7 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.asSkiaBitmap
+import androidx.compose.foundation.toTestPixels
 import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.painter.ColorPainter
@@ -114,7 +114,7 @@ class ImageTest {
         val bgColorArgb = bgColor.toArgb()
         val pathArgb = pathColor.toArgb()
 
-        captureToImage().asSkiaBitmap().apply {
+        captureToImage().toTestPixels().apply {
             val imageStartX = width / 2 - imageWidth / 2
             val imageStartY = height / 2 - imageHeight / 2
             assertEquals(bgColorArgb, getColor(imageStartX + 2, imageStartY))
@@ -166,7 +166,7 @@ class ImageTest {
         val bgColorArgb = bgColor.toArgb()
         val pathArgb = pathColor.toArgb()
 
-        captureToImage().asSkiaBitmap().apply {
+        captureToImage().toTestPixels().apply {
             val imageStartX = width / 2 - subsectionWidth / 2
             val imageStartY = height / 2 - subsectionHeight / 2
             assertEquals(bgColorArgb, getColor(imageStartX + 2, imageStartY))
@@ -266,7 +266,7 @@ class ImageTest {
 
         val bgColorArgb = bgColor.toArgb()
         val pathArgb = pathColor.toArgb()
-        captureToImage().asSkiaBitmap().apply {
+        captureToImage().toTestPixels().apply {
             val imageStartX = width / 2 - imageComposableWidth / 2
             val imageStartY = height / 2 - imageComposableHeight / 2
             assertEquals(bgColorArgb, getColor(imageStartX + 5, imageStartY))
@@ -369,7 +369,7 @@ class ImageTest {
 
         val bgColorArgb = bgColor.toArgb()
         val pathArgb = pathColor.toArgb()
-        captureToImage().asSkiaBitmap().apply {
+        captureToImage().toTestPixels().apply {
             val composableEndX = width / 2 + imageComposableWidth / 2
             val composableEndY = height / 2 + imageComposableHeight / 2
             val imageStartX = composableEndX - imageWidth
@@ -425,7 +425,7 @@ class ImageTest {
             )
         }
 
-        captureToImage().asSkiaBitmap().apply {
+        captureToImage().toTestPixels().apply {
             assertEquals(100, width)
             assertEquals(50, height)
             assertEquals(Color.Blue.toArgb(), getColor(24, height / 2))

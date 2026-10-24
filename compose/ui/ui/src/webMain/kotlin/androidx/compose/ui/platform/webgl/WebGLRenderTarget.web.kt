@@ -27,13 +27,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.InternalComposeUiApi
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.toIntSize
+import androidx.compose.ui.webcanvas.SharedWebGLContext
 import androidx.compose.ui.window.LocalComposeWindow
-import org.jetbrains.skia.DirectContext
 import org.khronos.webgl.WebGLFramebuffer
 import org.khronos.webgl.WebGLRenderbuffer
 import org.khronos.webgl.WebGLRenderingContext
@@ -63,8 +65,15 @@ private const val GL_DEPTH_STENCIL_ATTACHMENT = 0x821A
  * An offscreen render target that lets WebGL content take part in Compose rendering.
  *
  * WebGL code renders into this target with [render]. Compose displays the resulting texture through
- * [painter]. The target owns the framebuffer, color texture, and depth/stencil buffer, and restores
- * the GL state expected by Compose after each frame.
+ * [painter]. The target owns the framebuffer, color texture, and depth/stencil buffer.
+ *
+ * WebGL content renders with the WebGL2 context of the page ([webGLContext], on [htmlCanvas], a
+ * canvas that isn't part of the page), which Compose itself draws with where the Canvas 2D API
+ * falls short (e.g. layers in perspective). There is a single one for all targets and windows, so
+ * the programs and other GL objects created for it are created once. Compose's own draws restore
+ * the GL state they change, so the state WebGL code sets up stays between [render] calls; but
+ * Compose shows the frames through the drawing buffer of [htmlCanvas], so WebGL code must render
+ * into [framebuffer] rather than into the default framebuffer.
  *
  * Obtain an instance with [rememberWebGLRenderTarget], which disposes it when it leaves the
  * composition.
@@ -97,11 +106,14 @@ private const val GL_DEPTH_STENCIL_ATTACHMENT = 0x821A
 @ExperimentalComposeUiApi
 @Stable
 class WebGLRenderTarget internal constructor(
-    val htmlCanvas: HTMLCanvasElement,
-    val webGLContext: WebGLRenderingContext,
-    private val directContext: () -> DirectContext?,
+    private val interop: WebGLInteropContext,
     initialSize: IntSize,
 ) {
+    /** The canvas of [webGLContext]. It isn't part of the page. */
+    val htmlCanvas: HTMLCanvasElement get() = interop.canvas
+
+    /** The WebGL2 context to render into this target with, shared by all targets. */
+    val webGLContext: WebGLRenderingContext get() = interop.gl
 
     private var requestedSize: IntSize = initialSize.coerceAtLeastOnePixel()
 
@@ -122,19 +134,26 @@ class WebGLRenderTarget internal constructor(
         requestedSize = size.coerceAtLeastOnePixel()
     }
 
+    /** The generation of the shared context that the GL objects below belong to. */
+    private var contextGeneration = SharedWebGLContext.generation
+
+    private var currentFramebuffer: WebGLFramebuffer? = null
+
     /**
      * The framebuffer used by [render].
      *
-     * This framebuffer is created once and remains stable for the target's lifetime. Its color and
-     * depth/stencil attachments are configured and resized as needed. It is complete only after the
-     * first successful [render].
+     * This framebuffer is created once and remains stable for the target's lifetime, unless the
+     * context is lost and restored, which drops every GL object. Its color and depth/stencil
+     * attachments are configured and resized as needed. It is complete only after the first
+     * successful [render].
      *
      * Callers may temporarily rebind it inside [render], but must restore the binding before
      * returning. Callers must not delete the framebuffer or its attachments.
      */
-    val framebuffer: WebGLFramebuffer by lazy {
-        webGLContext.createFramebuffer() ?: error("gl.createFramebuffer() returned null")
-    }
+    val framebuffer: WebGLFramebuffer
+        get() = currentFramebuffer ?: (
+            webGLContext.createFramebuffer() ?: error("gl.createFramebuffer() returned null")
+        ).also { currentFramebuffer = it }
 
     private var currentTexture: WebGLTexture? = null
 
@@ -158,9 +177,15 @@ class WebGLRenderTarget internal constructor(
         }
 
     /** The depth/stencil attachment of [framebuffer]; like it, created once and only resized. */
-    private val depthStencil: WebGLRenderbuffer by lazy {
-        webGLContext.createRenderbuffer() ?: error("gl.createRenderbuffer() returned null")
-    }
+    private var currentDepthStencil: WebGLRenderbuffer? = null
+
+    private val depthStencil: WebGLRenderbuffer
+        get() = currentDepthStencil ?: (
+            webGLContext.createRenderbuffer() ?: error("gl.createRenderbuffer() returned null")
+        ).also { currentDepthStencil = it }
+
+    /** The size the attachments are allocated with. */
+    private var attachmentsSize: IntSize? = null
 
     /**
      * Increments whenever the target is first configured or its size changes.
@@ -173,8 +198,8 @@ class WebGLRenderTarget internal constructor(
      * A painter that draws the most recently rendered frame.
      *
      * Its [Painter.intrinsicSize] is [size] after the first successful [render], and unspecified
-     * before then. Drawing the painter issues no WebGL commands; it samples the texture populated by
-     * [render].
+     * before then. Drawing the painter issues no WebGL commands of the caller's; Compose copies the
+     * frame from [framebuffer] when it draws it.
      *
      * The same painter instance is returned on every access.
      * Examples:
@@ -188,8 +213,8 @@ class WebGLRenderTarget internal constructor(
 
     /**
      * Called before the current texture-backed render resource becomes unavailable.
-     * It happens when the texture is about to be replaced for a new size or the
-     * [WebGLRenderTarget] is being disposed.
+     * It happens when the texture is about to be replaced for a new size, the
+     * [WebGLRenderTarget] is being disposed, or the context was lost and restored.
      */
     var onTextureWillBeInvalidated: (() -> Unit)? = null
 
@@ -200,7 +225,10 @@ class WebGLRenderTarget internal constructor(
         _invalidation.value
     }
 
-    internal var adoptedTexture: AdoptedGLTexture? = null
+    /** The image Compose draws: the frames of [framebuffer], or `null` before the first frame. */
+    internal var image: ImageBitmap? = null
+        private set
+
     private var isDisposed = false
     private var isRendering = false
 
@@ -209,7 +237,7 @@ class WebGLRenderTarget internal constructor(
      * it all shows the new frame.
      *
      * Allocates or resizes GPU resources as needed, binds [framebuffer], invokes [block], then
-     * restores the GL state expected by Compose.
+     * binds the default framebuffer again.
      *
      * Prefer calling this from a [withFrameNanos] callback. Do not call it from a draw or layout
      * scope, such as a `Canvas` or `Modifier.drawBehind`.
@@ -223,17 +251,21 @@ class WebGLRenderTarget internal constructor(
      * }
      * ```
      *
-     * @return `false`, skipping [block], if the GPU context is not available yet — which is the
-     *   case until Compose has drawn its first frame.
+     * @return `false`, skipping [block], if the target was disposed or the context is lost.
      */
+    @OptIn(InternalComposeUiApi::class)
     fun render(block: () -> Unit): Boolean {
         if (isDisposed) return false
         check(!isRendering) {
             "render() is already running: it must not be called from within another render() call, " +
                 "nor from a draw or layout scope"
         }
-        val context = directContext() ?: return false
-        prepareAttachments(context, requestedSize)
+        if (SharedWebGLContext.isContextLost()) return false
+        if (contextGeneration != SharedWebGLContext.generation) {
+            dropObjectsOfLostContext()
+        }
+        val size = requestedSize
+        prepareAttachments(size)
         isRendering = true
         webGLContext.bindFramebuffer(FRAMEBUFFER, framebuffer)
         try {
@@ -241,49 +273,69 @@ class WebGLRenderTarget internal constructor(
         } finally {
             isRendering = false
             webGLContext.bindFramebuffer(FRAMEBUFFER, null)
-            // Everything above went through the context Skia renders Compose with, so whatever Skia
-            // believes about the GL state is stale by now.
-            context.resetAll()
+            // The block may have drawn into the drawing buffer Compose shows frames through.
+            SharedWebGLContext.markUsed()
         }
+        updateImage(size)
         _invalidation.value++
         return true
     }
 
     /**
-     * Marks the GL state as changed outside of [render], so that Compose's renderer stops assuming
-     * the state it last set is still in place.
+     * Tells Compose that code touched [webGLContext] outside of [render], typically while setting
+     * up or tearing down a third-party engine, and binds the default framebuffer.
      *
-     * [render] does this for its own block already, so this is only needed when code touches
-     * [webGLContext] on its own — typically while setting up or tearing down a third-party engine.
-     * The renderer then has to reapply its whole state, so avoid calling this per frame.
+     * Compose's own draws restore the GL state they change, so this isn't needed for the GL state;
+     * but such code may have drawn into the drawing buffer of [htmlCanvas], which Compose shows
+     * the frames through. [render] does this for its own block already.
      */
+    @OptIn(InternalComposeUiApi::class)
     fun markGLStateStale() {
-        val context = directContext() ?: return
         webGLContext.bindFramebuffer(FRAMEBUFFER, null)
-        context.resetAll()
+        SharedWebGLContext.markUsed()
+    }
+
+    /** Points the image Compose draws to the frame just rendered. */
+    @OptIn(InternalComposeUiApi::class)
+    private fun updateImage(size: IntSize) {
+        val current = image
+        if (current != null && current.width == size.width && current.height == size.height) {
+            SharedWebGLContext.invalidateFramebufferImage(current)
+            return
+        }
+        current?.let { SharedWebGLContext.releaseFramebufferImage(it) }
+        image = SharedWebGLContext.createFramebufferImage(framebuffer, size.width, size.height)
+    }
+
+    /**
+     * Forgets the GL objects of the target after the context was lost and restored, which deleted
+     * them: the next [render] creates new ones.
+     */
+    @OptIn(InternalComposeUiApi::class)
+    private fun dropObjectsOfLostContext() {
+        contextGeneration = SharedWebGLContext.generation
+        try {
+            if (currentTexture != null) onTextureWillBeInvalidated?.invoke()
+        } finally {
+            currentTexture = null
+            currentFramebuffer = null
+            currentDepthStencil = null
+            attachmentsSize = null
+            image?.let { SharedWebGLContext.releaseFramebufferImage(it) }
+            image = null
+        }
     }
 
     /** Allocates the attachments of [framebuffer] for [size], unless they already have that size. */
-    private fun prepareAttachments(
-        context: DirectContext,
-        size: IntSize,
-    ) {
-        val current = adoptedTexture
-        if (current != null && current.size == size) return
+    private fun prepareAttachments(size: IntSize) {
+        if (attachmentsSize == size) return
 
-        if (current != null) {
+        if (attachmentsSize != null) {
             releaseTexture()
         }
 
         val newTexture = webGlTexture
         webGLContext.configureWebGLTexture(newTexture, size)
-        val adopted = try {
-            webGLContext.adoptNewTexture(context, size, newTexture)
-        } catch (error: Throwable) {
-            currentTexture = null
-            throw error
-        }
-        this.adoptedTexture = adopted
 
         webGLContext.bindRenderbuffer(RENDERBUFFER, depthStencil)
         webGLContext.renderbufferStorage(RENDERBUFFER, GL_DEPTH24_STENCIL8, size.width, size.height)
@@ -306,9 +358,10 @@ class WebGLRenderTarget internal constructor(
         val status = webGLContext.checkFramebufferStatus(FRAMEBUFFER)
         webGLContext.bindFramebuffer(FRAMEBUFFER, null)
         check(status == FRAMEBUFFER_COMPLETE) {
-            "the adopted texture is not a complete framebuffer attachment (status $status)"
+            "the texture is not a complete framebuffer attachment (status $status)"
         }
 
+        attachmentsSize = size
         this.size = size
         generation++
     }
@@ -318,14 +371,9 @@ class WebGLRenderTarget internal constructor(
         try {
             onTextureWillBeInvalidated?.invoke()
         } finally {
-            val adopted = adoptedTexture
-            adoptedTexture = null
             currentTexture = null
-            if (adopted == null) {
-                webGLContext.deleteTexture(current)
-            } else {
-                adopted.dispose()
-            }
+            attachmentsSize = null
+            webGLContext.deleteTexture(current)
         }
     }
 
@@ -335,17 +383,25 @@ class WebGLRenderTarget internal constructor(
      * Called automatically by [rememberWebGLRenderTarget] when the target leaves the composition.
      * Calling this more than once has no effect.
      */
+    @OptIn(InternalComposeUiApi::class)
     internal fun dispose() {
         if (isDisposed) return
         isDisposed = true
+        if (contextGeneration != SharedWebGLContext.generation) {
+            // The objects are gone with the context they belonged to.
+            dropObjectsOfLostContext()
+        }
         try {
             releaseTexture()
         } finally {
             size = IntSize.Zero
-            webGLContext.deleteFramebuffer(framebuffer)
-            webGLContext.deleteRenderbuffer(depthStencil)
+            image?.let { SharedWebGLContext.releaseFramebufferImage(it) }
+            image = null
+            currentFramebuffer?.let { webGLContext.deleteFramebuffer(it) }
+            currentDepthStencil?.let { webGLContext.deleteRenderbuffer(it) }
+            currentFramebuffer = null
+            currentDepthStencil = null
             webGLContext.bindFramebuffer(FRAMEBUFFER, null)
-            directContext()?.resetAll()
         }
     }
 }
@@ -382,18 +438,7 @@ fun rememberWebGLRenderTarget(
 ): WebGLRenderTarget? {
     val window = LocalComposeWindow.current ?: return null
     val renderTarget = remember(window) {
-        val canvas = window.htmlCanvas
-        val gl = webGl2ContextOrNull(canvas)
-        if (gl == null) {
-            null
-        } else {
-            WebGLRenderTarget(
-                htmlCanvas = canvas,
-                webGLContext = gl,
-                directContext = { window.skiaDirectContext },
-                initialSize = size
-            )
-        }
+        window.webGLInterop?.let { WebGLRenderTarget(it, size) }
     } ?: return null
     SideEffect(size) { renderTarget.requestNewSize(size) }
     DisposableEffect(renderTarget) { onDispose { renderTarget.dispose() } }

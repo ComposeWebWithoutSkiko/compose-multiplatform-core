@@ -19,8 +19,7 @@ package androidx.compose.ui
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.staticCompositionLocalOf
-import org.jetbrains.skiko.SystemTheme as SkikoSystemTheme
-import org.jetbrains.skiko.currentSystemTheme
+import androidx.compose.ui.platform.currentPlatformSystemTheme
 
 @Deprecated("This class was made public by mistake and will be removed in a future release")
 enum class SystemTheme {
@@ -30,16 +29,7 @@ enum class SystemTheme {
 @Deprecated("This property was made public by mistake and will be removed in a future release")
 @InternalComposeUiApi
 val LocalSystemTheme = staticCompositionLocalOf {
-    currentSystemTheme.asComposeSystemTheme()
-}
-
-@Suppress("DEPRECATION")
-internal fun SkikoSystemTheme.asComposeSystemTheme() : SystemTheme {
-    return when (this) {
-        SkikoSystemTheme.DARK -> SystemTheme.Dark
-        SkikoSystemTheme.LIGHT -> SystemTheme.Light
-        SkikoSystemTheme.UNKNOWN -> SystemTheme.Unknown
-    }
+    currentPlatformSystemTheme()
 }
 
 @Suppress("DEPRECATION")

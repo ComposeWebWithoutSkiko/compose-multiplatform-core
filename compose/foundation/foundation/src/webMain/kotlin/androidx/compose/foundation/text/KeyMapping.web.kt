@@ -17,15 +17,13 @@
 package androidx.compose.foundation.text
 
 import androidx.compose.ui.input.key.KeyEvent
-import org.jetbrains.skiko.OS
-import org.jetbrains.skiko.hostOs
 
-internal actual val platformDefaultKeyMapping: KeyMapping = createPlatformDefaultKeyMapping(hostOs)
+internal actual val platformDefaultKeyMapping: KeyMapping = createPlatformDefaultKeyMapping(HostOs.current)
 
-internal fun createPlatformDefaultKeyMapping(platform: OS): KeyMapping {
+internal fun createPlatformDefaultKeyMapping(platform: HostOs): KeyMapping {
     val keyMapping = when (platform) {
-        OS.MacOS -> createMacOsDefaultKeyMapping()
-        OS.Windows -> createWindowsDefaultKeyMapping()
+        HostOs.MacOS -> createMacOsDefaultKeyMapping()
+        HostOs.Windows -> createWindowsDefaultKeyMapping()
         else -> DefaultSkikoKeyMapping
     }
     return object : KeyMapping {

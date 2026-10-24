@@ -18,7 +18,7 @@ package androidx.compose.ui.node
 
 import androidx.compose.ui.SkikoComposeTestBase
 import androidx.compose.ui.FrameRateCategory
-import androidx.compose.ui.graphics.asComposeCanvas
+import androidx.compose.ui.graphics.TestSurface
 import androidx.compose.ui.platform.PlatformContext
 import androidx.compose.ui.scene.ComposeSceneInputHandler
 import androidx.compose.ui.scene.PointerEventResult
@@ -30,13 +30,12 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.test.fail
 import kotlinx.coroutines.test.runTest
-import org.jetbrains.skia.Surface
 
 class VoteFrameRateTest : SkikoComposeTestBase() {
 
     @Test
     fun testNoVotedFrameRate() = runTest {
-        val surface = Surface.makeRasterN32Premul(100, 100)
+        val surface = TestSurface(100, 100)
         val owner = RootNodeOwner(
             platformContext = object : PlatformContext.Empty() {
                 override fun voteFrameRate(frameRate: Float, frameRateCategory: Float) {
@@ -45,7 +44,7 @@ class VoteFrameRateTest : SkikoComposeTestBase() {
             }
         )
 
-        owner.draw(surface.canvas.asComposeCanvas())
+        owner.draw(surface.canvas)
     }
 
     @Test
@@ -54,7 +53,7 @@ class VoteFrameRateTest : SkikoComposeTestBase() {
         var votedFrameRateCategory = 0f
         var voteFrameRateCount = 0
 
-        val surface = Surface.makeRasterN32Premul(100, 100)
+        val surface = TestSurface(100, 100)
         val owner = RootNodeOwner(
             platformContext = object : PlatformContext.Empty() {
                 override fun voteFrameRate(frameRate: Float, frameRateCategory: Float) {
@@ -66,13 +65,13 @@ class VoteFrameRateTest : SkikoComposeTestBase() {
         )
 
         owner.owner.voteFrameRate(120f)
-        owner.draw(surface.canvas.asComposeCanvas())
+        owner.draw(surface.canvas)
 
         assertEquals(120f, votedFrameRate)
         assertEquals(0f, votedFrameRateCategory)
         assertEquals(1, voteFrameRateCount)
 
-        owner.draw(surface.canvas.asComposeCanvas())
+        owner.draw(surface.canvas)
 
         assertEquals(120f, votedFrameRate)
         assertEquals(0f, votedFrameRateCategory)
@@ -85,7 +84,7 @@ class VoteFrameRateTest : SkikoComposeTestBase() {
         var votedFrameRateCategory = 0f
         var voteFrameRateCount = 0
 
-        val surface = Surface.makeRasterN32Premul(100, 100)
+        val surface = TestSurface(100, 100)
         val owner = RootNodeOwner(
             platformContext = object : PlatformContext.Empty() {
                 override fun voteFrameRate(frameRate: Float, frameRateCategory: Float) {
@@ -97,13 +96,13 @@ class VoteFrameRateTest : SkikoComposeTestBase() {
         )
 
         owner.owner.voteFrameRate(FrameRateCategory.Normal.value)
-        owner.draw(surface.canvas.asComposeCanvas())
+        owner.draw(surface.canvas)
 
         assertTrue(votedFrameRate.isNaN())
         assertEquals(FrameRateCategory.Normal.value, votedFrameRateCategory)
         assertEquals(1, voteFrameRateCount)
 
-        owner.draw(surface.canvas.asComposeCanvas())
+        owner.draw(surface.canvas)
 
         assertTrue(votedFrameRate.isNaN())
         assertEquals(FrameRateCategory.Normal.value, votedFrameRateCategory)
@@ -115,7 +114,7 @@ class VoteFrameRateTest : SkikoComposeTestBase() {
         var votedFrameRate = Float.NaN
         var votedFrameRateCategory = 0f
 
-        val surface = Surface.makeRasterN32Premul(100, 100)
+        val surface = TestSurface(100, 100)
         val owner = RootNodeOwner(
             platformContext = object : PlatformContext.Empty() {
                 override fun voteFrameRate(frameRate: Float, frameRateCategory: Float) {
@@ -127,7 +126,7 @@ class VoteFrameRateTest : SkikoComposeTestBase() {
 
         owner.owner.voteFrameRate(60f)
         owner.owner.voteFrameRate(120f)
-        owner.draw(surface.canvas.asComposeCanvas())
+        owner.draw(surface.canvas)
 
         assertEquals(120f, votedFrameRate)
         assertEquals(0f, votedFrameRateCategory)
@@ -138,7 +137,7 @@ class VoteFrameRateTest : SkikoComposeTestBase() {
         var votedFrameRate = Float.NaN
         var votedFrameRateCategory = 0f
 
-        val surface = Surface.makeRasterN32Premul(100, 100)
+        val surface = TestSurface(100, 100)
         val owner = RootNodeOwner(
             platformContext = object : PlatformContext.Empty() {
                 override fun voteFrameRate(frameRate: Float, frameRateCategory: Float) {
@@ -150,7 +149,7 @@ class VoteFrameRateTest : SkikoComposeTestBase() {
 
         owner.owner.voteFrameRate(120f)
         owner.owner.voteFrameRate(60f)
-        owner.draw(surface.canvas.asComposeCanvas())
+        owner.draw(surface.canvas)
 
         assertEquals(120f, votedFrameRate)
         assertEquals(0f, votedFrameRateCategory)
@@ -161,7 +160,7 @@ class VoteFrameRateTest : SkikoComposeTestBase() {
         var votedFrameRate = Float.NaN
         var votedFrameRateCategory = 0f
 
-        val surface = Surface.makeRasterN32Premul(100, 100)
+        val surface = TestSurface(100, 100)
         val owner = RootNodeOwner(
             platformContext = object : PlatformContext.Empty() {
                 override fun voteFrameRate(frameRate: Float, frameRateCategory: Float) {
@@ -173,7 +172,7 @@ class VoteFrameRateTest : SkikoComposeTestBase() {
 
         owner.owner.voteFrameRate(5f)
         owner.owner.voteFrameRate(FrameRateCategory.High.value)
-        owner.draw(surface.canvas.asComposeCanvas())
+        owner.draw(surface.canvas)
 
         assertEquals(5f, votedFrameRate)
         assertEquals(FrameRateCategory.High.value, votedFrameRateCategory)
@@ -184,7 +183,7 @@ class VoteFrameRateTest : SkikoComposeTestBase() {
         var votedFrameRate = Float.NaN
         var votedFrameRateCategory = 0f
 
-        val surface = Surface.makeRasterN32Premul(100, 100)
+        val surface = TestSurface(100, 100)
         val owner = RootNodeOwner(
             platformContext = object : PlatformContext.Empty() {
                 override fun voteFrameRate(frameRate: Float, frameRateCategory: Float) {
@@ -196,7 +195,7 @@ class VoteFrameRateTest : SkikoComposeTestBase() {
 
         owner.owner.voteFrameRate(FrameRateCategory.Normal.value)
         owner.owner.voteFrameRate(FrameRateCategory.High.value)
-        owner.draw(surface.canvas.asComposeCanvas())
+        owner.draw(surface.canvas)
 
         assertTrue(votedFrameRate.isNaN())
         assertEquals(FrameRateCategory.High.value, votedFrameRateCategory)
@@ -207,7 +206,7 @@ class VoteFrameRateTest : SkikoComposeTestBase() {
         var votedFrameRate = Float.NaN
         var votedFrameRateCategory = 0f
 
-        val surface = Surface.makeRasterN32Premul(100, 100)
+        val surface = TestSurface(100, 100)
         val owner = RootNodeOwner(
             platformContext = object : PlatformContext.Empty() {
                 override fun voteFrameRate(frameRate: Float, frameRateCategory: Float) {
@@ -219,7 +218,7 @@ class VoteFrameRateTest : SkikoComposeTestBase() {
 
         owner.owner.voteFrameRate(FrameRateCategory.High.value)
         owner.owner.voteFrameRate(FrameRateCategory.Normal.value)
-        owner.draw(surface.canvas.asComposeCanvas())
+        owner.draw(surface.canvas)
 
         assertTrue(votedFrameRate.isNaN())
         assertEquals(FrameRateCategory.High.value, votedFrameRateCategory)
@@ -230,7 +229,7 @@ class VoteFrameRateTest : SkikoComposeTestBase() {
         var votedFrameRate = Float.NaN
         var votedFrameRateCategory = 0f
 
-        val surface = Surface.makeRasterN32Premul(100, 100)
+        val surface = TestSurface(100, 100)
         val owner = RootNodeOwner(
             platformContext = object : PlatformContext.Empty() {
                 override fun voteFrameRate(frameRate: Float, frameRateCategory: Float) {
@@ -242,7 +241,7 @@ class VoteFrameRateTest : SkikoComposeTestBase() {
 
         owner.owner.voteFrameRate(FrameRateCategory.Normal.value)
         owner.owner.voteFrameRate(FrameRateCategory.Default.value)
-        owner.draw(surface.canvas.asComposeCanvas())
+        owner.draw(surface.canvas)
 
         assertTrue(votedFrameRate.isNaN())
         assertEquals(FrameRateCategory.Normal.value, votedFrameRateCategory)
@@ -253,7 +252,7 @@ class VoteFrameRateTest : SkikoComposeTestBase() {
         var votedFrameRate = Float.NaN
         var votedFrameRateCategory = 0f
 
-        val surface = Surface.makeRasterN32Premul(100, 100)
+        val surface = TestSurface(100, 100)
         val owner = RootNodeOwner(
             platformContext = object : PlatformContext.Empty() {
                 override fun voteFrameRate(frameRate: Float, frameRateCategory: Float) {
@@ -264,13 +263,13 @@ class VoteFrameRateTest : SkikoComposeTestBase() {
         )
 
         owner.owner.voteFrameRate(60f)
-        owner.draw(surface.canvas.asComposeCanvas())
+        owner.draw(surface.canvas)
 
         assertEquals(60f, votedFrameRate)
         assertEquals(0f, votedFrameRateCategory)
 
         owner.owner.voteFrameRate(30f)
-        owner.draw(surface.canvas.asComposeCanvas())
+        owner.draw(surface.canvas)
 
         assertEquals(30f, votedFrameRate)
         assertEquals(0f, votedFrameRateCategory)
@@ -281,7 +280,7 @@ class VoteFrameRateTest : SkikoComposeTestBase() {
         var votedFrameRate = Float.NaN
         var votedFrameRateCategory = 0f
 
-        val surface = Surface.makeRasterN32Premul(100, 100)
+        val surface = TestSurface(100, 100)
         val owner = RootNodeOwner(
             platformContext = object : PlatformContext.Empty() {
                 override fun voteFrameRate(frameRate: Float, frameRateCategory: Float) {
@@ -292,13 +291,13 @@ class VoteFrameRateTest : SkikoComposeTestBase() {
         )
 
         owner.owner.voteFrameRate(FrameRateCategory.High.value)
-        owner.draw(surface.canvas.asComposeCanvas())
+        owner.draw(surface.canvas)
 
         assertTrue(votedFrameRate.isNaN())
         assertEquals(FrameRateCategory.High.value, votedFrameRateCategory)
 
         owner.owner.voteFrameRate(FrameRateCategory.Default.value)
-        owner.draw(surface.canvas.asComposeCanvas())
+        owner.draw(surface.canvas)
 
         assertTrue(votedFrameRate.isNaN())
         assertEquals(FrameRateCategory.Default.value, votedFrameRateCategory)
@@ -309,7 +308,7 @@ class VoteFrameRateTest : SkikoComposeTestBase() {
         var votedFrameRate = Float.NaN
         var votedFrameRateCategory = 0f
 
-        val surface = Surface.makeRasterN32Premul(100, 100)
+        val surface = TestSurface(100, 100)
         val owner = RootNodeOwner(
             platformContext = object : PlatformContext.Empty() {
                 override fun voteFrameRate(frameRate: Float, frameRateCategory: Float) {
@@ -320,7 +319,7 @@ class VoteFrameRateTest : SkikoComposeTestBase() {
         )
 
         owner.owner.voteFrameRate(0f)
-        owner.draw(surface.canvas.asComposeCanvas())
+        owner.draw(surface.canvas)
 
         assertTrue(votedFrameRate.isNaN())
         assertEquals(0f, votedFrameRateCategory)
@@ -331,7 +330,7 @@ class VoteFrameRateTest : SkikoComposeTestBase() {
         var votedFrameRate = Float.NaN
         var votedFrameRateCategory = 0f
 
-        val surface = Surface.makeRasterN32Premul(100, 100)
+        val surface = TestSurface(100, 100)
         val owner = RootNodeOwner(
             platformContext = object : PlatformContext.Empty() {
                 override fun voteFrameRate(frameRate: Float, frameRateCategory: Float) {
@@ -345,14 +344,14 @@ class VoteFrameRateTest : SkikoComposeTestBase() {
         owner.owner.voteFrameRate(60f)
         owner.owner.voteFrameRate(30f)
         owner.owner.voteFrameRate(FrameRateCategory.Default.value)
-        owner.draw(surface.canvas.asComposeCanvas())
+        owner.draw(surface.canvas)
 
         assertEquals(60f, votedFrameRate)
         assertEquals(FrameRateCategory.High.value, votedFrameRateCategory)
 
         owner.owner.voteFrameRate(FrameRateCategory.Normal.value)
         owner.owner.voteFrameRate(5f)
-        owner.draw(surface.canvas.asComposeCanvas())
+        owner.draw(surface.canvas)
 
         assertEquals(5f, votedFrameRate)
         assertEquals(FrameRateCategory.Normal.value, votedFrameRateCategory)
@@ -363,7 +362,7 @@ class VoteFrameRateTest : SkikoComposeTestBase() {
         var votedFrameRate = Float.NaN
         var votedFrameRateCategory = 0f
 
-        val surface = Surface.makeRasterN32Premul(100, 100)
+        val surface = TestSurface(100, 100)
         val owner = RootNodeOwner(
             platformContext = object : PlatformContext.Empty() {
                 override fun voteFrameRate(frameRate: Float, frameRateCategory: Float) {
@@ -374,7 +373,7 @@ class VoteFrameRateTest : SkikoComposeTestBase() {
         )
 
         owner.owner.voteFrameRate(FrameRateCategory.Default.value)
-        owner.draw(surface.canvas.asComposeCanvas())
+        owner.draw(surface.canvas)
 
         assertTrue(votedFrameRate.isNaN())
         assertTrue(votedFrameRateCategory.isNaN())

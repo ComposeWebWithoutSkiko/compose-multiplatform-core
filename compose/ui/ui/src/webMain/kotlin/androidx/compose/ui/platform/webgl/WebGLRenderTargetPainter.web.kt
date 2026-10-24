@@ -19,11 +19,10 @@ package androidx.compose.ui.platform.webgl
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.painter.Painter
-import androidx.compose.ui.graphics.skiaCanvas
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
-import org.jetbrains.skia.Rect
+import kotlin.math.roundToInt
 
 /**
  * The [Painter] behind [WebGLRenderTarget.painter]: draws the last frame rendered into
@@ -56,17 +55,17 @@ internal class WebGLRenderTargetPainter(
         // Schedules the next redraw once a new frame is rendered, without recomposing.
         renderTarget.observeInvalidation()
 
-        val image = renderTarget.adoptedTexture?.image ?: return
+        val image = renderTarget.image ?: return
         if (size.width <= 0f || size.height <= 0f) return
         if (image.width <= 0 || image.height <= 0) return
 
-        drawIntoCanvas { canvas ->
-            canvas.skiaCanvas.drawImageRect(
-                image,
-                Rect.makeWH(image.width.toFloat(), image.height.toFloat()),
-                Rect.makeWH(size.width, size.height),
-            )
-        }
+        drawImage(
+            image = image,
+            srcOffset = IntOffset.Zero,
+            srcSize = IntSize(image.width, image.height),
+            dstOffset = IntOffset.Zero,
+            dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt()),
+        )
     }
 
     /**

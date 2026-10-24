@@ -17,14 +17,9 @@
 package androidx.compose.ui.test
 
 import kotlinx.coroutines.test.TestResult
-import org.jetbrains.skiko.InternalSkikoApi
-import org.jetbrains.skiko.wasm.awaitSkiko
 
 /**
- * Chains the test onto the promise of the Skiko runtime loading. `TestResult` is a `Promise` on
- * Kotlin/JS, and the promise returned by `then` is resolved only when the promise returned by
- * [block] is, so the test runner still waits for the test itself to complete.
+ * The web targets draw through the browser's Canvas 2D API, which needs no runtime to load, so
+ * there is nothing to wait for.
  */
-@OptIn(InternalSkikoApi::class, ExperimentalWasmJsInterop::class)
-internal actual fun onSkikoReady(block: () -> TestResult): TestResult =
-    awaitSkiko.then { block() }.unsafeCast<TestResult>()
+internal actual fun onSkikoReady(block: () -> TestResult): TestResult = block()

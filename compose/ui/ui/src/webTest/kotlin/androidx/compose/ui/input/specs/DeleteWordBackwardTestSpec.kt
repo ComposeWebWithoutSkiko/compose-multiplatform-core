@@ -20,7 +20,7 @@ import androidx.compose.ui.events.beforeInput
 import androidx.compose.ui.events.beforeInputWithTargetRange
 import androidx.compose.ui.events.keyEvent
 import androidx.compose.ui.text.TextRange
-import org.jetbrains.skiko.hostOs
+import androidx.compose.ui.platform.isMacOsHost
 import kotlin.test.Ignore
 import kotlin.test.Test
 
@@ -33,8 +33,8 @@ internal interface DeleteWordBackwardTestSpec : TextFieldTestSpec {
                 key = "Backspace",
                 code = "Backspace",
                 type = "keydown",
-                altKey = hostOs.isMacOS,
-                ctrlKey = !hostOs.isMacOS
+                altKey = isMacOsHost,
+                ctrlKey = !isMacOsHost
             )
         )
     }

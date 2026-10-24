@@ -38,7 +38,7 @@ import androidx.compose.ui.assertThat
 import androidx.compose.ui.containsExactly
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.asComposeCanvas
+import androidx.compose.ui.graphics.TestSurface
 import androidx.compose.ui.input.pointer.PointerButton
 import androidx.compose.ui.input.pointer.PointerButtons
 import androidx.compose.ui.input.pointer.PointerEventType
@@ -76,7 +76,6 @@ import kotlin.test.Test
 import kotlin.test.fail
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.runTest
-import org.jetbrains.skia.Surface
 
 @OptIn(ExperimentalTestApi::class)
 class PopupTest : SkikoComposeTestBase() {
@@ -816,7 +815,7 @@ class PopupTest : SkikoComposeTestBase() {
     fun popupContentLargerThanWindowInfoContainer() = runTest(StandardTestDispatcher()) {
         lateinit var scene: ComposeScene
         val size = IntSize(100, 100)
-        val surface = Surface.makeRasterN32Premul(size.width, size.height)
+        val surface = TestSurface(size.width, size.height)
         val frameRecomposer = FrameRecomposer(coroutineContext)
         var needsLayout = false
         var needsDraw = false
@@ -834,7 +833,7 @@ class PopupTest : SkikoComposeTestBase() {
                 }
                 if (needsDraw || scene.hasPendingDraw) {
                     needsDraw = false
-                    scene.draw(surface.canvas.asComposeCanvas())
+                    scene.draw(surface.canvas)
                     didWork = true
                 }
                 if (!didWork) return

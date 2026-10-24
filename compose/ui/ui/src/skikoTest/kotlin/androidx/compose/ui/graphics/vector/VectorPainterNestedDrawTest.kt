@@ -8,7 +8,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.asSkiaBitmap
+import androidx.compose.ui.graphics.toTestPixels
 import androidx.compose.ui.graphics.assertColor
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.painter.Painter
@@ -58,7 +58,7 @@ class VectorPainterNestedDrawTest {
 
         waitForIdle()
         // The center pixel
-        captureToImage().asSkiaBitmap().assertColor(Color.Red, 50, 50)
+        captureToImage().toTestPixels().assertColor(Color.Red, 50, 50)
     }
 }
 

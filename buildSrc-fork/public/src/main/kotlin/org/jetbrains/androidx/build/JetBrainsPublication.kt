@@ -48,7 +48,15 @@ object JetBrainsPublication {
                 supportedPlatforms = ComposePlatforms.SKIKO_SUPPORT,
             ),
             ComposeComponent(":compose:ui:ui-graphics"),
-            ComposeComponent(":compose:ui:ui-skiko"),
+            ComposeComponent(
+                ":compose:ui:ui-skiko",
+                // The web targets don't use Skia, see ui-web-canvas.
+                supportedPlatforms = ComposePlatforms.SKIKO_SUPPORT - ComposePlatforms.WEB,
+            ),
+            ComposeComponent(
+                ":compose:ui:ui-web-canvas",
+                supportedPlatforms = ComposePlatforms.WEB + ComposePlatforms.KotlinMultiplatform,
+            ),
             ComposeComponent(":compose:ui:ui-test"),
             ComposeComponent(
                 ":compose:ui:ui-test-junit4",

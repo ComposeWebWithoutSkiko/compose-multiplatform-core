@@ -20,16 +20,23 @@ package androidx.compose.ui.platform.webgl
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.OnCanvasTests
 import androidx.compose.ui.WebApplicationScope
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
@@ -46,11 +53,13 @@ import kotlin.test.assertNotSame
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import org.khronos.webgl.WebGLRenderingContext
+import org.khronos.webgl.WebGLRenderingContext.Companion.BLEND
 import org.khronos.webgl.WebGLRenderingContext.Companion.COLOR_ATTACHMENT0
 import org.khronos.webgl.WebGLRenderingContext.Companion.COLOR_BUFFER_BIT
 import org.khronos.webgl.WebGLRenderingContext.Companion.FRAMEBUFFER
 import org.khronos.webgl.WebGLRenderingContext.Companion.FRAMEBUFFER_ATTACHMENT_OBJECT_NAME
 import org.khronos.webgl.WebGLRenderingContext.Companion.NO_ERROR
+import org.w3c.dom.HTMLCanvasElement
 
 /** Opaque red as `0xRRGGBBAA`, chosen because every channel is exact in RGBA8. */
 private const val OPAQUE_RED = (255 shl 24) or 255
@@ -127,7 +136,7 @@ class WebGLRenderTargetTests : OnCanvasTests {
         assertTrue(drawnFrames > 0, "the painter was never drawn")
 
         assertEquals(IntSize(64, 64), target.size, "unexpected allocated size")
-        assertNotNull(target.adoptedTexture?.image, "the color texture was not adopted")
+        assertNotNull(target.image, "there is no image of the rendered frame for Compose to draw")
         assertTrue(target.generation > 0, "generation was never bumped")
 
         // Read the frame back from the target's own framebuffer, which render() keeps bound.
@@ -218,7 +227,7 @@ class WebGLRenderTargetTests : OnCanvasTests {
         assertNotSame(
             textureBefore,
             target.webGlTexture,
-            "the texture adopted and deleted by Skia was reused after the size change",
+            "the texture deleted on the size change was reused",
         )
         assertEquals(NO_ERROR, target.webGLContext.getError(), "reallocation reported a GL error")
 
@@ -228,7 +237,6 @@ class WebGLRenderTargetTests : OnCanvasTests {
         awaitAnimationFrame()
         awaitIdle()
         assertFailsWith<IllegalStateException> { clearToRed(target) }
-        assertEquals(null, target.adoptedTexture, "a failing callback kept the adopted image")
         assertNotSame(
             textureAfterResize,
             target.webGlTexture,
@@ -248,74 +256,162 @@ class WebGLRenderTargetTests : OnCanvasTests {
      */
     @Test
     fun theRenderedFrameReachesTheComposeCanvasBeforeAndAfterResize() = runApplicationTest {
-        assertTrue(forcePreserveDrawingBuffer(), "could not force preserveDrawingBuffer")
-        try {
-            var renderTarget: WebGLRenderTarget? = null
-            val requestedSize = mutableStateOf(IntSize(64, 64))
+        var renderTarget: WebGLRenderTarget? = null
+        val requestedSize = mutableStateOf(IntSize(64, 64))
 
-            createComposeWindow {
-                val size by requestedSize
-                val target = rememberWebGLRenderTarget(size)
-                renderTarget = target
-                if (target != null) {
-                    LaunchedEffect(target) {
-                        repeat(30) { withFrameNanos { clearToRed(target) } }
-                    }
-                    // Setting the density to 2 so the test works correctly on all displays
-                    CompositionLocalProvider(LocalDensity provides Density(2f)) {
-                        Image(
-                            painter = target.painter,
-                            contentDescription = null,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.size(100.dp),
-                        )
-                    }
+        createComposeWindow {
+            val size by requestedSize
+            val target = rememberWebGLRenderTarget(size)
+            renderTarget = target
+            if (target != null) {
+                LaunchedEffect(target) {
+                    repeat(30) { withFrameNanos { clearToRed(target) } }
+                }
+                // Setting the density to 2 so the test works correctly on all displays
+                CompositionLocalProvider(LocalDensity provides Density(2f)) {
+                    Image(
+                        painter = target.painter,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.size(100.dp),
+                    )
                 }
             }
+        }
 
-            val target = renderTarget ?: return@runApplicationTest skipWithoutWebGL2()
-            val gl = target.webGLContext
-            assertEquals(
-                "true",
-                contextAttribute(gl, "preserveDrawingBuffer"),
-                "the Compose context ignored the forced attribute"
-            )
+        val target = renderTarget ?: return@runApplicationTest skipWithoutWebGL2()
 
-            // readPixels() counts rows from the bottom, Compose from the top.
-            val canvasHeight = getCanvas().height
-            val insideY = canvasHeight - 100
-            val outsideY = canvasHeight - 300
+        // Compose draws into its canvas with the Canvas 2D API, so its pixels can be read directly
+        // (in device pixels, from the top).
+        val inside = awaitCanvasPixel(x = 100, y = 100, expected = OPAQUE_RED)
+        assertEquals(
+            OPAQUE_RED.toHexString(),
+            inside.toHexString(),
+            "the texture did not reach the canvas inside the composable"
+        )
+        assertNotEquals(
+            OPAQUE_RED.toHexString(),
+            readCanvasPixelRgba8(getCanvas(), 600, 300).toHexString(),
+            "the texture was drawn outside the composable"
+        )
 
-            val inside = awaitCanvasPixel(gl, x = 100, y = insideY, expected = OPAQUE_RED)
-            assertEquals(
-                OPAQUE_RED.toHexString(),
-                inside.toHexString(),
-                "the texture did not reach the canvas inside the composable"
-            )
-            assertNotEquals(
-                OPAQUE_RED.toHexString(),
-                readCanvasPixelRgba8(gl, 600, outsideY).toHexString(),
-                "the texture was drawn outside the composable"
-            )
+        requestedSize.value = IntSize(48, 24)
+        awaitAnimationFrame()
+        awaitIdle()
+        assertTrue(clearToGreen(target), "render() did not run after the size change")
+        val resized = awaitCanvasPixel(x = 100, y = 100, expected = OPAQUE_GREEN)
+        assertEquals(
+            OPAQUE_GREEN.toHexString(),
+            resized.toHexString(),
+            "the resized texture did not reach the canvas inside the composable",
+        )
+    }
 
-            requestedSize.value = IntSize(48, 24)
+    /**
+     * All targets render with the one WebGL context of the page, and Compose shows each one's own
+     * frame - also while they don't render, and something else keeps drawing with WebGL (here a
+     * layer in perspective, redrawn on every frame).
+     */
+    @Test
+    fun targetsShareTheContextAndShowTheirOwnFrames() = runApplicationTest {
+        var first: WebGLRenderTarget? = null
+        var second: WebGLRenderTarget? = null
+
+        createComposeWindow {
+            CompositionLocalProvider(LocalDensity provides Density(1f)) {
+                var rotation by remember { mutableStateOf(0f) }
+                LaunchedEffect(Unit) {
+                    while (true) withFrameNanos { rotation = (rotation + 3f) % 60f }
+                }
+                Row {
+                    first = rememberWebGLRenderTarget(IntSize(50, 50))?.also {
+                        Image(it.painter, contentDescription = null, modifier = Modifier.size(50.dp))
+                    }
+                    second = rememberWebGLRenderTarget(IntSize(50, 50))?.also {
+                        Image(it.painter, contentDescription = null, modifier = Modifier.size(50.dp))
+                    }
+                    Box(
+                        Modifier.size(50.dp)
+                            .graphicsLayer {
+                                rotationX = rotation
+                                cameraDistance = 2f
+                            }
+                            .background(Color.Blue)
+                    )
+                }
+            }
+        }
+
+        val a = first ?: return@runApplicationTest skipWithoutWebGL2()
+        val b = assertNotNull(second, "only one of the targets was created")
+        assertSame(a.webGLContext, b.webGLContext, "the targets render with different contexts")
+        // Compose never gets idle here: the layer in perspective changes on every frame.
+        repeat(2) { awaitAnimationFrame() }
+
+        assertTrue(clearToRed(a), "the first target did not render")
+        assertTrue(clearToGreen(b), "the second target did not render")
+        repeat(5) {
             awaitAnimationFrame()
-            awaitIdle()
-            assertTrue(clearToGreen(target), "render() did not run after the size change")
-            val resized = awaitCanvasPixel(gl, x = 100, y = insideY, expected = OPAQUE_GREEN)
+            assertEquals(
+                OPAQUE_RED.toHexString(),
+                readCanvasPixelRgba8(getCanvas(), 25, 25).toHexString(),
+                "the first target's frame is gone",
+            )
             assertEquals(
                 OPAQUE_GREEN.toHexString(),
-                resized.toHexString(),
-                "the resized texture did not reach the canvas inside the composable",
+                readCanvasPixelRgba8(getCanvas(), 75, 25).toHexString(),
+                "the second target's frame is gone",
             )
-        } finally {
-            restorePreserveDrawingBuffer()
         }
+    }
+
+    /** Compose's own WebGL drawing restores the state that WebGL code set up. */
+    @Test
+    fun stateSetUpByWebGLCodeStaysBetweenRenders() = runApplicationTest {
+        var renderTarget: WebGLRenderTarget? = null
+
+        createComposeWindow {
+            val target = rememberWebGLRenderTarget(IntSize(32, 32))
+            renderTarget = target
+            if (target != null) {
+                Image(target.painter, contentDescription = null, modifier = Modifier.size(32.dp))
+                // Drawn with WebGL, through the context of the target.
+                Box(
+                    Modifier.size(32.dp)
+                        .graphicsLayer {
+                            rotationY = 30f
+                            cameraDistance = 2f
+                        }
+                        .background(Color.Blue)
+                )
+            }
+        }
+
+        val target = renderTarget ?: return@runApplicationTest skipWithoutWebGL2()
+        awaitAnimationFrame()
+        awaitIdle()
+
+        val gl = target.webGLContext
+        assertTrue(
+            target.render {
+                gl.enable(BLEND)
+                gl.clearColor(0.25f, 0.5f, 0.75f, 1f)
+                gl.viewport(1, 2, 3, 4)
+            },
+            "render() did not run",
+        )
+        repeat(3) { awaitAnimationFrame() }
+        var state = ""
+        target.render {
+            state = "blend=${gl.isEnabled(BLEND)} clear=${describeClearColor(gl)} " +
+                "viewport=${describeViewport(gl)}"
+        }
+        gl.disable(BLEND)
+        assertEquals("blend=true clear=0.25,0.5,0.75,1 viewport=1,2,3,4", state)
     }
 
     /** Polls up to [frames] Compose frames for [expected] to show up at ([x], [y]). */
     private suspend fun WebApplicationScope.awaitCanvasPixel(
-        gl: WebGLRenderingContext,
         x: Int,
         y: Int,
         expected: Int,
@@ -324,26 +420,34 @@ class WebGLRenderTargetTests : OnCanvasTests {
         var pixel = 0
         repeat(frames) {
             awaitAnimationFrame()
-            pixel = readCanvasPixelRgba8(gl, x, y)
+            pixel = readCanvasPixelRgba8(getCanvas(), x, y)
             if (pixel == expected) return pixel
         }
         return pixel
     }
 
     /**
-     * Compose only creates a render target when it renders through a WebGL2 canvas, so a missing
-     * target is a valid outcome - as long as the canvas really has no WebGL2 context.
+     * A render target needs WebGL2, so a missing target is a valid outcome - as long as the
+     * browser really lacks WebGL2.
      */
     private fun skipWithoutWebGL2() {
-        assertFalse(
-            getCanvas().getContext("webgl2") != null,
-            "no render target although the Compose canvas has a WebGL2 context"
-        )
-        println("skipped: the Compose canvas does not have a WebGL2 context")
+        assertFalse(supportsWebGL2(), "no render target although the browser supports WebGL2")
+        println("skipped: the browser does not support WebGL2")
     }
 }
 
 private fun Int.toHexString(): String = toUInt().toString(16)
+
+// language=js
+private fun supportsWebGL2(): Boolean = js("!!document.createElement('canvas').getContext('webgl2')")
+
+// language=js
+private fun describeClearColor(gl: WebGLRenderingContext): String =
+    js("Array.from(gl.getParameter(gl.COLOR_CLEAR_VALUE)).join(',')")
+
+// language=js
+private fun describeViewport(gl: WebGLRenderingContext): String =
+    js("Array.from(gl.getParameter(gl.VIEWPORT)).join(',')")
 
 /** Reads one pixel of the bound framebuffer as `0xRRGGBBAA`. */
 // language=js
@@ -355,51 +459,11 @@ private fun readPixelRgba8(gl: WebGLRenderingContext, x: Int, y: Int): Int = js(
     })()"""
 )
 
+/** Reads one pixel of the Compose canvas, which is drawn with the Canvas 2D API, as `0xRRGGBBAA`. */
 // language=js
-private fun forcePreserveDrawingBuffer(): Boolean = js(
+private fun readCanvasPixelRgba8(canvas: HTMLCanvasElement, x: Int, y: Int): Int = js(
     """(function() {
-        const proto = HTMLCanvasElement.prototype;
-        const original = proto.__composeTestOriginalGetContext || proto.getContext;
-        proto.__composeTestOriginalGetContext = original;
-        proto.getContext = function(type, attributes) {
-            if (type === 'webgl' || type === 'webgl2' || type === 'experimental-webgl') {
-                attributes = Object.assign({}, attributes || {}, { preserveDrawingBuffer: true });
-            }
-            return original.call(this, type, attributes);
-        };
-        return true;
-    })()"""
-)
-
-// language=js
-private fun contextAttribute(gl: WebGLRenderingContext, name: String): String = js(
-    """(function() {
-        const attributes = gl.getContextAttributes();
-        return attributes ? String(attributes[name]) : 'n/a';
-    })()"""
-)
-
-/** Undoes [forcePreserveDrawingBuffer], so that other tests see the default context attributes. */
-// language=js
-private fun restorePreserveDrawingBuffer(): Unit = js(
-    """(function() {
-        const proto = HTMLCanvasElement.prototype;
-        if (proto.__composeTestOriginalGetContext) {
-            proto.getContext = proto.__composeTestOriginalGetContext;
-            proto.__composeTestOriginalGetContext = undefined;
-        }
-    })()"""
-)
-
-/** Reads one pixel of the *default* framebuffer (the Compose canvas) as `0xRRGGBBAA`. */
-// language=js
-private fun readCanvasPixelRgba8(gl: WebGLRenderingContext, x: Int, y: Int): Int = js(
-    """(function() {
-        const previous = gl.getParameter(gl.FRAMEBUFFER_BINDING);
-        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-        const pixel = new Uint8Array(4);
-        gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
-        gl.bindFramebuffer(gl.FRAMEBUFFER, previous);
-        return (pixel[0] << 24) | (pixel[1] << 16) | (pixel[2] << 8) | pixel[3];
+        const d = canvas.getContext('2d').getImageData(x, y, 1, 1).data;
+        return (d[0] << 24) | (d[1] << 16) | (d[2] << 8) | d[3];
     })()"""
 )

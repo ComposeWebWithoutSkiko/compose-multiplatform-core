@@ -48,7 +48,7 @@ internal external interface ThreeRenderer : JsAny {
 
     /**
      * Points [renderTarget] at a framebuffer three.js did not create — the hook WebXR uses, and the
-     * reason this demo can keep owning the texture Skia adopted. Once set, `setRenderTarget` skips
+     * reason this demo can keep owning the texture of the render target. Once set, `setRenderTarget` skips
      * three's own render target setup entirely, so it never allocates a texture, a framebuffer or a
      * depth buffer for that target.
      */
@@ -61,10 +61,10 @@ internal external interface ThreeRenderer : JsAny {
     fun render(scene: ThreeScene, camera: ThreeCamera)
 
     /**
-     * Makes three.js forget the GL state it cached. Mandatory here: Skia rendered the previous frame
-     * through the very same context and left its own state behind. three.js documents this method as
-     * being "mostly relevant for applications which share a single WebGL context across multiple
-     * WebGL libraries", which is exactly this situation.
+     * Makes three.js forget the GL state it cached. Needed here: the context is shared with the
+     * other WebGL code of the page, which may leave its own state behind. three.js documents this
+     * method as being "mostly relevant for applications which share a single WebGL context across
+     * multiple WebGL libraries", which is exactly this situation.
      */
     fun resetState()
 
@@ -140,10 +140,10 @@ internal suspend fun loadThreeModule(): ThreeModule? =
     importThree().await()?.unsafeCast<ThreeModule>()
 
 /**
- * Creates the renderer on top of the canvas *and* the context Skiko already owns.
+ * Creates the renderer on top of the canvas *and* the context of the render target.
  *
  * Passing `context` is what keeps everything in one WebGL context — WebGL has no share groups, so a
- * renderer with its own context could never produce a texture Skia is allowed to read. The renderer
+ * renderer with its own context could never render into the target's framebuffer. The renderer
  * must therefore never be asked to resize anything (`setSize`, `setPixelRatio`) or to drop the
  * context (`forceContextLoss`): the canvas and the context belong to Compose.
  */

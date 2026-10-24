@@ -11,7 +11,13 @@ function configLaunchers(config) {
                 "--disable-setuid-sandbox",
                 "--enable-webgl",
                 "--ignore-gpu-blocklist",
-                "--in-process-gpu"
+                "--in-process-gpu",
+
+                // Keep rendering (and firing requestAnimationFrame) when the test window is behind
+                // other windows: the tests wait for animation frames.
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
+                "--disable-background-timer-throttling"
             ]
         },
         ChromiumForComposeTests: {

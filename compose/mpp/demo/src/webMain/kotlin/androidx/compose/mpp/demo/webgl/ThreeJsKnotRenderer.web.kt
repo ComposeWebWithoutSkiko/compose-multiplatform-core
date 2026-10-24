@@ -24,7 +24,7 @@ import androidx.compose.ui.platform.webgl.WebGLRenderTarget
 /**
  * A three.js renderer of a lit torus knot, rendering into whatever framebuffer Compose hands it.
  *
- * Everything here is three.js-specific; nothing here knows about Skia, textures or Compose drawing:
+ * Everything here is three.js-specific; nothing here knows about textures or Compose drawing:
  * that is what [WebGLRenderTarget] takes care of.
  */
 internal class ThreeJsKnotRenderer
@@ -78,15 +78,14 @@ private constructor(
                 knotAngle += deltaNanos / 1_000_000_000.0 * spin
                 knotScene.updateValues()
 
-                // Skia rendered the previous frame through this very context, so everything
-                // three.js
-                // believes about the GL state is stale.
+                // Other WebGL code of the page renders through this very context, so what
+                // three.js believes about the GL state may be stale.
                 renderer.resetState()
-                // Our framebuffer, with the texture Skia adopted attached to it.
+                // Our framebuffer, with the texture of the render target attached to it.
                 renderer.setRenderTargetFramebuffer(renderTarget, framebuffer)
                 renderer.setRenderTarget(renderTarget)
                 renderer.render(knotScene.scene, knotScene.camera)
-                // Hand the default framebuffer — the one Skia renders Compose into — back.
+                // Bind the default framebuffer again, as render() expects.
                 renderer.setRenderTarget(null)
 
                 status = "three.js renders into one adopted ${size.width}×${size.height} texture"

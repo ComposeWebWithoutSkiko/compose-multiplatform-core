@@ -16,6 +16,7 @@
 
 package androidx.compose.foundation.gestures
 
+import androidx.compose.foundation.isIosTestTarget
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -45,8 +46,6 @@ import androidx.compose.ui.unit.dp
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
-import org.jetbrains.skiko.OS
-import org.jetbrains.skiko.hostOs
 
 @OptIn(ExperimentalTestApi::class)
 class SkikoScrollableTest {
@@ -69,8 +68,8 @@ class SkikoScrollableTest {
             swipe(Offset(30f, 500f), Offset(30f, 10f))
         }
 
-        when (hostOs) {
-            OS.Ios -> runOnIdle { assertEquals(33, state.firstVisibleItemIndex) }
+        when {
+            isIosTestTarget -> runOnIdle { assertEquals(33, state.firstVisibleItemIndex) }
             else -> runOnIdle { assertEquals(27, state.firstVisibleItemIndex) }
         }
     }

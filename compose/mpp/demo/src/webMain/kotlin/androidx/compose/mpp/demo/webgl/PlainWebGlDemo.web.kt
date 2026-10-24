@@ -193,10 +193,10 @@ private class TriangleRenderer(private val target: WebGLRenderTarget) {
             previousFrameTimeNanos = frameTimeNanos
             angle += deltaNanos / 1_000_000_000f * 0.9f
 
-            // Skia rendered the previous frame through this very context and left its own state
-            // behind, so everything this frame depends on is set here, every frame. Leaving the
-            // scissor test alone in particular would let Skia's last scissor rect clip both the
-            // clear and the draw below.
+            // Other WebGL code of the page (other render targets) renders through this very
+            // context and may leave its own state behind, so everything this frame depends on is
+            // set here, every frame. Leaving the scissor test alone in particular would let someone
+            // else's last scissor rect clip both the clear and the draw below.
             webGLContext.viewport(0, 0, size.width, size.height)
             webGLContext.disable(SCISSOR_TEST)
             webGLContext.disable(DEPTH_TEST)

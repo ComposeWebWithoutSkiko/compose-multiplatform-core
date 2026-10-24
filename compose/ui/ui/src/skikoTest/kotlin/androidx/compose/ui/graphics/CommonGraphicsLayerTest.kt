@@ -87,7 +87,6 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
-import org.jetbrains.skia.Bitmap
 
 // A copy from androidInstrumentedTest/kotlin/androidx/compose/ui/draw/GraphicsLayerTest.kt
 
@@ -352,7 +351,7 @@ class CommonGraphicsLayerTest {
             }
         }
 
-        onNodeWithTag(testTag).captureToImage().asSkiaBitmap().apply {
+        onNodeWithTag(testTag).captureToImage().toTestPixels().apply {
             assertEquals(Color.Red.toArgb(), getColor(0, 0))
             assertEquals(Color.Red.toArgb(), getColor(0, height - 1))
             assertEquals(Color.Red.toArgb(), getColor(width / 2 - 10, height / 2))
@@ -429,7 +428,7 @@ class CommonGraphicsLayerTest {
             }
         }
 
-        onNodeWithTag(testTag).captureToImage().asSkiaBitmap().apply {
+        onNodeWithTag(testTag).captureToImage().toTestPixels().apply {
             assertColor(Color.Red, 0, 0)
             assertColor(Color.Red, 0, height - 1)
             assertColor(Color.Red, width / 2 - 10, height / 2)
@@ -454,7 +453,7 @@ class CommonGraphicsLayerTest {
             }
         }
 
-        onNodeWithTag(testTag).captureToImage().asSkiaBitmap().apply {
+        onNodeWithTag(testTag).captureToImage().toTestPixels().apply {
             assertColor(Color.Red, 0, 0)
             assertColor(Color.Red, 0, height - 1)
             assertColor(Color.Red, width / 2 - 10, height / 2)
@@ -477,7 +476,7 @@ class CommonGraphicsLayerTest {
             }
         }
 
-        onNodeWithTag(testTag).captureToImage().asSkiaBitmap().apply {
+        onNodeWithTag(testTag).captureToImage().toTestPixels().apply {
             assertColor(Color.Yellow, 0, 0)
             assertColor(Color.Yellow, 0, height - 1)
             assertColor(Color.Yellow, width / 2 - 10, height / 2)
@@ -500,7 +499,7 @@ class CommonGraphicsLayerTest {
             }
         }
 
-        onNodeWithTag(testTag).captureToImage().asSkiaBitmap().apply {
+        onNodeWithTag(testTag).captureToImage().toTestPixels().apply {
             assertColor(Color.Yellow, 0, 0)
             assertColor(Color.Yellow, 0, height - 1)
             assertColor(Color.Yellow, width / 2 - 10, height / 2)
@@ -895,14 +894,14 @@ class CommonGraphicsLayerTest {
             }
         }
 
-        onNodeWithTag("lazy").captureToImage().asSkiaBitmap().apply {
+        onNodeWithTag("lazy").captureToImage().toTestPixels().apply {
             assertEquals(Color.Blue.toArgb(), getColor(10, (size * 1.5f).roundToInt()))
             assertEquals(Color.Blue.toArgb(), getColor(10, (size * 2.5f).roundToInt()))
         }
 
         runOnIdle { toggle = !toggle }
 
-        onNodeWithTag("lazy").captureToImage().asSkiaBitmap().apply {
+        onNodeWithTag("lazy").captureToImage().toTestPixels().apply {
             assertEquals(Color.Red.toArgb(), getColor(10, (size * 1.5f).roundToInt()))
             assertEquals(Color.Red.toArgb(), getColor(10, (size * 2.5f).roundToInt()))
         }
@@ -939,19 +938,19 @@ class CommonGraphicsLayerTest {
 
         val pt = (size * 0.5f).roundToInt()
 
-        onNodeWithTag("outer").captureToImage().asSkiaBitmap().apply {
+        onNodeWithTag("outer").captureToImage().toTestPixels().apply {
             assertEquals(Color.Red.toArgb(), getColor(pt, pt))
         }
 
         runOnIdle { toggle = !toggle }
 
-        onNodeWithTag("outer").captureToImage().asSkiaBitmap().apply {
+        onNodeWithTag("outer").captureToImage().toTestPixels().apply {
             assertEquals(Color.Red.toArgb(), getColor(pt, pt))
         }
 
         runOnIdle { toggle = !toggle }
 
-        onNodeWithTag("outer").captureToImage().asSkiaBitmap().apply {
+        onNodeWithTag("outer").captureToImage().toTestPixels().apply {
             assertEquals(Color.Red.toArgb(), getColor(pt, pt))
         }
     }
@@ -1388,14 +1387,14 @@ class CommonGraphicsLayerTest {
                 }
             }
         }
-        onNodeWithTag("content").captureToImage().asSkiaBitmap().apply {
+        onNodeWithTag("content").captureToImage().toTestPixels().apply {
             assertThat(width).isEqualTo(30)
             assertThat(height).isEqualTo(30)
             assertThat(getColor(15, 15)).isEqualTo(Color.Red.toArgb())
         }
         drawRed.value = false
         waitForIdle()
-        onNodeWithTag("content").captureToImage().asSkiaBitmap().apply {
+        onNodeWithTag("content").captureToImage().toTestPixels().apply {
             assertThat(width).isEqualTo(30)
             assertThat(height).isEqualTo(30)
             assertThat(getColor(15, 15)).isEqualTo(Color.Blue.toArgb())
@@ -1622,7 +1621,7 @@ private fun assertEqualsWithTolerance(expected: Color, actual: Color, tolerance:
     }
 }
 
-fun Bitmap.assertColor(expectedColor: Color, x: Int, y: Int) {
+fun TestPixels.assertColor(expectedColor: Color, x: Int, y: Int) {
     val pixel = Color(getColor(x, y))
     assertColorsEqual(expectedColor, pixel) {
         "Pixel [$x, $y] is expected to be $expectedColor, but was $pixel"

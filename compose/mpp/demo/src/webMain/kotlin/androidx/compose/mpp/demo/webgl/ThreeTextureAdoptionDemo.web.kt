@@ -67,8 +67,8 @@ import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
 
 /**
- * A demo of [WebGLRenderTarget]: three.js renders a lit torus knot into a texture Compose owns
- * and Skia adopted, and Compose then draws that texture like any other image.
+ * A demo of [WebGLRenderTarget]: three.js renders a lit torus knot into a texture Compose owns,
+ * and Compose then draws it like any other image.
  */
 val ThreeJsTextureAdoptionScreen =
     Screen.Example("Three.js integration") {
@@ -153,8 +153,8 @@ private fun ThreeSceneContent(
     DisposableEffect(threeJs, renderTarget) { onDispose { threeJs.dispose(renderTarget) } }
 
     // Everything three.js does happens inside the frame, before Compose measures, lays out and
-    // draws, so the texture holds this frame's content by the time Skia submits the frame that
-    // samples it. The drawing sites below only draw the result.
+    // draws, so the texture holds this frame's content by the time Compose draws the frame that
+    // shows it. The drawing sites below only draw the result.
     LaunchedEffect(renderTarget, threeJs, running) {
         while (running) {
             withFrameNanos { frameTimeNanos ->

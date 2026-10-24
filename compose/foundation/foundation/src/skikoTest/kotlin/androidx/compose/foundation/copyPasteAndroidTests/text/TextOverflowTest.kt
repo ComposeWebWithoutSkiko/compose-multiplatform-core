@@ -25,9 +25,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Canvas
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asComposeImageBitmap
-import androidx.compose.ui.graphics.asSkiaBitmap
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.ExperimentalTestApi
@@ -39,11 +40,11 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.test.Test
-import org.jetbrains.skia.Bitmap
-import org.jetbrains.skia.IRect
 
 @OptIn(ExperimentalTestApi::class)
 class TextOverflowTest {
@@ -81,10 +82,9 @@ class TextOverflowTest {
             }
         }
 
-        val boxBitmap = onNodeWithTag(BoxTag).captureToImage().asSkiaBitmap()
-        val croppedBoxBitmap = Bitmap()
-        boxBitmap.extractSubset(croppedBoxBitmap, IRect.makeXYWH(0, 2 * lineHeight, boxWidth, boxHeight - 2 * lineHeight))
-        croppedBoxBitmap.asComposeImageBitmap().assertContainsColor(Color.Red)
+        val boxBitmap = onNodeWithTag(BoxTag).captureToImage()
+        boxBitmap.crop(0, 2 * lineHeight, boxWidth, boxHeight - 2 * lineHeight)
+            .assertContainsColor(Color.Red)
     }
 
     @Suppress("DEPRECATION")
@@ -122,9 +122,21 @@ class TextOverflowTest {
             }
         }
 
-        val boxBitmap = onNodeWithTag(BoxTag).captureToImage().asSkiaBitmap()
-        val croppedBoxBitmap = Bitmap()
-        boxBitmap.extractSubset(croppedBoxBitmap, IRect.makeXYWH(0, 2 * lineHeight, boxWidth, boxHeight - 2 * lineHeight))
-        croppedBoxBitmap.asComposeImageBitmap().assertContainsColor(Color.Red)
+        val boxBitmap = onNodeWithTag(BoxTag).captureToImage()
+        boxBitmap.crop(0, 2 * lineHeight, boxWidth, boxHeight - 2 * lineHeight)
+            .assertContainsColor(Color.Red)
     }
 }
+
+/** Copies a part of the image, with the platform's graphics implementation. */
+private fun ImageBitmap.crop(x: Int, y: Int, width: Int, height: Int): ImageBitmap =
+    ImageBitmap(width, height).also {
+        Canvas(it).drawImageRect(
+            this,
+            srcOffset = IntOffset(x, y),
+            srcSize = IntSize(width, height),
+            dstOffset = IntOffset.Zero,
+            dstSize = IntSize(width, height),
+            paint = Paint(),
+        )
+    }

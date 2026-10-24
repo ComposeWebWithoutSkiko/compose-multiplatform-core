@@ -74,9 +74,6 @@ androidXMultiplatform {
         skikoMain {
             dependsOn(commonMain)
             dependencies {
-                // TODO(https://youtrack.jetbrains.com/issue/CMP-10338): Remove direct dependency
-                api(project(":compose:ui:ui-skiko"))
-
                 implementation(libs.atomicFu)
             }
         }
@@ -88,8 +85,22 @@ androidXMultiplatform {
             }
         }
 
+        // The Skia-based targets (desktop and native). The web targets don't use Skia.
+        nonAndroidExcludingWebMain {
+            dependsOn(skikoMain)
+            dependencies {
+                // TODO(https://youtrack.jetbrains.com/issue/CMP-10338): Remove direct dependency
+                api(project(":compose:ui:ui-skiko"))
+            }
+        }
+
+        nonAndroidExcludingWebTest {
+            dependsOn(skikoTest)
+        }
+
         desktopMain {
             dependsOn(skikoMain)
+            dependsOn(nonAndroidExcludingWebMain)
             dependencies {
                 implementation(libs.jbrApi)
             }
@@ -97,6 +108,7 @@ androidXMultiplatform {
 
         desktopTest {
             dependsOn(skikoTest)
+            dependsOn(nonAndroidExcludingWebTest)
             dependencies {
                 implementation(project(":compose:ui:ui-test-junit4"))
                 implementation("androidx.navigationevent:navigationevent-testing:$navigationEventVersion")
@@ -122,10 +134,12 @@ androidXMultiplatform {
 
         nativeMain {
             dependsOn(nonJvmMain)
+            dependsOn(nonAndroidExcludingWebMain)
         }
 
         nativeTest {
             dependsOn(nonJvmTest)
+            dependsOn(nonAndroidExcludingWebTest)
         }
 
         darwinMain {

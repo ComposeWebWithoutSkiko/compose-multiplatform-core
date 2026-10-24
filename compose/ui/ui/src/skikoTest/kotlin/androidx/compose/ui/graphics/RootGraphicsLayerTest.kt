@@ -52,5 +52,5 @@ class RootGraphicsLayerTest {
 }
 
 private fun ImageBitmap.assertCenterPixelColor(expectedColor: Color) {
-    asSkiaBitmap().assertColor(expectedColor, width / 2, height / 2)
+    toTestPixels().assertColor(expectedColor, width / 2, height / 2)
 }

@@ -23,9 +23,7 @@ import androidx.compose.ui.draganddrop.DragAndDropTransferData
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.SkiaCanvasHolder
 import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.node.RootForTest
 import androidx.compose.ui.platform.DefaultArchitectureComponentsOwner
 import androidx.compose.ui.platform.FrameRecomposer
@@ -36,7 +34,6 @@ import androidx.compose.ui.platform.PlatformDragAndDropSource
 import androidx.compose.ui.platform.PlatformTextInputMethodRequest
 import androidx.compose.ui.platform.PlatformWindowInsets
 import androidx.compose.ui.platform.WindowInfo
-import androidx.compose.ui.platform.registerSkikoComposeImplementation
 import androidx.compose.ui.scene.CanvasLayersComposeScene
 import androidx.compose.ui.scene.ComposeScene
 import androidx.compose.ui.semantics.SemanticsNode
@@ -70,9 +67,6 @@ import kotlinx.coroutines.test.TestResult
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.yield
-import org.jetbrains.skia.Color
-import org.jetbrains.skia.Surface
-import org.jetbrains.skiko.currentNanoTime
 
 @Deprecated(
     message =
@@ -226,9 +220,8 @@ open class SkikoComposeUiTest @InternalTestApi constructor(
             Job()
     )
 
-    // Lazy on purpose: on JS Skia is only usable after onSkikoReady
-    private val surface by lazy { Surface.makeRasterN32Premul(width, height) }
-    private val canvasHolder : SkiaCanvasHolder = SkiaCanvasHolder(surface.canvas)
+    // Lazy on purpose: the implementation drawing it is registered when the test starts
+    private val surface by lazy { createTestRenderSurface(width, height) }
     
     private val size = IntSize(width, height)
 
@@ -288,7 +281,7 @@ open class SkikoComposeUiTest @InternalTestApi constructor(
     }
 
     private inline fun <R> withScene(block: () -> R): R {
-        registerSkikoComposeImplementation()
+        registerTestComposeImplementation()
         runOnUiThread(::createScene)
         try {
             return block()
@@ -332,10 +325,8 @@ open class SkikoComposeUiTest @InternalTestApi constructor(
      */
     private fun redraw() = runOnUiThread {
         scene.measureAndLayout()
-        with(surface.canvas) {
-            clear(Color.TRANSPARENT)
-            canvasHolder.drawInto(this, scene::draw)
-        }
+        surface.clear()
+        surface.draw(scene::draw)
     }
 
     private fun createScene() {
@@ -471,11 +462,11 @@ open class SkikoComposeUiTest @InternalTestApi constructor(
         timeoutMillis: Long,
         condition: () -> Boolean
     ) {
-        val startTime = currentNanoTime()
+        val startTime = testNanoTime()
         val timeoutNanos = timeoutMillis * NanoSecondsPerMilliSecond
         while (!condition()) {
             advanceIfNeededAndRenderNextFrame()
-            if (currentNanoTime() - startTime > timeoutNanos) {
+            if (testNanoTime() - startTime > timeoutNanos) {
                 throw ComposeTimeoutException(
                     buildWaitUntilTimeoutMessage(timeoutMillis, conditionDescription)
                 )
@@ -524,19 +515,18 @@ open class SkikoComposeUiTest @InternalTestApi constructor(
 
     fun captureToImage(): ImageBitmap {
         waitForIdle()
-        return surface.makeImageSnapshot().toComposeImageBitmap()
+        return surface.capture()
     }
 
     fun captureToImage(semanticsNode: SemanticsNode): ImageBitmap {
         redraw()
         val rect = semanticsNode.boundsInWindow
-        val image = surface.makeImageSnapshot(
+        return surface.capture(
             rect.left.toInt(),
             rect.top.toInt(),
             rect.right.toInt(),
             rect.bottom.toInt()
         )
-        return image!!.toComposeImageBitmap()
     }
 
     fun SemanticsNodeInteraction.captureToImage(): ImageBitmap {

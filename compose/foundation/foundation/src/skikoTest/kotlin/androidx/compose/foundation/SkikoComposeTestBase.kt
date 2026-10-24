@@ -16,19 +16,16 @@
 
 package androidx.compose.foundation
 
-import androidx.compose.ui.InternalComposeUiApi
-import androidx.compose.ui.platform.registerSkikoComposeImplementation
-
 /**
- * Base class for tests that use Compose primitives backed by the Skiko implementation.
+ * Base class for tests that use Compose primitives backed by the platform implementation: Skiko on
+ * the desktop and native targets, the browser's Canvas 2D on the web.
  *
  * The implementation is registered at construction time (rather than in a per-test setup method)
  * so that it is already available to subclass field initializers. Registration is idempotent.
  */
-@OptIn(InternalComposeUiApi::class)
 abstract class SkikoComposeTestBase {
     init {
-        registerSkikoComposeImplementation()
+        registerComposeImplementationForTests()
     }
 
     // TODO: re-enable per-test cleanup once tests that register the backend asynchronously
@@ -39,3 +36,6 @@ abstract class SkikoComposeTestBase {
     //     clearSkikoComposeImplementation()
     // }
 }
+
+/** Registers the graphics and text implementation of the current platform. */
+internal expect fun registerComposeImplementationForTests()

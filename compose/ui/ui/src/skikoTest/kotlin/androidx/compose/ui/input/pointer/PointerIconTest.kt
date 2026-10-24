@@ -29,7 +29,7 @@ import androidx.compose.ui.SkikoComposeTestBase
 import androidx.compose.ui.assertThat
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.asComposeCanvas
+import androidx.compose.ui.graphics.TestSurface
 import androidx.compose.ui.isEqualTo
 import androidx.compose.ui.platform.FrameRecomposer
 import androidx.compose.ui.platform.LocalPointerIconService
@@ -48,8 +48,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.runTest
-import org.jetbrains.skia.Surface
-import org.jetbrains.skiko.FrameDispatcher
+import androidx.compose.ui.TestFrameDispatcher
 
 class PointerIconTest : SkikoComposeTestBase() {
     private val iconService = object : PointerIconService {
@@ -217,14 +216,14 @@ class PointerIconTest : SkikoComposeTestBase() {
     fun whenHoveredShouldCommitWithoutMoveWhenIconChanges() = runTest(StandardTestDispatcher()) {
         val iconContext = IconPlatformContext()
         val size = IntSize(100, 100)
-        val surface = Surface.makeRasterN32Premul(size.width, size.height)
+        val surface = TestSurface(size.width, size.height)
         val frameRecomposerHolder = arrayOfNulls<FrameRecomposer>(1)
         val sceneHolder = arrayOfNulls<ComposeScene>(1)
 
-        val frameDispatcher = FrameDispatcher(coroutineContext) {
+        val frameDispatcher = TestFrameDispatcher(coroutineContext) {
             frameRecomposerHolder[0]!!.performFrame(1)
             sceneHolder[0]!!.measureAndLayout()
-            sceneHolder[0]!!.draw(surface.canvas.asComposeCanvas())
+            sceneHolder[0]!!.draw(surface.canvas)
         }
         val (scene, frameRecomposer) = createPlatformLayersScene(
             coroutineContext = coroutineContext,
@@ -267,14 +266,14 @@ class PointerIconTest : SkikoComposeTestBase() {
     fun whenNotHoveredShouldNeverCommit() = runTest(StandardTestDispatcher()) {
         val iconContext = IconPlatformContext()
         val size = IntSize(100, 100)
-        val surface = Surface.makeRasterN32Premul(size.width, size.height)
+        val surface = TestSurface(size.width, size.height)
         val frameRecomposerHolder = arrayOfNulls<FrameRecomposer>(1)
         val sceneHolder = arrayOfNulls<ComposeScene>(1)
 
-        val frameDispatcher = FrameDispatcher(coroutineContext) {
+        val frameDispatcher = TestFrameDispatcher(coroutineContext) {
             frameRecomposerHolder[0]!!.performFrame(1)
             sceneHolder[0]!!.measureAndLayout()
-            sceneHolder[0]!!.draw(surface.canvas.asComposeCanvas())
+            sceneHolder[0]!!.draw(surface.canvas)
         }
         val (scene, frameRecomposer) = createPlatformLayersScene(
             coroutineContext = coroutineContext,

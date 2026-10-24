@@ -81,7 +81,6 @@ androidXMultiplatform {
         nonAndroidTest {
             dependsOn(commonTest)
             dependencies {
-                implementation(project(":compose:ui:ui-skiko"))
                 implementation(project(":kruth:kruth"))
             }
         }
@@ -93,6 +92,7 @@ androidXMultiplatform {
         desktopTest {
             dependsOn(nonAndroidTest)
             dependencies {
+                implementation(project(":compose:ui:ui-skiko"))
                 implementation(libs.truth)
                 implementation(libs.junit)
                 implementation(libs.skikoAwtRuntime)
@@ -125,6 +125,15 @@ androidXMultiplatform {
 
         nativeTest {
             dependsOn(nonJvmTest)
+            dependencies {
+                implementation(project(":compose:ui:ui-skiko"))
+            }
+        }
+
+        webTest {
+            dependencies {
+                implementation(project(":compose:ui:ui-web-canvas"))
+            }
         }
 
         darwinMain {

@@ -31,6 +31,7 @@ import kotlin.js.get
 import kotlin.js.js
 import kotlin.js.toJsReference
 import kotlin.test.AfterTest
+import org.w3c.dom.events.FocusEvent
 import kotlin.test.BeforeTest
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -152,6 +153,10 @@ internal interface OnCanvasTests {
             composeWindow = LocalComposeWindow.current
             content()
         })
+        // The browser running the tests may be in the background, where document.hasFocus() is
+        // false and windows start unfocused, which e.g. keeps text fields from starting their input
+        // sessions. Tests expect a focused browser, so tell the window it is focused.
+        if (!document.hasFocus()) window.dispatchEvent(FocusEvent("focus"))
 
         withContext(Dispatchers.Default) {
             val timeoutDuration = 1.seconds

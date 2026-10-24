@@ -23,6 +23,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.runtime.snapshots.SnapshotStateObserver
 import androidx.compose.ui.SkikoComposeTestBase
+import androidx.compose.ui.createGraphicsContextForTests
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.isFinite
@@ -38,9 +39,8 @@ import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.RenderEffect
 import androidx.compose.ui.graphics.ReusableGraphicsLayerScope
 import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.graphics.SkiaGraphicsContext
+import androidx.compose.ui.graphics.TestSurface
 import androidx.compose.ui.graphics.TransformOrigin
-import androidx.compose.ui.graphics.asComposeCanvas
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.platform.invertTo
 import androidx.compose.ui.test.ExperimentalTestApi
@@ -55,7 +55,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
-import org.jetbrains.skia.Surface
 
 class OwnerLayerTest : SkikoComposeTestBase() {
 
@@ -535,13 +534,13 @@ class OwnerLayerTest : SkikoComposeTestBase() {
                 },
             )
 
-            val surface = Surface.makeRasterN32Premul(100, 100)
+            val surface = TestSurface(100, 100)
             val canvas = surface.canvas
             val stateObserver = SnapshotStateObserver { it.invoke() }
 
             fun draw() {
                 stateObserver.observeReads(Unit, { layer.invalidate() }) {
-                    layer.drawLayer(canvas.asComposeCanvas(), null)
+                    layer.drawLayer(canvas, null)
                 }
             }
 
@@ -614,7 +613,7 @@ class OwnerLayerTest : SkikoComposeTestBase() {
     private var graphicsContext: TestGraphicsContext? = null
 
     private class TestGraphicsContext : GraphicsContext {
-        private val skiaContext = SkiaGraphicsContext()
+        private val skiaContext = createGraphicsContextForTests()
         val layers = mutableListOf<GraphicsLayer>()
 
         override fun createGraphicsLayer(): GraphicsLayer {

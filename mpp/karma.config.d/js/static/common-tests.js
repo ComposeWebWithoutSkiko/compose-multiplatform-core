@@ -45,7 +45,6 @@ window.addEventListener("rejectionhandled", (event) => {
 const awaitAnimationFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
 
 beforeEach(async function() {
-    // Wait for skiko.wasm to be ready before each test
     await awaitAnimationFrame;
 
     // This is the part of mocha configuration which guarantees that DOM elements are recreated for each test

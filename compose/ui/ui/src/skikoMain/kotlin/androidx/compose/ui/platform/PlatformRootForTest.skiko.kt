@@ -30,7 +30,6 @@ import androidx.compose.ui.scene.ComposeScene
 import androidx.compose.ui.scene.ComposeScenePointer
 import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.unit.IntRect
-import org.jetbrains.skiko.currentNanoTime
 
 /**
  * The marker interface to be implemented by the desktop root backing the composition.
@@ -59,7 +58,7 @@ interface PlatformRootForTest : RootForTest {
         eventType: PointerEventType,
         position: Offset,
         scrollDelta: Offset = Offset(0f, 0f),
-        timeMillis: Long = (currentNanoTime() / 1E6).toLong(),
+        timeMillis: Long = (platformNanoTime() / 1E6).toLong(),
         type: PointerType = PointerType.Mouse,
         buttons: PointerButtons? = null,
         keyboardModifiers: PointerKeyboardModifiers? = null,
@@ -81,7 +80,7 @@ interface PlatformRootForTest : RootForTest {
         buttons: PointerButtons = PointerButtons(),
         keyboardModifiers: PointerKeyboardModifiers = PointerKeyboardModifiers(),
         scrollDelta: Offset = Offset(0f, 0f),
-        timeMillis: Long = (currentNanoTime() / 1E6).toLong(),
+        timeMillis: Long = (platformNanoTime() / 1E6).toLong(),
         nativeEvent: Any? = null,
         button: PointerButton? = null,
         scaleGestureFactor: Float = 1f,

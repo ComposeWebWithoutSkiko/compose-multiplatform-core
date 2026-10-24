@@ -21,19 +21,26 @@ package androidx.compose.foundation.text
 import kotlin.experimental.ExperimentalNativeApi
 import kotlin.math.absoluteValue
 import kotlin.math.sign
-import org.jetbrains.skia.BreakIterator
-import org.jetbrains.skia.icu.CharProperties
 
-internal actual fun String.findPrecedingBreak(index: Int): Int {
-    val it = BreakIterator.makeCharacterInstance()
-    it.setText(this)
-    return it.preceding(index)
-}
+// The grapheme cluster breaks (findPrecedingBreak, findFollowingBreak) and the emoji properties
+// come from the text implementation of each platform: Skia's ICU, or the web canvas backend.
 
-internal actual fun String.findFollowingBreak(index: Int): Int {
-    val it = BreakIterator.makeCharacterInstance()
-    it.setText(this)
-    return it.following(index)
+/**
+ * Whether [codePoint] has the Emoji_Presentation or the Extended_Pictographic Unicode property.
+ */
+internal expect fun isEmojiPresentationOrExtendedPictographic(codePoint: Int): Boolean
+
+/** Iterates over the grapheme cluster boundaries of a text, like ICU's character instance. */
+private class CharacterBoundaries(private val text: String) {
+    private var current = 0
+
+    /** Returns the next boundary, or -1 after the end of the text. */
+    fun next(): Int {
+        if (current >= text.length) return -1
+        val next = text.findFollowingBreak(current)
+        current = if (next < 0) text.length else next
+        return current
+    }
 }
 
 /**
@@ -94,13 +101,10 @@ private const val EMOJI_PRESENTATION_SELECTOR = 0xFE0F
 
 private fun canBeEmojiOrPictographic(text: String): Boolean {
     for (codePoint in text.codePoints) {
-        with(CharProperties) {
-            if (codePointHasBinaryProperty(codePoint, EMOJI_PRESENTATION) ||
-                codePointHasBinaryProperty(codePoint, EXTENDED_PICTOGRAPHIC) ||
-                codePoint == EMOJI_PRESENTATION_SELECTOR
-            ) {
-                return true
-            }
+        if (isEmojiPresentationOrExtendedPictographic(codePoint) ||
+            codePoint == EMOJI_PRESENTATION_SELECTOR
+        ) {
+            return true
         }
     }
 
@@ -213,9 +217,8 @@ internal fun findNextNonWhitespaceSymbolsSubsequenceStartOffset(
     /* Assume that next non whitespaces symbols subsequence (word) is when current char is whitespace and next character is not.
      * Emoji (compound incl.) should be treated as a new word.
      */
-    val charIterator =
-        BreakIterator.makeCharacterInstance() // wordInstance doesn't consider symbols sequence as word
-    charIterator.setText(currentText)
+    // Character boundaries: word boundaries don't consider a sequence of symbols as a word.
+    val charIterator = CharacterBoundaries(currentText)
 
     var currentOffset: Int
     var nextOffset = charIterator.next()
@@ -291,8 +294,7 @@ internal fun String.requiresCharacterLevelCursorPlacement(index: Int): Boolean {
  */
 internal fun String.midpointPositionWithUnicodeSymbols(): Int {
     val symbolsCount = this.codePoints.count()
-    val charIterator = BreakIterator.makeCharacterInstance()
-    charIterator.setText(this)
+    val charIterator = CharacterBoundaries(this)
     var currentOffset = 0
     for (i in 0..symbolsCount / 2) {
         currentOffset = charIterator.next()
