@@ -25,7 +25,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.Text
 import androidx.compose.mpp.demo.Screen
-import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -42,6 +41,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.unit.dp
+import androidx.compose.mpp.demo.resources.Res
+import org.jetbrains.compose.resources.painterResource
 
 // https://youtrack.jetbrains.com/issue/CMP-4993
 // On Web, VectorPainter cannot get the correct size and draw content when running inside other Painters
@@ -119,7 +120,7 @@ val VectorPainterInPainter = Screen.Example(
         }
 
         Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-            val iconImagePainter1 = imageOutlinePainter()
+            val iconImagePainter1 = painterResource(Res.drawable.ic_image_outline)
             Text("1. Image with painterResource")
             Image(
                 painter = iconImagePainter1,
@@ -127,7 +128,7 @@ val VectorPainterInPainter = Screen.Example(
                 modifier = Modifier.size(100.dp).background(Color.Cyan)
             )
 
-            val iconImagePainter2 = imageOutlinePainter()
+            val iconImagePainter2 = painterResource(Res.drawable.ic_image_outline)
             Text("2. drawWithContent calling painter.draw")
             Box(
                 modifier = Modifier.size(100.dp)
@@ -139,7 +140,7 @@ val VectorPainterInPainter = Screen.Example(
                     }
             )
 
-            val iconImagePainter3 = imageOutlinePainter()
+            val iconImagePainter3 = painterResource(Res.drawable.ic_image_outline)
             Text("3. Custom IconPainter wrapping painterResource")
             val iconPainter = remember(iconImagePainter3) {
                 IconPainter(icon = iconImagePainter3, background = Color.Green)
@@ -200,10 +201,3 @@ private class IconPainter(
         return true
     }
 }
-
-/**
- * The painter of the image outline icon from the resources (Compose resources decode with Skia,
- * which isn't used on the web, where the icon is built in code instead).
- */
-@Composable
-internal expect fun imageOutlinePainter(): Painter

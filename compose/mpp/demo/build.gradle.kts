@@ -140,6 +140,11 @@ kotlin {
                     exclude("org.jetbrains.compose.runtime")
                     exclude("org.jetbrains.compose.ui")
                 }
+                implementation("org.jetbrains.compose.components:components-resources:1.11.1") {
+                    exclude("org.jetbrains.compose.runtime")
+                    exclude("org.jetbrains.compose.ui")
+                    exclude("org.jetbrains.compose.foundation")
+                }
             }
         }
 
@@ -151,11 +156,6 @@ kotlin {
                 implementation(libs.skiko)
                 implementation(libs.skiko.skottie)
                 implementation(project(":compose:ui:ui-skiko"))
-                // Compose resources decode images with Skia.
-                implementation("org.jetbrains.compose.components:components-resources:1.11.1") {
-                    exclude("org.jetbrains.compose.runtime")
-                    exclude("org.jetbrains.compose.ui")
-                }
             }
         }
 
@@ -184,6 +184,29 @@ kotlin {
         val iosMain by getting { dependsOn(darwinMain) }
     }
 
+}
+
+// components-resources of upstream needs Skia on the web. The web targets take its fork instead
+// (ComposeWebWithoutSkiko/compose-multiplatform), which is only published to mavenLocal so far.
+repositories {
+    mavenLocal {
+        content {
+            includeModule("org.jetbrains.compose.components", "components-resources-js")
+            includeModule("org.jetbrains.compose.components", "components-resources-wasmJs")
+        }
+    }
+}
+
+configurations.configureEach {
+    val resourcesFork = when {
+        name.startsWith("js") -> "components-resources-js"
+        name.startsWith("wasmJs") -> "components-resources-wasmJs"
+        else -> return@configureEach
+    }
+    resolutionStrategy.dependencySubstitution {
+        substitute(module("org.jetbrains.compose.components:components-resources"))
+            .using(module("org.jetbrains.compose.components:$resourcesFork:1.13.0-beta01-webcanvas"))
+    }
 }
 
 enum class Target(val simulator: Boolean, val key: String) {
