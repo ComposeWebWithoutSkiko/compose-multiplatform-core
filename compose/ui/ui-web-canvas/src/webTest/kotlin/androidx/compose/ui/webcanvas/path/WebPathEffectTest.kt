@@ -21,6 +21,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StampedPathEffectStyle
+import kotlin.math.sqrt
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -158,7 +159,7 @@ class WebPathEffectTest {
         for (p in onCurvePoints(result)) {
             val dx = p.x - 50f
             val dy = p.y - 50f
-            assertClose(50f, kotlin.math.sqrt(dx * dx + dy * dy), 1e-2f)
+            assertClose(50f, sqrt(dx * dx + dy * dy), 1e-2f)
         }
         // The circumference is ~314: the first dash is skipped and added at the end, after 7
         // dashes starting at 40, 80, ..., 280.
@@ -369,7 +370,7 @@ class WebPathEffectTest {
         val circle = circlePath(0f, 0f, 100f).snapshot()
         val bent = stamped.apply(circle, isStroke = true)
         for (p in pointsOf(bent)) {
-            val r = kotlin.math.sqrt(p.x * p.x + p.y * p.y)
+            val r = sqrt(p.x * p.x + p.y * p.y)
             assertTrue(r in 99.9f..105.1f, "$p")
         }
     }

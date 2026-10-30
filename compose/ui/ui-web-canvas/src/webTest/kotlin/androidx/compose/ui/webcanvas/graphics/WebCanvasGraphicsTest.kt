@@ -56,6 +56,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.webcanvas.WebCanvasGraphicsContext
 import kotlin.math.abs
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -896,7 +897,7 @@ class WebCanvasGraphicsTest {
     @Test
     fun layerRotatedAroundTheXAxisIsDrawnInPerspective() {
         assertWebGLAvailable()
-        val context = androidx.compose.ui.webcanvas.WebCanvasGraphicsContext()
+        val context = WebCanvasGraphicsContext()
         val layer = context.createGraphicsLayer()
         layer.record(Density(1f), LayoutDirection.Ltr, IntSize(200, 200)) {
             drawRect(Color.Red, size = Size(200f, 200f))
@@ -922,7 +923,7 @@ class WebCanvasGraphicsTest {
     @Test
     fun aLayerInPerspectiveInAnUnboundedModeKeepsThePixelsOutsideIt() {
         assertWebGLAvailable()
-        val context = androidx.compose.ui.webcanvas.WebCanvasGraphicsContext()
+        val context = WebCanvasGraphicsContext()
         val layer = context.createGraphicsLayer()
         layer.record(Density(1f), LayoutDirection.Ltr, IntSize(100, 100)) {
             drawRect(Color.Red, size = Size(100f, 100f))
@@ -946,7 +947,7 @@ class WebCanvasGraphicsTest {
 
     @Test
     fun graphicsLayerRecordsAndDraws() {
-        val context = androidx.compose.ui.webcanvas.WebCanvasGraphicsContext()
+        val context = WebCanvasGraphicsContext()
         val layer: GraphicsLayer = context.createGraphicsLayer()
         layer.record(Density(1f), LayoutDirection.Ltr, IntSize(10, 10)) {
             drawRect(Color.Red, size = Size(10f, 10f))
@@ -965,7 +966,7 @@ class WebCanvasGraphicsTest {
 
     @Test
     fun recordedLayerReflectsLaterPropertyChanges() {
-        val context = androidx.compose.ui.webcanvas.WebCanvasGraphicsContext()
+        val context = WebCanvasGraphicsContext()
         val layer = context.createGraphicsLayer()
         layer.record(Density(1f), LayoutDirection.Ltr, IntSize(10, 10)) {
             translate(2f, 2f) {

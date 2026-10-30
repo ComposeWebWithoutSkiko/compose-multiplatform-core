@@ -23,6 +23,7 @@ import androidx.compose.ui.graphics.colorspace.ColorSpaces
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.webcanvas.dom.CanvasElement
 import androidx.compose.ui.webcanvas.dom.Context2D
+import androidx.compose.ui.webcanvas.dom.CssColors
 import androidx.compose.ui.webcanvas.dom.ImageData
 import androidx.compose.ui.webcanvas.dom.JsStrings
 import androidx.compose.ui.webcanvas.dom.createCanvas
@@ -66,6 +67,13 @@ internal abstract class WebImageBitmap(
      * for images shown through a shared source ([FramebufferImageBitmap]).
      */
     open fun drawableRegionSource(): JsAny? = drawableSource()
+
+    /**
+     * Whether this image is always drawn whole, because its source takes no source rectangle: the
+     * browser gives an SVG document without a size of its own the size of the canvas it's drawn on,
+     * so [width] and [height] are not coordinates in it.
+     */
+    open val isDrawnWhole: Boolean get() = false
 
     private var filteredKey: Any? = null
     private var filteredVersion: Int = -1
@@ -276,7 +284,7 @@ internal fun applyColorFilter(
         ctx.drawImage(source, 0.0, 0.0, w, h, 0.0, 0.0, w, h)
         // A blend color filter blends the filter color (source) into each pixel (destination).
         ctx.globalCompositeOperation = tintComposite
-        ctx.fillStyle = androidx.compose.ui.webcanvas.dom.CssColors.of(filter.color.toArgb())
+        ctx.fillStyle = CssColors.of(filter.color.toArgb())
         ctx.fillRect(0.0, 0.0, w, h)
         return canvas
     }

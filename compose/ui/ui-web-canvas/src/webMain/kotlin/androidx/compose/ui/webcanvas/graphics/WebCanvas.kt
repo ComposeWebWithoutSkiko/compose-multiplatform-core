@@ -16,8 +16,10 @@
 
 package androidx.compose.ui.webcanvas.graphics
 
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Canvas
 import androidx.compose.ui.graphics.ClipOp
@@ -1690,10 +1692,7 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
             pathData = {
                 WebPath().apply {
                     addRoundRect(
-                        androidx.compose.ui.geometry.RoundRect(
-                            x, y, x + w, y + h,
-                            androidx.compose.ui.geometry.CornerRadius(rx, ry),
-                        )
+                        RoundRect(x, y, x + w, y + h, CornerRadius(rx, ry))
                     )
                 }.snapshot()
             },
@@ -1943,12 +1942,32 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
             ctx.beginPath()
             ctx.rect(dx, dy, dw, dh)
             ctx.clip(JsStrings.nonzero)
-            ctx.drawImage(source, sx, sy, sw, sh, dx, dy, dw, dh)
+            drawImageSource(ctx, webImage, source, sx, sy, sw, sh, dx, dy, dw, dh)
             t.restore()
+        } else {
+            drawImageSource(ctx, webImage, source, sx, sy, sw, sh, dx, dy, dw, dh)
+        }
+        endEffects(effects)
+    }
+
+    private fun drawImageSource(
+        ctx: Context2D,
+        image: WebImageBitmap,
+        source: JsAny,
+        sx: Double,
+        sy: Double,
+        sw: Double,
+        sh: Double,
+        dx: Double,
+        dy: Double,
+        dw: Double,
+        dh: Double,
+    ) {
+        if (image.isDrawnWhole) {
+            ctx.drawImage(source, dx, dy, dw, dh)
         } else {
             ctx.drawImage(source, sx, sy, sw, sh, dx, dy, dw, dh)
         }
-        endEffects(effects)
     }
 
     override fun drawPoints(pointMode: PointMode, points: List<Offset>, paint: Paint) {

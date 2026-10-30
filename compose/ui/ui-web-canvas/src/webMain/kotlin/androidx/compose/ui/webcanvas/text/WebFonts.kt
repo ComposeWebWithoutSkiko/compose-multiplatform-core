@@ -28,6 +28,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontListFontFamily
 import androidx.compose.ui.text.font.FontLoadingStrategy
 import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontVariation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontResourceLoaderWithResolver
 import androidx.compose.ui.text.font.GenericFontFamily
@@ -41,6 +42,7 @@ import androidx.compose.ui.text.platform.SystemFont
 import androidx.compose.ui.webcanvas.dom.toUint8Array
 import kotlin.js.JsAny
 import kotlin.js.js
+import kotlin.js.toJsString
 
 /**
  * A typeface of the web backend: the CSS family the browser knows the font by, together with the
@@ -66,6 +68,26 @@ internal class WebTypeface(
     override fun hashCode(): Int = (family.hashCode() * 31 + weight) * 31 + isItalic.hashCode()
 
     override fun toString(): String = "WebTypeface($family, $weight, italic=$isItalic)"
+}
+
+/**
+ * A font whose file the browser has loaded under [family], without its bytes going through Kotlin.
+ *
+ * @see loadFont
+ */
+internal class BrowserFont(
+    val family: String,
+    override val weight: FontWeight,
+    override val style: FontStyle,
+    override val variationSettings: FontVariation.Settings,
+) : Font {
+    override fun equals(other: Any?): Boolean = other is BrowserFont && other.family == family
+
+    override fun hashCode(): Int = family.hashCode()
+
+    override fun toString(): String =
+        "BrowserFont(family='$family', weight=$weight, style=$style, " +
+            "variationSettings=${variationSettings.settings})"
 }
 
 /**
@@ -102,6 +124,9 @@ internal object GenericFamilies {
 internal object FontFaces {
     private val families = HashMap<String, String>()
 
+    /** Those waiting for the font files still being loaded, by the key of the file. */
+    private val settling = HashMap<String, MutableList<(String) -> Unit>>()
+
     /**
      * Changes whenever a font finishes loading after it was registered, so that text laid out with
      * a fallback font in the meantime is laid out again. It's snapshot state: text observes it.
@@ -112,8 +137,64 @@ internal object FontFaces {
     fun register(font: LoadedFont, weight: Int, isItalic: Boolean): String {
         val key = font.cacheKey
         families[key]?.let { return it }
-        val family = "cmp-font-${families.size}"
-        val axes = FontAxes.of(font)
+        val family = newFamily(key)
+        val loaded = add(family, font.data.toUint8Array(), font.variationSettings, weight, isItalic) {
+            onFontLoaded()
+        }
+        if (!loaded) {
+            // The face loads asynchronously: anything measured until then used a fallback font.
+            TextMeasurement.clearCaches()
+        }
+        return family
+    }
+
+    /**
+     * Registers the font file [blob] under [key], and calls [onSettled] with its family once the
+     * browser has loaded it or failed to. No one gets the family before that, also when the same
+     * file is registered again while it loads, so no text has to be laid out again.
+     */
+    fun register(
+        key: String,
+        blob: JsAny,
+        variationSettings: FontVariation.Settings,
+        weight: Int,
+        isItalic: Boolean,
+        onSettled: (String) -> Unit,
+    ) {
+        settling[key]?.let {
+            it += onSettled
+            return
+        }
+        families[key]?.let { return onSettled(it) }
+        val family = newFamily(key)
+        val waiting = mutableListOf(onSettled)
+        settling[key] = waiting
+        val url = objectUrlOf(blob)
+        val settle = {
+            revokeObjectUrl(url)
+            settling.remove(key)
+            waiting.forEach { it(family) }
+        }
+        val source = "url(\"$url\")".toJsString()
+        if (add(family, source, variationSettings, weight, isItalic, settle)) settle()
+    }
+
+    private fun newFamily(key: String): String =
+        "cmp-font-${families.size}".also { families[key] = it }
+
+    /**
+     * Adds the font file [source], its bytes or a CSS `url()`. Returns whether the face is already
+     * usable; otherwise [onSettled] is called later.
+     */
+    private fun add(
+        family: String,
+        source: JsAny,
+        variationSettings: FontVariation.Settings,
+        weight: Int,
+        isItalic: Boolean,
+        onSettled: () -> Unit,
+    ): Boolean {
+        val axes = FontAxes.of(variationSettings)
         // Each face is registered under its own family, with its variation fixed through the
         // descriptors: the browser clamps the variation axes of a variable font to the ranges the
         // descriptors declare (weight -> wght, stretch -> wdth, oblique angle -> slnt), and applies
@@ -123,21 +204,15 @@ internal object FontFaces {
             axes.slant != null && axes.slant != 0f -> "oblique ${cssNumber(-axes.slant)}deg"
             else -> "normal"
         }
-        val loaded = addFontFace(
+        return addFontFace(
             family,
-            font.data.toUint8Array(),
+            source,
             weight.toString(),
             style,
             axes.width?.let { "${cssNumber(it)}%" } ?: "normal",
             axes.cssVariationSettings,
-            onLoaded = { onFontLoaded() },
+            onSettled,
         )
-        families[key] = family
-        if (!loaded) {
-            // The face loads asynchronously: anything measured until then used a fallback font.
-            TextMeasurement.clearCaches()
-        }
-        return family
     }
 
     private fun onFontLoaded() {
@@ -147,26 +222,61 @@ internal object FontFaces {
 }
 
 /**
- * Creates a `FontFace` from font file bytes and adds it to `document.fonts`. Returns whether the
- * face is already usable; otherwise [onLoaded] is called once it is.
+ * Has the browser load the font file [blob], a JS `Blob`, without its bytes going through Kotlin,
+ * and calls [onSettled] with the font once that's over. A file that can't be loaded is reported in
+ * the console, and text in the font uses a fallback font.
+ */
+@InternalComposeUiApi
+public fun loadFont(
+    identity: String,
+    blob: JsAny,
+    weight: FontWeight,
+    style: FontStyle,
+    variationSettings: FontVariation.Settings,
+    onSettled: (Font) -> Unit,
+) {
+    FontFaces.register(
+        "BrowserFont|$identity|weight=${weight.weight}|style=$style|" +
+            "variationSettings=${variationSettings.settings}",
+        blob,
+        variationSettings,
+        cssWeightOf(weight, variationSettings),
+        style == FontStyle.Italic,
+    ) { family ->
+        onSettled(BrowserFont(family, weight, style, variationSettings))
+    }
+}
+
+// language=js
+private fun objectUrlOf(blob: JsAny): String = js("URL.createObjectURL(blob)")
+
+// language=js
+private fun revokeObjectUrl(url: String): Unit = js("URL.revokeObjectURL(url)")
+
+/**
+ * Creates a `FontFace` from [source], the bytes of a font file or a CSS `url()` of one, and adds it
+ * to `document.fonts`. Returns whether the face is already usable; otherwise [onSettled] is called
+ * once it is, or once it failed to load.
  */
 // language=js
 private fun addFontFace(
     family: String,
-    data: JsAny,
+    source: JsAny,
     weight: String,
     style: String,
     stretch: String,
     variationSettings: String,
-    onLoaded: () -> Unit,
+    onSettled: () -> Unit,
 ): Boolean = js(
     """{
         const descriptors = { weight: weight, style: style, stretch: stretch };
         if (variationSettings) descriptors.variationSettings = variationSettings;
-        const face = new FontFace(family, data, descriptors);
+        const face = new FontFace(family, source, descriptors);
         document.fonts.add(face);
         if (face.status === 'loaded') return true;
-        face.load().then(() => onLoaded(), (e) => console.warn('Failed to load font ' + family, e));
+        face.load()
+            .catch((e) => console.warn('Failed to load font ' + family, e))
+            .finally(() => onSettled());
         return false;
     }"""
 )
@@ -180,12 +290,12 @@ private class FontAxes(
     val cssVariationSettings: String,
 ) {
     companion object {
-        fun of(font: PlatformFont): FontAxes {
+        fun of(variationSettings: FontVariation.Settings): FontAxes {
             var width: Float? = null
             var slant: Float? = null
             var italic: Float? = null
             val css = StringBuilder()
-            for (setting in font.variationSettings.settings) {
+            for (setting in variationSettings.settings) {
                 // Settings depending on the density (e.g. an optical size in sp) can't be
                 // resolved here; the browser derives the optical size from the font size anyway.
                 if (setting.needsDensity) continue
@@ -210,6 +320,7 @@ internal class WebFontLoader : PlatformTypefacesLoader {
     override val cacheKey: Any? get() = null
 
     override fun loadBlocking(font: Font): Any? {
+        if (font is BrowserFont) return load(font)
         if (font !is PlatformFont) {
             if (font.loadingStrategy != FontLoadingStrategy.OptionalLocal) {
                 throw IllegalArgumentException("Unsupported font type: $font")
@@ -267,11 +378,7 @@ internal class WebFontLoader : PlatformTypefacesLoader {
     }
 
     private fun load(font: PlatformFont): WebTypeface {
-        val variationWeight = font.variationSettings.settings
-            .firstOrNull { it.axisName == "wght" }
-            ?.toVariationValue(null)
-            ?.toInt()
-        val weight = variationWeight ?: font.weight.weight
+        val weight = cssWeightOf(font.weight, font.variationSettings)
         val isItalic = font.style == FontStyle.Italic
         return when (font) {
             is LoadedFont -> WebTypeface(
@@ -283,7 +390,18 @@ internal class WebFontLoader : PlatformTypefacesLoader {
             is SystemFont -> WebTypeface(quoteFamily(font.identity), weight, isItalic, false)
         }
     }
+
+    private fun load(font: BrowserFont): WebTypeface = WebTypeface(
+        family = quoteFamily(font.family),
+        weight = cssWeightOf(font.weight, font.variationSettings),
+        isItalic = font.style == FontStyle.Italic,
+        isRegistered = true,
+    )
 }
+
+private fun cssWeightOf(weight: FontWeight, variationSettings: FontVariation.Settings): Int =
+    variationSettings.settings.firstOrNull { it.axisName == "wght" }?.toVariationValue(null)?.toInt()
+        ?: weight.weight
 
 private fun quoteFamily(name: String): String =
     "\"" + name.replace("\\", "\\\\").replace("\"", "\\\"") + "\""

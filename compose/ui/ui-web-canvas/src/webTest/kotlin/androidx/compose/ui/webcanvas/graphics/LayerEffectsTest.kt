@@ -36,6 +36,7 @@ import androidx.compose.ui.graphics.RenderEffect
 import androidx.compose.ui.graphics.Shader
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.layer.CompositingStrategy
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
@@ -364,7 +365,7 @@ class LayerEffectsTest {
         topLeft: IntOffset,
         effect: RenderEffect? = null,
         setUp: GraphicsLayer.() -> Unit = {},
-        content: androidx.compose.ui.graphics.drawscope.DrawScope.() -> Unit,
+        content: DrawScope.() -> Unit,
     ): ImageBitmap {
         val context = WebCanvasGraphicsContext()
         val layer = context.createGraphicsLayer()

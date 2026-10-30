@@ -18,7 +18,10 @@
 
 package androidx.compose.ui.webcanvas.dom
 
+import androidx.compose.ui.InternalComposeUiApi
 import kotlin.js.JsAny
+import kotlin.js.JsString
+import kotlin.js.toJsString
 import kotlin.wasm.unsafe.Pointer
 import kotlin.wasm.unsafe.UnsafeWasmMemoryApi
 import kotlin.wasm.unsafe.WebAssembly
@@ -55,11 +58,21 @@ private inline fun ByteArray.forEachChunk(consume: (chunk: JsAny, offset: Int) -
     }
 }
 
-internal actual fun ByteArray.toBlob(type: String): JsAny {
+@InternalComposeUiApi
+public actual fun ByteArray.toBlob(type: String): JsAny {
     // A Blob made of Blobs refers to their data: the bytes are copied once, by the chunk Blobs.
     val parts = newArray()
     forEachChunk { chunk, _ -> addBlobOf(parts, chunk) }
     return blobOf(parts, type)
+}
+
+@InternalComposeUiApi
+public actual fun ByteArray.decodeToJsString(): JsString {
+    // The decoder keeps the bytes of a character split between two chunks.
+    val decoder = newTextDecoder()
+    var text = "".toJsString()
+    forEachChunk { chunk, _ -> text = concat(text, decodeChunk(decoder, chunk)) }
+    return concat(text, finishDecoding(decoder))
 }
 
 internal actual fun ByteArray.toUint8Array(): JsAny {
@@ -139,6 +152,19 @@ private fun addBlobOf(parts: JsAny, bytes: JsAny): Unit = js("{ parts.push(new B
 
 // language=js
 private fun blobOf(parts: JsAny, type: String): JsAny = js("new Blob(parts, { type: type })")
+
+// language=js
+private fun newTextDecoder(): JsAny = js("new TextDecoder()")
+
+// language=js
+private fun decodeChunk(decoder: JsAny, bytes: JsAny): JsString =
+    js("decoder.decode(bytes, { stream: true })")
+
+// language=js
+private fun finishDecoding(decoder: JsAny): JsString = js("decoder.decode()")
+
+// language=js
+private fun concat(first: JsString, second: JsString): JsString = js("first + second")
 
 // language=js
 private fun newUint8Array(length: Int): JsAny = js("new Uint8Array(length)")

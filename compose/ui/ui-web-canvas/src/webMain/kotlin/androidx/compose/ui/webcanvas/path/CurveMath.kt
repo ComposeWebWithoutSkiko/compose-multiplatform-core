@@ -17,6 +17,7 @@
 package androidx.compose.ui.webcanvas.path
 
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.sqrt
 
 // Curve helpers shared by the path classes of this package. Most functions are ports of the
@@ -716,4 +717,4 @@ private const val MaxFlattenSegments: Int = 1024
 
 private fun segmentCountFor(n: Double): Int =
     if (!(n > 1.0)) 1
-    else if (n >= MaxFlattenSegments) MaxFlattenSegments else kotlin.math.ceil(n).toInt()
+    else if (n >= MaxFlattenSegments) MaxFlattenSegments else ceil(n).toInt()

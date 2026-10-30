@@ -33,9 +33,11 @@ import androidx.compose.ui.graphics.platform.platformColorFilter
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.webcanvas.dom.toJsNumberArray
 import kotlin.js.JsAny
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 /**
  * A color filter of the web backend. Every filter is a function of a single (non-premultiplied)
@@ -445,10 +447,10 @@ private fun separable(cs: Float, cb: Float, blendMode: BlendMode): Float =
         BlendMode.Softlight -> if (cs <= 0.5f) {
             cb - (1 - 2 * cs) * cb * (1 - cb)
         } else {
-            val d = if (cb <= 0.25f) ((16 * cb - 12) * cb + 4) * cb else kotlin.math.sqrt(cb)
+            val d = if (cb <= 0.25f) ((16 * cb - 12) * cb + 4) * cb else sqrt(cb)
             cb + (2 * cs - 1) * (d - cb)
         }
-        BlendMode.Difference -> kotlin.math.abs(cs - cb)
+        BlendMode.Difference -> abs(cs - cb)
         BlendMode.Exclusion -> cs + cb - 2 * cs * cb
         else -> error("$blendMode is not a separable blend mode")
     }

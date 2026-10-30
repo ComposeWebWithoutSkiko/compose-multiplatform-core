@@ -14,9 +14,13 @@
  * limitations under the License.
  */
 
+@file:OptIn(InternalComposeUiApi::class)
+
 package androidx.compose.ui.webcanvas.dom
 
+import androidx.compose.ui.InternalComposeUiApi
 import kotlin.js.JsAny
+import kotlin.js.JsString
 import kotlin.js.Promise
 import kotlin.js.js
 import kotlin.test.Test
@@ -59,6 +63,35 @@ class InteropTest {
             assertEquals(-1, firstDifference(array))
             null
         }
+    }
+
+    @Test
+    fun bytesDecodeToAJsStringWithoutAByteOrderMark() {
+        val bytes = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte(), 'a'.code.toByte())
+        val text = bytes.decodeToJsString()
+        assertEquals(1, textLength(text))
+        assertEquals('a'.code, charCodeAt(text, 0))
+        assertEquals(0, textLength(ByteArray(0).decodeToJsString()))
+    }
+
+    @Test
+    fun aCharacterSplitBetweenChunksDecodesWhole() {
+        // The bytes of U+20AC around the end of the chunk of 256 KiB that Kotlin/Wasm goes through.
+        val chunk = 256 * 1024
+        val bytes = ByteArray(chunk + 2) { 'a'.code.toByte() }
+        bytes[chunk - 1] = 0xE2.toByte()
+        bytes[chunk] = 0x82.toByte()
+        bytes[chunk + 1] = 0xAC.toByte()
+        val text = bytes.decodeToJsString()
+        assertEquals(chunk, textLength(text))
+        assertEquals(0x20AC, charCodeAt(text, chunk - 1))
+    }
+
+    @Test
+    fun aTruncatedCharacterDecodesToTheReplacementCharacter() {
+        val text = byteArrayOf(0xE2.toByte()).decodeToJsString()
+        assertEquals(1, textLength(text))
+        assertEquals(0xFFFD, charCodeAt(text, 0))
     }
 
     @Test
@@ -137,6 +170,12 @@ private fun firstMismatch(read: (Int) -> JsAny, byteLength: Int, expected: (Int)
 
 // language=js
 private fun lengthOf(array: JsAny): Int = js("array.length")
+
+// language=js
+private fun textLength(text: JsString): Int = js("text.length")
+
+// language=js
+private fun charCodeAt(text: JsString, index: Int): Int = js("text.charCodeAt(index)")
 
 // language=js
 private fun byteAt(array: JsAny, index: Int): Int = js("array[index]")

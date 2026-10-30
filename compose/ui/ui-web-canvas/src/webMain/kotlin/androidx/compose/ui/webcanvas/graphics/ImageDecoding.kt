@@ -16,6 +16,7 @@
 
 package androidx.compose.ui.webcanvas.graphics
 
+import androidx.compose.ui.InternalComposeUiApi
 import androidx.compose.ui.graphics.ImageBitmapConfig
 import androidx.compose.ui.graphics.colorspace.ColorSpaces
 import androidx.compose.ui.webcanvas.dom.logWarning
@@ -68,6 +69,7 @@ internal object ImageDecoding {
         listeners.remove(listener)
     }
 
+    @OptIn(InternalComposeUiApi::class)
     fun decode(bytes: ByteArray): DecodedImageBitmap {
         val header = ImageHeader.parse(bytes)
             ?: throw IllegalArgumentException("Failed to decode image: unsupported format")

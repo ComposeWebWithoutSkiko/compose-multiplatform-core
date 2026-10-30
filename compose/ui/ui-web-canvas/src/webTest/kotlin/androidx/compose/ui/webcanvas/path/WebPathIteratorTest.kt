@@ -22,6 +22,7 @@ import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.graphics.PathHitTester
 import androidx.compose.ui.graphics.PathIterator
 import androidx.compose.ui.graphics.PathSegment
+import kotlin.math.sqrt
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -362,7 +363,7 @@ class WebPathIteratorTest {
                         // End points lie on the circle.
                         val dx = points[4] - 100f
                         val dy = points[5] - 100f
-                        assertClose(100f, kotlin.math.sqrt(dx * dx + dy * dy), 1e-2f)
+                        assertClose(100f, sqrt(dx * dx + dy * dy), 1e-2f)
                     }
                     PathSegment.Type.Close -> {}
                     else -> fail("Unexpected segment")

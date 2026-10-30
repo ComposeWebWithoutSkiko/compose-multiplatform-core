@@ -14,10 +14,11 @@
  * limitations under the License.
  */
 
-@file:OptIn(UnsafeWasmMemoryApi::class)
+@file:OptIn(InternalComposeUiApi::class, UnsafeWasmMemoryApi::class)
 
 package androidx.compose.ui.webcanvas.dom
 
+import androidx.compose.ui.InternalComposeUiApi
 import kotlin.js.JsAny
 import kotlin.js.js
 import kotlin.test.Test

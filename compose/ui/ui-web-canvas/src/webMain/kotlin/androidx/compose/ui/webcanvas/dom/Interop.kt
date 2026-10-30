@@ -16,7 +16,9 @@
 
 package androidx.compose.ui.webcanvas.dom
 
+import androidx.compose.ui.InternalComposeUiApi
 import kotlin.js.JsAny
+import kotlin.js.JsString
 import kotlin.js.js
 
 // Kotlin/JS arrays are JS typed arrays, which JS reads in place. Kotlin/Wasm arrays live in the
@@ -24,7 +26,15 @@ import kotlin.js.js
 // module, in chunks, since the linear memory never shrinks (see Interop.wasm.kt).
 
 /** A JS `Blob` of the bytes, of the MIME [type] (e.g. to decode an image from). */
-internal expect fun ByteArray.toBlob(type: String): JsAny
+@InternalComposeUiApi
+public expect fun ByteArray.toBlob(type: String): JsAny
+
+/**
+ * The JS string of the UTF-8 bytes, without a byte order mark: the text doesn't go through a Kotlin
+ * string, and on Kotlin/Wasm the bytes reach the decoder chunk by chunk.
+ */
+@InternalComposeUiApi
+public expect fun ByteArray.decodeToJsString(): JsString
 
 /**
  * A JS `Uint8Array` of the bytes that may be read later (e.g. by a `FontFace`): on Kotlin/JS a view

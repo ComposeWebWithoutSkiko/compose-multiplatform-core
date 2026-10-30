@@ -16,6 +16,7 @@
 
 package androidx.compose.ui.webcanvas.path
 
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.RoundRect
@@ -23,6 +24,7 @@ import androidx.compose.ui.graphics.Matrix
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathFillType
 import kotlin.math.PI
+import kotlin.math.sqrt
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -397,10 +399,10 @@ class WebPathTest {
         val roundRect =
             RoundRect(
                 Rect(0f, 0f, 100f, 50f),
-                topLeft = androidx.compose.ui.geometry.CornerRadius(10f, 5f),
-                topRight = androidx.compose.ui.geometry.CornerRadius(0f, 0f),
-                bottomRight = androidx.compose.ui.geometry.CornerRadius(20f, 20f),
-                bottomLeft = androidx.compose.ui.geometry.CornerRadius(4f, 8f),
+                topLeft = CornerRadius(10f, 5f),
+                topRight = CornerRadius(0f, 0f),
+                bottomRight = CornerRadius(20f, 20f),
+                bottomLeft = CornerRadius(4f, 8f),
             )
         val path = WebPath().apply { addRoundRect(roundRect) }
         assertEquals(listOf(M, L, K, L, K, L, K, L, K, Z), verbsOf(path))
@@ -600,7 +602,7 @@ class WebPathTest {
         assertOffsetClose(Offset(150f / 2.5f, 50f / 2.5f), points[1], 1e-4f)
         assertOffsetClose(Offset(200f / 3f, 0f), points[2], 1e-4f)
         // w' = w * z1 / sqrt(z0 * z2)
-        assertClose(2.5f / kotlin.math.sqrt(2f * 3f), weightsOf(path.snapshot())[0], 1e-5f)
+        assertClose(2.5f / sqrt(2f * 3f), weightsOf(path.snapshot())[0], 1e-5f)
     }
 
     @Test

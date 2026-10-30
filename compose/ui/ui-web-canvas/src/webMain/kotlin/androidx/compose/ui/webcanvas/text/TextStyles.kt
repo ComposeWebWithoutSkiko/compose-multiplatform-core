@@ -50,6 +50,8 @@ import androidx.compose.ui.unit.isUnspecified
 import androidx.compose.ui.unit.sp
 import kotlin.js.JsString
 import kotlin.js.toJsString
+import kotlin.math.abs
+import kotlin.math.round
 
 /**
  * A font as the canvas uses it: a typeface at a size, with the requested (possibly synthesized)
@@ -119,8 +121,8 @@ internal class RunFont private constructor(
 /** Formats a number for CSS, which doesn't accept exponents. */
 internal fun cssNumber(value: Float): String {
     if (value.isNaN() || value == 0f) return "0"
-    val rounded = kotlin.math.round(value * 1000f) / 1000f
-    if (kotlin.math.abs(rounded) < 0.001f) return "0"
+    val rounded = round(value * 1000f) / 1000f
+    if (abs(rounded) < 0.001f) return "0"
     val asInt = rounded.toInt()
     return if (asInt.toFloat() == rounded) asInt.toString() else rounded.toString()
 }

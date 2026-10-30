@@ -16,12 +16,18 @@
 
 package androidx.compose.ui.webcanvas.dom
 
+import androidx.compose.ui.InternalComposeUiApi
 import kotlin.js.JsAny
+import kotlin.js.JsString
 
 // On Kotlin/JS a ByteArray is an Int8Array, a ShortArray an Int16Array, an IntArray an Int32Array
 // and a FloatArray a Float32Array, so JS code reads them directly.
 
-internal actual fun ByteArray.toBlob(type: String): JsAny = blobOf(bytesFrom(this, 0), type)
+@InternalComposeUiApi
+public actual fun ByteArray.toBlob(type: String): JsAny = blobOf(bytesFrom(this, 0), type)
+
+@InternalComposeUiApi
+public actual fun ByteArray.decodeToJsString(): JsString = decodeUtf8(bytesFrom(this, 0))
 
 internal actual fun ByteArray.toUint8Array(): JsAny = bytesFrom(this, 0)
 
@@ -39,6 +45,8 @@ private fun bytesFrom(array: Any, byteOffset: Int): JsAny =
     js("new Uint8Array(array.buffer, array.byteOffset + byteOffset, array.byteLength - byteOffset)")
 
 private fun blobOf(bytes: JsAny, type: String): JsAny = js("new Blob([bytes], { type: type })")
+
+private fun decodeUtf8(bytes: JsAny): JsString = js("new TextDecoder().decode(bytes)")
 
 internal actual fun readImageDataArgb(
     imageData: ImageData,
