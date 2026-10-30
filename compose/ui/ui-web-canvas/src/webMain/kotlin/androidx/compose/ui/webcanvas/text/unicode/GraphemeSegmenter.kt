@@ -14,11 +14,8 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalWasmJsInterop::class)
-
 package androidx.compose.ui.webcanvas.text.unicode
 
-import kotlin.js.ExperimentalWasmJsInterop
 import kotlin.js.JsAny
 import kotlin.js.js
 
@@ -29,13 +26,6 @@ import kotlin.js.js
 //
 // A text is segmented with a single JS interop call, and the boundaries of the last few texts are
 // kept: the layout and text editing look up many positions of the same text.
-
-/**
- * Returns all grapheme cluster boundaries of [text]: an increasing array from 0 to `text.length`
- * (just `[0]` for an empty text). Do not modify it.
- */
-internal fun graphemeBoundaries(text: CharSequence): IntArray =
-    GraphemeCache.boundariesOrNull(text) ?: simpleBoundaries(text)
 
 /**
  * Returns the first grapheme cluster boundary strictly after [index], or `text.length` if there is
@@ -99,19 +89,6 @@ private fun isSimple(text: CharSequence): Boolean {
     return true
 }
 
-/** The boundaries of a text for which [isSimple] holds. */
-private fun simpleBoundaries(text: CharSequence): IntArray {
-    val length = text.length
-    val result = IntArray(length + 1)
-    var count = 0
-    result[count++] = 0
-    for (i in 1..length) {
-        if (i < length && text[i - 1] == '\r' && text[i] == '\n') continue
-        result[count++] = i
-    }
-    return if (count == result.size) result else result.copyOf(count)
-}
-
 /** The boundaries of the last few texts that aren't simple (see [isSimple]). */
 private object GraphemeCache {
     private const val Size = 8
@@ -147,7 +124,7 @@ private object GraphemeCache {
 }
 
 /**
- * The grapheme cluster boundaries of [text] (like [graphemeBoundaries]) for browsers without
+ * The grapheme cluster boundaries of [text], from 0 to `text.length`, for browsers without
  * `Intl.Segmenter`: a cluster is CR LF, a pair of regional indicators (a flag), or a character with
  * the extending characters and spacing marks that follow it, a zero width joiner taking the
  * pictograph after it along. Hangul syllables made of jamo and prepended characters are split.

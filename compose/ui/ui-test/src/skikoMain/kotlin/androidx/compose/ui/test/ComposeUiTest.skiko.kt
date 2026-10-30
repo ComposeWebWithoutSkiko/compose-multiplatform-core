@@ -49,6 +49,7 @@ import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.roundToInt
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.TimeSource
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -256,23 +257,21 @@ open class SkikoComposeUiTest @InternalTestApi constructor(
                 .plus(runTestContext)
                 .plus(testDispatcher)
 
-        return onSkikoReady {
-            // Note: on web this call returns immediately (it returns a Promise),
-            runTest(
-                timeout = testTimeout,
-                context = combinedRunTestCoroutineContext
-            ) {
-                composeRootRegistry.withRegistry {
-                    withScene {
-                        withRenderLoop {
-                            // MonotonicFrameClock is necessary. See the CL for details:
-                            // https://android-review.googlesource.com/c/platform/frameworks/support/+/3284298
-                            // > Anything that might result in animation may require the MonotonicFrameClock,
-                            // > and to get the timing right it should be the clock provided by the Recomposer's effect context
-                            // It's covered by SkikoComposeUiTestTest.canDriveAnimationsFromTest.
-                            frameRecomposer.withMonotonicFrameClock {
-                                block()
-                            }
+        // Note: on web this call returns immediately (it returns a Promise),
+        return runTest(
+            timeout = testTimeout,
+            context = combinedRunTestCoroutineContext
+        ) {
+            composeRootRegistry.withRegistry {
+                withScene {
+                    withRenderLoop {
+                        // MonotonicFrameClock is necessary. See the CL for details:
+                        // https://android-review.googlesource.com/c/platform/frameworks/support/+/3284298
+                        // > Anything that might result in animation may require the MonotonicFrameClock,
+                        // > and to get the timing right it should be the clock provided by the Recomposer's effect context
+                        // It's covered by SkikoComposeUiTestTest.canDriveAnimationsFromTest.
+                        frameRecomposer.withMonotonicFrameClock {
+                            block()
                         }
                     }
                 }
@@ -462,11 +461,11 @@ open class SkikoComposeUiTest @InternalTestApi constructor(
         timeoutMillis: Long,
         condition: () -> Boolean
     ) {
-        val startTime = testNanoTime()
-        val timeoutNanos = timeoutMillis * NanoSecondsPerMilliSecond
+        val startedAt = TimeSource.Monotonic.markNow()
+        val timeout = timeoutMillis.milliseconds
         while (!condition()) {
             advanceIfNeededAndRenderNextFrame()
-            if (testNanoTime() - startTime > timeoutNanos) {
+            if (startedAt.elapsedNow() > timeout) {
                 throw ComposeTimeoutException(
                     buildWaitUntilTimeoutMessage(timeoutMillis, conditionDescription)
                 )

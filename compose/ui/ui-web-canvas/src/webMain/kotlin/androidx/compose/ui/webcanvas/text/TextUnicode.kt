@@ -18,29 +18,28 @@ package androidx.compose.ui.webcanvas.text
 
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.webcanvas.text.unicode.BidiClass
-import androidx.compose.ui.webcanvas.text.unicode.BidiParagraph
 import androidx.compose.ui.webcanvas.text.unicode.LineBreakClass
 import androidx.compose.ui.webcanvas.text.unicode.STRONG_DIRECTION_LTR
-import androidx.compose.ui.webcanvas.text.unicode.STRONG_DIRECTION_NONE
 import androidx.compose.ui.webcanvas.text.unicode.STRONG_DIRECTION_RTL
 import androidx.compose.ui.webcanvas.text.unicode.bidiClass
 import androidx.compose.ui.webcanvas.text.unicode.codePointAt
-import androidx.compose.ui.webcanvas.text.unicode.codePointBefore
+import androidx.compose.ui.webcanvas.text.unicode.encodeLineBreak
 import androidx.compose.ui.webcanvas.text.unicode.firstStrongDirection as unicodeFirstStrongDirection
 import androidx.compose.ui.webcanvas.text.unicode.isEmojiPresentation
 import androidx.compose.ui.webcanvas.text.unicode.isExtendedPictographic
 import androidx.compose.ui.webcanvas.text.unicode.lineBreakClass
+import androidx.compose.ui.webcanvas.text.unicode.lineBreakPosition
 import androidx.compose.ui.webcanvas.text.unicode.lineBreaks as unicodeLineBreaks
 import androidx.compose.ui.webcanvas.text.unicode.nextGraphemeBoundary as unicodeNextGraphemeBoundary
 import androidx.compose.ui.webcanvas.text.unicode.packedRangeEnd
 import androidx.compose.ui.webcanvas.text.unicode.packedRangeStart
 import androidx.compose.ui.webcanvas.text.unicode.previousGraphemeBoundary as unicodePreviousGraphemeBoundary
+import androidx.compose.ui.webcanvas.text.unicode.wordBoundariesInside
 import androidx.compose.ui.webcanvas.text.unicode.wordRangeAt as unicodeWordRangeAt
-import androidx.compose.ui.webcanvas.text.unicode.wordSegments
+import kotlin.js.JsString
 
 /** The Unicode algorithms the text layout uses, in the shape the layout needs them. */
 internal object TextUnicode {
-    const val DirectionNone = STRONG_DIRECTION_NONE
     const val DirectionLtr = STRONG_DIRECTION_LTR
     const val DirectionRtl = STRONG_DIRECTION_RTL
 
@@ -68,31 +67,21 @@ internal object TextUnicode {
     }
 
     /**
-     * The resolved embedding levels (before rule L1) of the paragraph [start]..[end] of [text],
-     * laid out at [paragraphLevel] (0 for left-to-right, 1 for right-to-left).
+     * The line break opportunities of [layoutText] (see [layoutTextOf]), encoded with
+     * [encodeLineBreak]. The last one is always a mandatory break at the end of the text. [jsText]
+     * is the text as a JS string, which the words of the scripts written without spaces are found
+     * in.
      */
-    fun bidiLevels(text: String, start: Int, end: Int, paragraphLevel: Int): ByteArray =
-        BidiParagraph(
-            text,
-            start,
-            end,
-            if (paragraphLevel == 1) BidiParagraph.LEVEL_RTL else BidiParagraph.LEVEL_LTR,
-        ).levels
-
-    /**
-     * The line break opportunities of [text], as `position shl 1`, plus 1 for mandatory breaks.
-     * The last one is always a mandatory break at the end of the text.
-     */
-    fun lineBreaks(text: String): IntArray {
-        val breaks = unicodeLineBreaks(text)
-        return if (hasComplexContext(text)) withDictionaryBreaks(text, breaks) else breaks
+    fun lineBreaks(layoutText: CharSequence, jsText: JsString): IntArray {
+        val breaks = unicodeLineBreaks(layoutText)
+        return if (hasComplexContext(layoutText)) withDictionaryBreaks(layoutText, jsText, breaks) else breaks
     }
 
     /**
      * Whether [text] has characters of the scripts written without spaces between words (Thai,
      * Lao, Khmer, Myanmar...: line break class SA), which UAX #14 doesn't break by itself.
      */
-    private fun hasComplexContext(text: String): Boolean {
+    private fun hasComplexContext(text: CharSequence): Boolean {
         var i = 0
         while (i < text.length) {
             if (text[i].code < FirstComplexContextCharacter) {
@@ -107,20 +96,23 @@ internal object TextUnicode {
     }
 
     /**
-     * Adds the word boundaries inside runs of complex context characters to [breaks]: UAX #14
-     * leaves them to dictionary-based segmentation, which the browser's `Intl.Segmenter` does
-     * (without it, words of these scripts can only be broken where they don't fit).
+     * Adds the word boundaries inside runs of complex context characters of [layoutText] to
+     * [breaks]: UAX #14 leaves them to dictionary-based segmentation, which the browser's
+     * `Intl.Segmenter` does on each run alone, like ICU's dictionaries do (without it, words of these
+     * scripts can only be broken where they don't fit).
      */
-    private fun withDictionaryBreaks(text: String, breaks: IntArray): IntArray {
-        val boundaries = wordSegments(text).boundaries
+    private fun withDictionaryBreaks(layoutText: CharSequence, jsText: JsString, breaks: IntArray): IntArray {
         val extra = ArrayList<Int>()
-        for (boundary in boundaries) {
-            if (boundary <= 0 || boundary >= text.length) continue
-            if (lineBreakClass(codePointBefore(text, boundary)) == LineBreakClass.SA &&
-                lineBreakClass(codePointAt(text, boundary)) == LineBreakClass.SA
-            ) {
-                extra.add(boundary shl 1)
+        var position = 0
+        while (position < layoutText.length) {
+            val runEnd = complexContextRunEnd(layoutText, position)
+            if (runEnd == position) {
+                position++
+                continue
             }
+            val boundaries = wordBoundariesInside(jsText, position, runEnd) ?: return breaks
+            for (boundary in boundaries) extra.add(encodeLineBreak(boundary, isMandatory = false))
+            position = runEnd
         }
         if (extra.isEmpty()) return breaks
         // Merge the two increasing lists, keeping the existing break at a common position.
@@ -129,15 +121,28 @@ internal object TextUnicode {
         var j = 0
         var count = 0
         while (i < breaks.size || j < extra.size) {
-            if (j >= extra.size || (i < breaks.size && (breaks[i] ushr 1) <= (extra[j] ushr 1))) {
+            if (j >= extra.size ||
+                (i < breaks.size && lineBreakPosition(breaks[i]) <= lineBreakPosition(extra[j]))
+            ) {
                 val encoded = breaks[i++]
-                if (j < extra.size && (extra[j] ushr 1) == (encoded ushr 1)) j++
+                if (j < extra.size && lineBreakPosition(extra[j]) == lineBreakPosition(encoded)) j++
                 result[count++] = encoded
             } else {
                 result[count++] = extra[j++]
             }
         }
         return result.copyOf(count)
+    }
+
+    /** The end of the run of complex context characters (class SA) of [text] from [start]. */
+    private fun complexContextRunEnd(text: CharSequence, start: Int): Int {
+        var end = start
+        while (end < text.length) {
+            val codePoint = codePointAt(text, end)
+            if (lineBreakClass(codePoint) != LineBreakClass.SA) break
+            end += if (codePoint >= 0x10000) 2 else 1
+        }
+        return end
     }
 
     /** The first character of class SA (U+0E01, Thai). */

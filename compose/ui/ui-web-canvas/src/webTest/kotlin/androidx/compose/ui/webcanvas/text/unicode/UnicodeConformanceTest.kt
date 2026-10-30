@@ -55,13 +55,9 @@ class UnicodeConformanceTest {
             val expectedOrder = IntArray(reader.number()) { reader.number() }
 
             val text = codePointsToString(codePoints)
-            val requestedLevel =
-                when (direction) {
-                    0 -> BidiParagraph.LEVEL_LTR
-                    1 -> BidiParagraph.LEVEL_RTL
-                    else -> BidiParagraph.LEVEL_DEFAULT_LTR
-                }
-            val paragraph = BidiParagraph(text, 0, text.length, requestedLevel)
+            // Compose resolves the direction of a paragraph itself: the paragraph level the test
+            // case expects (from the direction it gives, or from its text) is given.
+            val paragraph = BidiText(text, expectedParagraphLevel)
             // All test characters are in the BMP, so code units and code points coincide.
             val levels = paragraph.lineLevels(0, text.length)
             val order = paragraph.visualOrder(0, text.length).filter { expectedLevels[it] >= 0 }
@@ -69,16 +65,12 @@ class UnicodeConformanceTest {
                 expectedLevels.indices.all {
                     expectedLevels[it] < 0 || expectedLevels[it] == levels[it].toInt()
                 }
-            if (
-                paragraph.paragraphLevel != expectedParagraphLevel ||
-                    !levelsMatch ||
-                    order != expectedOrder.toList()
-            ) {
+            if (!levelsMatch || order != expectedOrder.toList()) {
                 failures +=
-                    "${codePoints.toHex()}; $direction: expected level $expectedParagraphLevel, " +
+                    "${codePoints.toHex()}; $direction, level $expectedParagraphLevel: expected " +
                         "levels ${expectedLevels.joinToString(" ")}, order " +
-                        "${expectedOrder.joinToString(" ")}; got level ${paragraph.paragraphLevel}" +
-                        ", levels ${levels.joinToString(" ")}, order ${order.joinToString(" ")}"
+                        "${expectedOrder.joinToString(" ")}; got levels ${levels.joinToString(" ")}" +
+                        ", order ${order.joinToString(" ")}"
             }
         }
         check(reader.isExhausted()) { "Unexpected trailing test data" }
@@ -153,6 +145,12 @@ internal class ConformanceDataReader(data: String) {
     }
 
     fun isExhausted(): Boolean = !reader.hasNext()
+}
+
+/** Reads the next zigzag-encoded signed integer: the test data stores code point deltas so. */
+private fun EncodedDataReader.nextSigned(): Int {
+    val n = next()
+    return (n ushr 1) xor -(n and 1)
 }
 
 internal fun readBreakTestCases(data: String): List<BreakTestCase> {

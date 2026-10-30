@@ -22,6 +22,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.PathOperation
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.acos
 import kotlin.math.cos
 import kotlin.math.sin
@@ -71,6 +72,59 @@ class WebPathOpsTest {
         assertTrue(xor.snapshot().contains(2f, 2f))
         assertTrue(xor.snapshot().contains(12f, 12f))
     }
+
+    /**
+     * [count] thin triangles across the square (0, 0, 1000, 1000), nearly on top of each other:
+     * their directions are [step] radians apart. Their edges cross many times, all close together.
+     */
+    private fun fan(count: Int, step: Double): WebPath =
+        WebPath().apply {
+            for (i in 0 until count) {
+                val dx = (1000 * cos(i * step)).toFloat()
+                val dy = (1000 * sin(i * step)).toFloat()
+                val offset = (i % 7) * 0.00007f
+                moveTo(500f - dx + offset, 500f - dy)
+                lineTo(500f + dx, 500f + dy + offset)
+                lineTo(500f + dx + 0.01f, 500f + dy + 0.02f)
+                close()
+            }
+        }
+
+    /**
+     * Unites the [fan] with the square and checks the outline of the union: its area against
+     * [expectedArea] (computed apart, by integrating the vertical cross-sections of the triangles
+     * outside the square), and that it only runs along the outlines of the operands, outside of
+     * the square or along it, without crossing itself.
+     */
+    private fun assertFanUnion(count: Int, step: Double, expectedArea: Double) {
+        val fan = fan(count, step)
+        val square = rectPath(0f, 0f, 1000f, 1000f)
+        val union = op(fan, square, PathOperation.Union).snapshot()
+        assertClose(expectedArea, abs(signedArea(union)), 0.5, "area")
+        val fanData = fan.snapshot()
+        val squareData = square.snapshot()
+        forEachLineSegment(union) { x0, y0, x1, y1 ->
+            for (t in listOf(0.25f, 0.5f, 0.75f)) {
+                val x = x0 + (x1 - x0) * t
+                val y = y0 + (y1 - y0) * t
+                assertFalse(x > 0.01f && x < 999.99f && y > 0.01f && y < 999.99f, "($x, $y) is inside the square")
+                assertTrue(
+                    isNearOutline(fanData, x, y, 1e-3) || isNearOutline(squareData, x, y, 1e-3),
+                    "($x, $y) of ($x0, $y0)-($x1, $y1) is off the outlines",
+                )
+            }
+        }
+        assertNoCrossings(union)
+    }
+
+    @Test
+    fun unionsOfNearlyCoincidentEdgesKeepTheirOutline16() = assertFanUnion(16, 1e-4, 1000158.357)
+
+    @Test
+    fun unionsOfNearlyCoincidentEdgesKeepTheirOutline32() = assertFanUnion(32, 1e-5, 1000164.576)
+
+    @Test
+    fun unionsOfNearlyCoincidentEdgesKeepTheirOutline40() = assertFanUnion(40, 1e-6, 1000037.438)
 
     @Test
     fun resultUsesEvenOddAndOnlyLines() {

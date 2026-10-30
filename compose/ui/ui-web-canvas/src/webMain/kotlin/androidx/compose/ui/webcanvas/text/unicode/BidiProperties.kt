@@ -71,22 +71,19 @@ internal object BidiClass {
     const val PDI = 22
 }
 
-/** No strong directional character, see [strongDirection]. */
+/** No strong directional character, see [firstStrongDirection]. */
 internal const val STRONG_DIRECTION_NONE: Int = 0
 
-/** Strong left-to-right (Bidi_Class L), see [strongDirection]. */
+/** Strong left-to-right (Bidi_Class L), see [firstStrongDirection]. */
 internal const val STRONG_DIRECTION_LTR: Int = 1
 
-/** Strong right-to-left (Bidi_Class R or AL), see [strongDirection]. */
+/** Strong right-to-left (Bidi_Class R or AL), see [firstStrongDirection]. */
 internal const val STRONG_DIRECTION_RTL: Int = 2
 
-/** Bidi_Paired_Bracket_Type None, see [bidiPairedBracketType]. */
-internal const val BIDI_BRACKET_NONE: Int = 0
-
-/** Bidi_Paired_Bracket_Type Open, see [bidiPairedBracketType]. */
+/** Bidi_Paired_Bracket_Type Open, see [bidiBracketInfo]. */
 internal const val BIDI_BRACKET_OPEN: Int = 1
 
-/** Bidi_Paired_Bracket_Type Close, see [bidiPairedBracketType]. */
+/** Bidi_Paired_Bracket_Type Close, see [bidiBracketInfo]. */
 internal const val BIDI_BRACKET_CLOSE: Int = 2
 
 /** Lazily decoded bidi tables. */
@@ -119,23 +116,10 @@ private object BidiBracketData {
 internal fun bidiClass(codePoint: Int): Int = BidiData.classes[codePoint]
 
 /**
- * Returns the strong direction of [codePoint]: [STRONG_DIRECTION_LTR] for Bidi_Class L,
- * [STRONG_DIRECTION_RTL] for R and AL, and [STRONG_DIRECTION_NONE] otherwise.
- *
- * Matches `CodePoint.strongDirectionType()` of the Skiko text backend.
- */
-internal fun strongDirection(codePoint: Int): Int =
-    when (bidiClass(codePoint)) {
-        BidiClass.L -> STRONG_DIRECTION_LTR
-        BidiClass.R,
-        BidiClass.AL -> STRONG_DIRECTION_RTL
-        else -> STRONG_DIRECTION_NONE
-    }
-
-/**
- * Returns the direction of the first strong character (see [strongDirection]) of `text[start,
- * end)`, ignoring the characters between an isolate initiator (LRI, RLI, FSI) and its matching PDI
- * (or the end of the text), or [STRONG_DIRECTION_NONE] if there is none.
+ * Returns the direction of the first strong character (Bidi_Class L for [STRONG_DIRECTION_LTR],
+ * R or AL for [STRONG_DIRECTION_RTL]) of `text[start, end)`, ignoring the characters between an
+ * isolate initiator (LRI, RLI, FSI) and its matching PDI (or the end of the text), or
+ * [STRONG_DIRECTION_NONE] if there is none.
  *
  * Matches `CharSequence.firstStrongDirectionType()` of the Skiko text backend (rule P2 of UAX #9
  * applied to the whole text, without splitting it into paragraphs).
@@ -158,42 +142,6 @@ internal fun firstStrongDirection(text: CharSequence, start: Int = 0, end: Int =
         }
     }
     return STRONG_DIRECTION_NONE
-}
-
-/**
- * Returns true if [codePoint] has a neutral Bidi_Class: ON (other neutral), WS (whitespace) or BN
- * (boundary neutral).
- *
- * Matches `CodePoint.isNeutralDirection()` of the Skiko text backend, which checks ICU's
- * OTHER_NEUTRAL, WHITE_SPACE_NEUTRAL and BOUNDARY_NEUTRAL (= BN, not the paragraph separator B).
- */
-internal fun isNeutralDirection(codePoint: Int): Boolean =
-    when (bidiClass(codePoint)) {
-        BidiClass.ON,
-        BidiClass.WS,
-        BidiClass.BN -> true
-        else -> false
-    }
-
-/**
- * Returns the Bidi_Paired_Bracket_Type of [codePoint]: [BIDI_BRACKET_OPEN], [BIDI_BRACKET_CLOSE] or
- * [BIDI_BRACKET_NONE].
- */
-internal fun bidiPairedBracketType(codePoint: Int): Int {
-    val map = BidiBracketData.brackets
-    val index = map.indexOf(codePoint)
-    if (index < 0) return BIDI_BRACKET_NONE
-    return if (map.values[index] and 1 == 0) BIDI_BRACKET_OPEN else BIDI_BRACKET_CLOSE
-}
-
-/**
- * Returns the Bidi_Paired_Bracket of [codePoint] (the matching closing bracket for an opening
- * bracket and vice versa), or [codePoint] itself if it is not a paired bracket.
- */
-internal fun bidiPairedBracket(codePoint: Int): Int {
-    val map = BidiBracketData.brackets
-    val index = map.indexOf(codePoint)
-    return if (index < 0) codePoint else map.values[index] shr 1
 }
 
 /**

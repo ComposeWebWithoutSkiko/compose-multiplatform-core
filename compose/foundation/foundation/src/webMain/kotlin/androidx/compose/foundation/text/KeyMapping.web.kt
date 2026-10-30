@@ -16,10 +16,14 @@
 
 package androidx.compose.foundation.text
 
+import androidx.compose.ui.InternalComposeUiApi
 import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.platform.HostOs
 
+@OptIn(InternalComposeUiApi::class)
 internal actual val platformDefaultKeyMapping: KeyMapping = createPlatformDefaultKeyMapping(HostOs.current)
 
+@OptIn(InternalComposeUiApi::class)
 internal fun createPlatformDefaultKeyMapping(platform: HostOs): KeyMapping {
     val keyMapping = when (platform) {
         HostOs.MacOS -> createMacOsDefaultKeyMapping()

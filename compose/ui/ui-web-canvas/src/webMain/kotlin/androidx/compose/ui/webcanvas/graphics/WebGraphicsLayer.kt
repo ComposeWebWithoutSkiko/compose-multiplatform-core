@@ -20,7 +20,9 @@ package androidx.compose.ui.webcanvas.graphics
 
 import androidx.compose.ui.InternalComposeUiApi
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.isSimple
 import androidx.compose.ui.geometry.isUnspecified
+import androidx.compose.ui.geometry.translate
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Canvas
 import androidx.compose.ui.graphics.ClipOp
@@ -36,6 +38,8 @@ import androidx.compose.ui.graphics.layer.CompositingStrategy
 import androidx.compose.ui.graphics.layer.DefaultCameraDistance
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.platform.PlatformGraphicsLayer
+import androidx.compose.ui.graphics.prepareTransformationMatrix
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -43,7 +47,6 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.webcanvas.path.PathData
 import androidx.compose.ui.webcanvas.path.WebPath
-import kotlin.math.abs
 
 /** The light that casts the elevation shadows, in the device space of the window. */
 internal class LightingInfo {
@@ -78,6 +81,15 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
     private var clipToOutline = false
     private var outlinePath: PathData? = null
 
+    /** The outline as a shape casting shadows, see [shadowShape]. */
+    private var cachedShadowShape: ShadowShape? = null
+
+    /**
+     * The shadows the layer was asked for last, which outlast its shapes: the outline of a layer
+     * animated through its layer block is set anew in every frame, a path one as a new object.
+     */
+    private var shadowRequests: ShadowSprites.Requests? = null
+
     private val transform = Matrix()
     private val transformAffine = Affine()
     private var transformDirty = true
@@ -85,16 +97,23 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
     private var transformHasPerspective = false
     private val shadowProjective = Projective()
 
-    private var layerPaint: WebPaint? = null
-    private var layerPaintDirty = true
+    /** How the content is composited, see [updateComposition]. */
+    private var composition = Composition.Direct
+
+    /** How the content is composited into the image that is projected in perspective. */
+    private var projectedComposition = Composition.Direct
+    private var compositionDirty = true
+
+    /** The paint compositing the content when it's [Composition.Offscreen]. */
+    private val layerPaint = WebPaint()
 
     /** [layerPaint] without its blend mode, which applies when compositing a projected image. */
-    private var projectedLayerPaint: WebPaint? = null
+    private val projectedLayerPaint = WebPaint()
 
     override var compositingStrategy: CompositingStrategy = CompositingStrategy.Auto
         set(value) {
             field = value
-            layerPaintDirty = true
+            compositionDirty = true
         }
 
     override var pivotOffset: Offset = Offset.Unspecified
@@ -106,7 +125,7 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
     override var alpha: Float = 1f
         set(value) {
             field = value
-            layerPaintDirty = true
+            compositionDirty = true
         }
 
     override var scaleX: Float = 1f
@@ -136,19 +155,31 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
     override var shadowElevation: Float = 0f
 
     override var ambientShadowColor: Color = Color.Black
+        set(value) {
+            field = value
+            ambientShadowArgb = value.toArgb()
+        }
 
     override var spotShadowColor: Color = Color.Black
+        set(value) {
+            field = value
+            spotShadowArgb = value.toArgb()
+        }
+
+    // The shadow colors as ARGB, converted once.
+    private var ambientShadowArgb = Color.Black.toArgb()
+    private var spotShadowArgb = Color.Black.toArgb()
 
     override var blendMode: BlendMode = BlendMode.SrcOver
         set(value) {
             field = value
-            layerPaintDirty = true
+            compositionDirty = true
         }
 
     override var colorFilter: ColorFilter? = null
         set(value) {
             field = value
-            layerPaintDirty = true
+            compositionDirty = true
         }
 
     override var rotationX: Float = 0f
@@ -178,7 +209,7 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
     override var renderEffect: RenderEffect? = null
         set(value) {
             field = value
-            layerPaintDirty = true
+            compositionDirty = true
         }
 
     override fun setBounds(topLeft: IntOffset, size: IntSize) {
@@ -190,9 +221,11 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
     }
 
     override fun setOutline(outline: Outline?, clip: Boolean) {
+        // The same outline is set again whenever the elevation or the clip changes. A path set
+        // again makes a new Outline.Generic, which is equal only to itself.
+        if (outline != this.outline) invalidateOutlineShapes()
         this.outline = outline
         this.clipToOutline = clip
-        this.outlinePath = null
     }
 
     override fun setOutsets(left: Int, top: Int, right: Int, bottom: Int) {
@@ -205,8 +238,14 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
             outsetRight = right
             outsetBottom = bottom
             transformDirty = true
-            outlinePath = null
+            invalidateOutlineShapes()
         }
+    }
+
+    /** Forgets the shapes made from the outline (in the coordinates of the display list). */
+    private fun invalidateOutlineShapes() {
+        outlinePath = null
+        cachedShadowShape = null
     }
 
     override fun record(
@@ -236,7 +275,9 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
                 canvas.restore()
             }
         } finally {
-            displayList = canvas.endRecording()
+            val recorded = canvas.endRecording()
+            if (recorded.canModulateAlpha != displayList?.canModulateAlpha) compositionDirty = true
+            displayList = recorded
         }
     }
 
@@ -259,7 +300,7 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
         updateTransform()
         canvas.save()
         canvas.translate((topLeft.x - outsetLeft).toFloat(), (topLeft.y - outsetTop).toFloat())
-        if (transformHasPerspective && drawInPerspective(canvas, displayList)) {
+        if (transformHasPerspective && drawInPerspective(canvas)) {
             canvas.restore()
             return
         }
@@ -270,10 +311,10 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
         if (shadowElevation > 0f && outline != null) {
             ElevationShadows.draw(
                 canvas = canvas,
-                shape = outlinePath(outline),
+                shape = shadowShape(outline),
                 elevation = shadowElevation,
-                ambientColor = ambientShadowColor,
-                spotColor = spotShadowColor,
+                ambientArgb = ambientShadowArgb,
+                spotArgb = spotShadowArgb,
                 alpha = alpha,
                 lighting = lighting,
             )
@@ -281,21 +322,41 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
         if (clipToOutline && outline != null) {
             clipTo(canvas, outline)
         }
+        updateComposition()
+        drawContent(canvas, displayList, composition, layerPaint)
+        canvas.restore()
+    }
+
+    /** Draws the display list into [canvas] with [composition], through [paint] if offscreen. */
+    private fun drawContent(
+        canvas: WebCanvas,
+        displayList: DisplayList,
+        composition: Composition,
+        paint: WebPaint,
+    ) {
         val width = (size.width + outsetLeft + outsetRight).toFloat()
         val height = (size.height + outsetTop + outsetBottom).toFloat()
-        val paint = layerPaint()
-        if (paint != null) {
-            canvas.saveLayer(0f, 0f, width, height, paint)
-        } else if (alpha < 1f) {
-            canvas.modulateAlpha(alpha)
+        val drawsContent = when (composition) {
+            Composition.Direct -> true
+            Composition.ModulateAlpha -> {
+                // Restored with the layer.
+                canvas.modulateAlpha(alpha)
+                true
+            }
+            Composition.ClippedAlpha -> {
+                canvas.saveAlphaLayer(0f, 0f, width, height, alpha)
+                true
+            }
+            // The content may be drawn ahead of the frame (see FramePlan).
+            Composition.Offscreen ->
+                canvas.saveLayer(0f, 0f, width, height, paint, displayList, DisplayList.WholeList)
         }
-        if (!displayList.isEmpty) {
+        if (drawsContent && !displayList.isEmpty) {
             displayList.replay(canvas)
         }
-        if (paint != null) {
+        if (composition == Composition.ClippedAlpha || composition == Composition.Offscreen) {
             canvas.restore()
         }
-        canvas.restore()
     }
 
     /**
@@ -303,7 +364,7 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
      * needs WebGL. Returns `false` if it isn't available: the layer is then drawn with the affine
      * part of its transformation.
      */
-    private fun drawInPerspective(canvas: WebCanvas, displayList: DisplayList): Boolean {
+    private fun drawInPerspective(canvas: WebCanvas): Boolean {
         if (!WebGLRenderer.isAvailable()) return false
         val outline = outline
         if (shadowElevation > 0f && outline != null) {
@@ -315,42 +376,38 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
                 canvas.saveInDeviceSpace()
                 ElevationShadows.draw(
                     canvas = canvas,
-                    shape = projected,
+                    // A new shape in every frame: no image is worth making.
+                    shape = ShadowShape.Path(projected, key = null, spriteRequests = null),
                     elevation = shadowElevation * scale,
-                    ambientColor = ambientShadowColor,
-                    spotColor = spotShadowColor,
+                    ambientArgb = ambientShadowArgb,
+                    spotArgb = spotShadowArgb,
                     alpha = alpha,
                     lighting = lighting,
                 )
                 canvas.restore()
             }
         }
-        val width = (size.width + outsetLeft + outsetRight).toFloat()
-        val height = (size.height + outsetTop + outsetBottom).toFloat()
-        val paint = layerPaint()
-        val contentPaint = projectedLayerPaint
+        updateComposition()
         return canvas.drawInPerspective(
             transform = transform,
             left = 0f,
             top = 0f,
-            right = width,
-            bottom = height,
-            blendMode = paint?.blendMode ?: BlendMode.SrcOver,
-        ) { content ->
+            right = (size.width + outsetLeft + outsetRight).toFloat(),
+            bottom = (size.height + outsetTop + outsetBottom).toFloat(),
+            blendMode = blendMode,
+            content = projectedContent,
+        )
+    }
+
+    /** The content of the layer drawn in perspective, in its own space (see [drawInPerspective]). */
+    private val projectedContent = object : JobContent {
+        override fun replayContent(canvas: WebCanvas, contentOp: Int) {
+            val displayList = displayList ?: return
+            val outline = outline
             if (clipToOutline && outline != null) {
-                clipTo(content, outline)
+                clipTo(canvas, outline)
             }
-            if (contentPaint != null) {
-                content.saveLayer(0f, 0f, width, height, contentPaint)
-            } else if (alpha < 1f) {
-                content.modulateAlpha(alpha)
-            }
-            if (!displayList.isEmpty) {
-                displayList.replay(content)
-            }
-            if (contentPaint != null) {
-                content.restore()
-            }
+            drawContent(canvas, displayList, projectedComposition, projectedLayerPaint)
         }
     }
 
@@ -367,6 +424,48 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
             )
             else -> canvas.clipPathData(outlinePath(outline), ClipOp.Intersect)
         }
+    }
+
+    /**
+     * The outline as a shape casting shadows, in the coordinates of the display list: a
+     * rectangle or a rounded rectangle with the same circular corners, whose shadows are drawn
+     * without blurring, or else its path, identified up to a translation for the images of its
+     * shadows (see [ShadowSprites]).
+     */
+    private fun shadowShape(outline: Outline): ShadowShape {
+        cachedShadowShape?.let { return it }
+        val path = outlinePath(outline)
+        val dx = outsetLeft.toFloat()
+        val dy = outsetTop.toFloat()
+        val requests = shadowRequests ?: ShadowSprites.Requests().also { shadowRequests = it }
+        val shape = when (outline) {
+            is Outline.Rectangle -> outline.rect.let {
+                ShadowShape.RoundRect(
+                    it.left + dx, it.top + dy, it.right + dx, it.bottom + dy,
+                    radius = 0f,
+                    path,
+                    key = it.size,
+                    requests,
+                )
+            }
+            is Outline.Rounded -> outline.roundRect.let {
+                val key = it.translate(Offset(-it.left, -it.top))
+                if (it.isSimple) {
+                    ShadowShape.RoundRect(
+                        it.left + dx, it.top + dy, it.right + dx, it.bottom + dy,
+                        radius = it.topLeftCornerRadius.x,
+                        path,
+                        key,
+                        requests,
+                    )
+                } else {
+                    ShadowShape.Path(path, key, requests)
+                }
+            }
+            is Outline.Generic -> ShadowShape.Path(path, key = PathShapeKey(path), requests)
+        }
+        cachedShadowShape = shape
+        return shape
     }
 
     /** The outline as a path in the coordinates of the display list (shifted by the outsets). */
@@ -396,7 +495,7 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
             pivotX = pivotOffset.x + outsetLeft
             pivotY = pivotOffset.y + outsetTop
         }
-        prepareLayerTransform(
+        prepareTransformationMatrix(
             matrix = transform,
             pivotX = pivotX,
             pivotY = pivotY,
@@ -414,81 +513,49 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
         transformIsIdentity = !transformHasPerspective && transformAffine.isIdentity
     }
 
-    /** The paint to composite the layer with, or `null` if it can be drawn directly. */
-    private fun layerPaint(): WebPaint? {
-        if (!layerPaintDirty) return layerPaint
-        layerPaintDirty = false
-        val alphaNeedsLayer = alpha < 1f && compositingStrategy != CompositingStrategy.ModulateAlpha
-        val needsLayer = alphaNeedsLayer || colorFilter != null || blendMode != BlendMode.SrcOver ||
-            renderEffect != null || compositingStrategy == CompositingStrategy.Offscreen
-        layerPaint = if (needsLayer) {
-            WebPaint().also {
-                it.alpha = alpha
-                it.colorFilter = colorFilter
-                it.blendMode = blendMode
-                it.renderEffect = renderEffect?.webRenderEffect
-            }
-        } else {
-            null
+    /** Updates how the content is composited, and the paints doing it, after properties changed. */
+    private fun updateComposition() {
+        if (!compositionDirty) return
+        compositionDirty = false
+        composition = compositionWith(blendMode)
+        // The blend mode applies when compositing the projected image.
+        projectedComposition = compositionWith(BlendMode.SrcOver)
+        val effect = renderEffect?.webRenderEffect
+        layerPaint.alpha = alpha
+        layerPaint.colorFilter = colorFilter
+        layerPaint.blendMode = blendMode
+        layerPaint.renderEffect = effect
+        projectedLayerPaint.alpha = alpha
+        projectedLayerPaint.colorFilter = colorFilter
+        projectedLayerPaint.renderEffect = effect
+    }
+
+    private fun compositionWith(blendMode: BlendMode): Composition =
+        when {
+            colorFilter != null || renderEffect != null || blendMode != BlendMode.SrcOver ||
+                compositingStrategy == CompositingStrategy.Offscreen -> Composition.Offscreen
+            alpha >= 1f -> Composition.Direct
+            compositingStrategy == CompositingStrategy.ModulateAlpha -> Composition.ModulateAlpha
+            displayList?.canModulateAlpha == true -> Composition.ClippedAlpha
+            else -> Composition.Offscreen
         }
-        val contentNeedsLayer = alphaNeedsLayer || colorFilter != null || renderEffect != null ||
-            compositingStrategy == CompositingStrategy.Offscreen
-        projectedLayerPaint = if (contentNeedsLayer) {
-            WebPaint().also {
-                it.alpha = alpha
-                it.colorFilter = colorFilter
-                it.renderEffect = renderEffect?.webRenderEffect
-            }
-        } else {
-            null
-        }
-        return layerPaint
+
+    /** How the content of a layer is composited. */
+    private enum class Composition {
+        /** Drawn as it is. */
+        Direct,
+
+        /** Drawn with the alpha of the layer (`CompositingStrategy.ModulateAlpha`). */
+        ModulateAlpha,
+
+        /**
+         * Drawn with the alpha of the layer and clipped to it, like through an offscreen buffer,
+         * which gives the same pixels for content that covers nothing of itself (see
+         * [WebCanvas.saveAlphaLayer]).
+         */
+        ClippedAlpha,
+
+        /** Drawn into an offscreen buffer, composited with the layer paint. */
+        Offscreen,
     }
 }
-
-/**
- * Builds the transformation of a layer around its pivot, like a render node: scale and rotation
- * around the pivot, then translation. Rotations around the x and y axes use a perspective
- * projection with the camera at [cameraDistance] (in inches, like on Android).
- */
-internal fun prepareLayerTransform(
-    matrix: Matrix,
-    pivotX: Float,
-    pivotY: Float,
-    translationX: Float,
-    translationY: Float,
-    rotationX: Float,
-    rotationY: Float,
-    rotationZ: Float,
-    scaleX: Float,
-    scaleY: Float,
-    cameraDistance: Float,
-) {
-    matrix.reset()
-    matrix.translate(x = -pivotX, y = -pivotY)
-    matrix *= Matrix().apply {
-        rotateZ(rotationZ)
-        rotateY(rotationY)
-        rotateX(rotationX)
-        scale(scaleX, scaleY)
-    }
-    if (abs(rotationX) > NonZeroEpsilon || abs(rotationY) > NonZeroEpsilon) {
-        matrix *= Matrix().apply {
-            // The camera location is passed in inches, set in pt.
-            val depth = cameraDistance * 72f
-            this[2, 3] = -1f / depth
-        }
-    }
-    matrix *= Matrix().apply {
-        translate(x = pivotX + translationX, y = pivotY + translationY)
-    }
-    // The z row and column are irrelevant in 2D.
-    matrix[2, 0] = 0f
-    matrix[2, 1] = 0f
-    matrix[2, 3] = 0f
-    matrix[0, 2] = 0f
-    matrix[1, 2] = 0f
-    matrix[3, 2] = 0f
-}
-
-private const val NonZeroEpsilon = 0.001f

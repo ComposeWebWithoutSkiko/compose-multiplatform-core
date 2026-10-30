@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-@file:OptIn(InternalComposeUiApi::class, ExperimentalWasmJsInterop::class, ExperimentalTextApi::class)
+@file:OptIn(InternalComposeUiApi::class, ExperimentalTextApi::class)
 
 package androidx.compose.ui.webcanvas.text
 
@@ -39,7 +39,6 @@ import androidx.compose.ui.text.platform.LoadedFont
 import androidx.compose.ui.text.platform.PlatformFont
 import androidx.compose.ui.text.platform.SystemFont
 import androidx.compose.ui.webcanvas.dom.toUint8Array
-import kotlin.js.ExperimentalWasmJsInterop
 import kotlin.js.JsAny
 import kotlin.js.js
 
@@ -298,7 +297,7 @@ internal fun createWebFontFamilyResolver(): FontFamily.Resolver =
  */
 @InternalComposeUiApi
 @Suppress("DEPRECATION", "OverridingDeprecatedMember")
-class WebFontResourceLoader : Font.ResourceLoader, FontResourceLoaderWithResolver {
+public class WebFontResourceLoader : Font.ResourceLoader, FontResourceLoaderWithResolver {
     override val fontFamilyResolver: FontFamily.Resolver by lazy { createWebFontFamilyResolver() }
 
     @Deprecated(

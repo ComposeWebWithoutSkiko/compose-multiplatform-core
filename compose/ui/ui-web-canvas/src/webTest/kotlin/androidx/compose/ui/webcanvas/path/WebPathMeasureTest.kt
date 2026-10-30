@@ -21,10 +21,14 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.util.lerp
 import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class WebPathMeasureTest {
@@ -67,7 +71,6 @@ class WebPathMeasureTest {
         val measure = WebPathMeasure()
         measure.setPath(rectPath(0f, 0f, 10f, 20f), false)
         assertEquals(60f, measure.length)
-        assertTrue(measure.isClosed)
 
         val open =
             WebPath().apply {
@@ -77,11 +80,9 @@ class WebPathMeasureTest {
             }
         measure.setPath(open, false)
         assertEquals(20f, measure.length)
-        assertFalse(measure.isClosed)
 
         measure.setPath(open, true)
         assertClose(20f + sqrt(200f), measure.length, 1e-4f)
-        assertTrue(measure.isClosed)
     }
 
     @Test
@@ -101,10 +102,11 @@ class WebPathMeasureTest {
         assertEquals(10f, measure.length)
         assertEquals(Offset(15f, 10f), measure.getPosition(5f))
 
-        assertTrue(measure.nextContour())
-        assertEquals(30f, measure.length)
-        assertFalse(measure.nextContour())
-        assertEquals(0f, measure.length)
+        // The contours that path effects go through.
+        val contours = ContourMeasureIter(path.snapshot(), forceClosed = false)
+        assertEquals(10f, contours.next()?.length)
+        assertEquals(30f, contours.next()?.length)
+        assertNull(contours.next())
     }
 
     @Test
@@ -323,6 +325,75 @@ class WebPathMeasureTest {
         measure.setPath(path, false)
         path.lineTo(10f, 100f)
         assertEquals(10f, measure.length)
+        // Rewritten points too: the measure reads the points of the path as they were.
+        path.translate(Offset(50f, 50f))
+        assertEquals(Offset(5f, 0f), measure.getPosition(5f))
+    }
+
+    @Test
+    fun contoursAfterOthersReadTheirOwnConics() {
+        val path =
+            WebPath().apply {
+                addOval(Rect(0f, 0f, 20f, 20f))
+                addArc(Rect(100f, 100f, 300f, 300f), 0f, 90f)
+            }
+        val contours = ContourMeasureIter(path.snapshot(), forceClosed = false)
+        contours.next()
+        val arc = assertNotNull(contours.next())
+        assertClose(50f * PI.toFloat(), arc.length, 0.5f)
+        val position = FloatArray(2)
+        arc.getPosTan(arc.length / 2f, position, null)
+        val angle = PI.toFloat() / 4f
+        assertOffsetClose(
+            Offset(200f + 100f * cos(angle), 200f + 100f * sin(angle)),
+            Offset(position[0], position[1]),
+            1e-2f,
+        )
+    }
+
+    @Test
+    fun hugeCurvesAreMeasuredDownToTheTolerance() {
+        // Curves subdivided many levels deep: hundreds of chords each.
+        val scale = 100_000f
+        val path =
+            WebPath().apply {
+                moveTo(0f, 0f)
+                cubicTo(0f, scale, scale, scale, scale, 0f)
+                quadraticTo(scale * 1.5f, scale, 2f * scale, 0f)
+            }
+        val measure = WebPathMeasure()
+        measure.setPath(path, false)
+        val s = scale.toDouble()
+        val expected =
+            cubicArcLength(0.0, 0.0, 0.0, s, s, s, s, 0.0) +
+                quadArcLength(s, 0.0, 1.5 * s, s, 2.0 * s, 0.0)
+        assertClose(expected.toFloat(), measure.length, expected.toFloat() * 1e-4f)
+    }
+
+    private fun cubicArcLength(
+        x0: Double,
+        y0: Double,
+        x1: Double,
+        y1: Double,
+        x2: Double,
+        y2: Double,
+        x3: Double,
+        y3: Double,
+    ): Double {
+        var length = 0.0
+        var px = x0
+        var py = y0
+        val steps = 100_000
+        for (i in 1..steps) {
+            val t = i.toDouble() / steps
+            val mt = 1 - t
+            val x = mt * mt * mt * x0 + 3 * mt * mt * t * x1 + 3 * mt * t * t * x2 + t * t * t * x3
+            val y = mt * mt * mt * y0 + 3 * mt * mt * t * y1 + 3 * mt * t * t * y2 + t * t * t * y3
+            length += sqrt((x - px) * (x - px) + (y - py) * (y - py))
+            px = x
+            py = y
+        }
+        return length
     }
 
     private fun quadArcLength(

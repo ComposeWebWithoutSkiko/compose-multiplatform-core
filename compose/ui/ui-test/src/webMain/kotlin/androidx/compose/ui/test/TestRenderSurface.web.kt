@@ -25,13 +25,18 @@ import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.platform.registerWebCanvasComposeImplementation
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
-import kotlin.js.js
+import androidx.compose.ui.webcanvas.ImageBitmapRenderer
 
-/** Draws into an image backed by a canvas, through the web canvas implementation. */
+/**
+ * Draws into an image backed by a canvas, through the web canvas implementation: frames are drawn
+ * the way a window draws them (see [ImageBitmapRenderer]).
+ */
+@OptIn(InternalComposeUiApi::class)
 private class CanvasTestRenderSurface(private val width: Int, private val height: Int) :
     TestRenderSurface {
     private val image = ImageBitmap(width, height)
     private val canvas = Canvas(image)
+    private val renderer = ImageBitmapRenderer(image)
     private val clearPaint = Paint().apply { blendMode = BlendMode.Clear }
     private val copyPaint = Paint()
 
@@ -40,7 +45,7 @@ private class CanvasTestRenderSurface(private val width: Int, private val height
     }
 
     override fun draw(block: (Canvas) -> Unit) {
-        block(canvas)
+        renderer.render(block)
     }
 
     override fun capture(): ImageBitmap = ImageBitmap(width, height).also {
@@ -72,8 +77,3 @@ internal actual fun createTestRenderSurface(width: Int, height: Int): TestRender
 internal actual fun registerTestComposeImplementation() {
     registerWebCanvasComposeImplementation()
 }
-
-internal actual fun testNanoTime(): Long = (performanceNow() * 1_000_000.0).toLong()
-
-// language=js
-private fun performanceNow(): Double = js("performance.now()")

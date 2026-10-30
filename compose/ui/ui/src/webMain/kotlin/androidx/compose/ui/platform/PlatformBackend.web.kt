@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+@file:OptIn(ExperimentalWasmJsInterop::class)
+
 package androidx.compose.ui.platform
 
 import androidx.compose.ui.InternalComposeUiApi
@@ -22,7 +24,9 @@ import androidx.compose.ui.graphics.platform.PlatformGraphicsContext
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.webcanvas.WebCanvasGraphicsContext
 import androidx.compose.ui.webcanvas.text.WebFontResourceLoader
+import kotlin.js.ExperimentalWasmJsInterop
 import kotlin.js.js
+import kotlinx.browser.window
 
 @OptIn(InternalComposeUiApi::class)
 internal actual fun createPlatformGraphicsContext(
@@ -34,14 +38,11 @@ internal actual fun createPlatformGraphicsContext(
 @OptIn(InternalComposeUiApi::class)
 internal actual fun createPlatformFontLoader(): Font.ResourceLoader = WebFontResourceLoader()
 
-internal actual fun platformNanoTime(): Long = (performanceNow() * 1_000_000.0).toLong()
+internal actual fun platformNanoTime(): Long = (window.performance.now() * 1_000_000.0).toLong()
 
 @Suppress("DEPRECATION")
 internal actual fun currentPlatformSystemTheme(): SystemTheme =
     if (prefersDarkColorScheme()) SystemTheme.Dark else SystemTheme.Light
-
-// language=js
-private fun performanceNow(): Double = js("performance.now()")
 
 // language=js
 private fun prefersDarkColorScheme(): Boolean =

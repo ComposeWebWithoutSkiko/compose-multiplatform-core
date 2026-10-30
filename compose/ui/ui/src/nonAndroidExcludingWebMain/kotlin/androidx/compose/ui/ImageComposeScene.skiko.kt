@@ -61,6 +61,9 @@ import org.jetbrains.skia.Image
 import org.jetbrains.skia.Surface
 import org.jetbrains.skiko.currentNanoTime
 
+// The web targets have a copy of this file that renders into an ImageBitmap instead
+// (ImageComposeScene.web.kt in webMain): keep the two in sync.
+
 /**
  * Render Compose [content] into an [Image]
  *

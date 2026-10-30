@@ -28,6 +28,7 @@ import androidx.compose.ui.graphics.Canvas
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PaintingStyle
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Shader
 import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -48,12 +49,15 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.webcanvas.graphics.Affine
 import androidx.compose.ui.webcanvas.graphics.RecordingCanvas
 import androidx.compose.ui.webcanvas.graphics.TextRunDrawing
 import androidx.compose.ui.webcanvas.graphics.TextShadow
 import androidx.compose.ui.webcanvas.graphics.WebCanvas
 import androidx.compose.ui.webcanvas.graphics.WebPaint
+import androidx.compose.ui.webcanvas.graphics.webShader
 import androidx.compose.ui.webcanvas.path.WebPath
+import androidx.compose.ui.webcanvas.path.WebPathEffect
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
@@ -170,7 +174,7 @@ internal class WebParagraph(
     override fun getLineEnd(lineIndex: Int, visibleEnd: Boolean): Int {
         val line = line(lineIndex) ?: return 0
         // Like Skia (whose behavior the common code of Compose Multiplatform expects), the logical
-        // end of a line includes its trailing spaces but not the line feed ending it.
+        // end of a line includes its trailing spaces but not the line terminator ending it.
         return if (visibleEnd) line.visibleEnd else line.end
     }
 
@@ -200,14 +204,17 @@ internal class WebParagraph(
     override fun getParagraphDirection(offset: Int): ResolvedTextDirection =
         if (analysis.isRtl) ResolvedTextDirection.Rtl else ResolvedTextDirection.Ltr
 
+    /**
+     * The direction the character at [offset] is drawn in on its line: the direction of its piece,
+     * which has all of UAX #9 rule L1 (the whitespace ending a line takes the paragraph direction),
+     * or its resolved level for a character no piece shows (a line terminator, hidden text).
+     */
     override fun getBidiRunDirection(offset: Int): ResolvedTextDirection {
         if (text.isEmpty()) return getParagraphDirection(offset)
         val index = offset.coerceIn(0, text.length - 1)
-        return if (analysis.levels[index].toInt() and 1 == 1) {
-            ResolvedTextDirection.Rtl
-        } else {
-            ResolvedTextDirection.Ltr
-        }
+        val piece = line(getLineForOffset(index))?.let { pieceContaining(it, index) }
+        val isRtl = piece?.isRtl ?: (analysis.levels[index].toInt() and 1 == 1)
+        return if (isRtl) ResolvedTextDirection.Rtl else ResolvedTextDirection.Ltr
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -217,24 +224,24 @@ internal class WebParagraph(
     private fun pieceContaining(line: Line, offset: Int): Piece? =
         line.pieces.firstOrNull { !it.isEllipsis && offset >= it.start && offset < it.end }
 
-    /** The advance from the logical start of [piece] to [offset], in the piece direction. */
+    /**
+     * The advance from the logical start of [piece] to [offset], in the piece direction: the width
+     * of the text before [offset], which the Canvas 2D API only gives by measuring it, once for
+     * each offset of the piece (see [Piece.caretAdvances]).
+     */
     private fun advanceInPiece(piece: Piece, offset: Int): Float {
         if (offset <= piece.start) return 0f
         if (offset >= piece.end) return piece.totalWidth
         if (piece.placeholder != null) return 0f
-        var advance = TextMeasurement.width(piece.style.font, text, piece.start, offset, piece.isRtl)
+        val advances = piece.caretAdvances
+            ?: FloatArray(piece.end - piece.start) { Float.NaN }.also { piece.caretAdvances = it }
+        val measured = advances[offset - piece.start]
+        if (!measured.isNaN()) return measured
+        var advance = analysis.runWidth(piece.style.font, piece.start, offset, piece.isRtl)
         if (piece.justifySpacing > 0f) {
-            advance += piece.justifySpacing * countJustifiableSpaces(piece.start, offset)
+            advance += piece.justifySpacing * analysis.countJustifiableSpaces(piece.start, offset)
         }
-        return min(advance, piece.totalWidth)
-    }
-
-    private fun countJustifiableSpaces(start: Int, end: Int): Int {
-        var count = 0
-        for (i in start until end) {
-            if (text[i] == ' ' || text[i] == '\u00A0' || text[i] == '\u3000') count++
-        }
-        return count
+        return min(advance, piece.totalWidth).also { advances[offset - piece.start] = it }
     }
 
     /** The x of the caret before [offset] in [piece] (its leading edge). */
@@ -250,13 +257,16 @@ internal class WebParagraph(
         val trailing: Float get() = if (isRtl) left else right
     }
 
-    /** The box of the grapheme cluster starting before [offset] or at it, on [line]. */
+    /**
+     * The box of the cluster (see [ParagraphAnalysis.nextClusterBoundary]) starting before [offset]
+     * or at it, on [line].
+     */
     private fun charBox(line: Line, offset: Int): CharBox? {
         if (offset < line.start || offset >= line.end) return null
         val piece = pieceContaining(line, offset) ?: return null
         val start = if (offset == piece.start) offset else
-            TextUnicode.previousGraphemeBoundary(text, offset + 1).coerceIn(piece.start, offset)
-        val end = TextUnicode.nextGraphemeBoundary(text, start).coerceIn(start + 1, piece.end)
+            analysis.previousClusterBoundary(offset + 1).coerceIn(piece.start, offset)
+        val end = analysis.nextClusterBoundary(start).coerceIn(start + 1, piece.end)
         val x0 = caretX(piece, start)
         val x1 = caretX(piece, end)
         return CharBox(min(x0, x1), max(x0, x1), piece.isRtl)
@@ -266,21 +276,19 @@ internal class WebParagraph(
         if (lines.isEmpty()) return 0f
         val lineIndex = getLineForOffset(offset.coerceIn(0, text.length))
         val line = lines[lineIndex]
+        // An offset in the text the line hides, behind its ellipsis or after the end of its content
+        // (the text after the last line kept by maxLines, or inside a CR LF), stands at the end of
+        // what the line shows.
+        if (line.isEllipsized && offset > line.visibleEnd) return ellipsisEnd(line)
+        if (offset > line.end) return getHorizontalPosition(line.end, usePrimaryDirection)
         val prev = if (offset - 1 >= line.start) charBox(line, offset - 1) else null
         val next = charBox(line, offset)
         val isRtl = analysis.isRtl
         return when {
             prev == null && next == null -> lineStartPosition(line)
             prev == null -> next!!.leading
-            next == null -> {
-                // At the end of the line: after the last character, or past the ellipsis.
-                if (line.isEllipsized && offset >= line.visibleEnd) {
-                    line.pieces.firstOrNull { it.isEllipsis }?.let { if (it.isRtl) it.x else it.right }
-                        ?: prev.trailing
-                } else {
-                    prev.trailing
-                }
-            }
+            // At the end of the line: after the last character, or past the ellipsis.
+            next == null -> if (line.isEllipsized) ellipsisEnd(line) else prev.trailing
             next.isRtl == prev.isRtl -> next.leading
             !isRtl && !prev.isRtl -> next.leading
             isRtl && prev.isRtl -> next.leading
@@ -288,6 +296,12 @@ internal class WebParagraph(
             else -> next.leading
         }
     }
+
+    /**
+     * Where the caret after the ellipsis of [line] goes: its far edge in the paragraph direction,
+     * which ends the line (the last line isn't justified and nothing hangs after the ellipsis).
+     */
+    private fun ellipsisEnd(line: Line): Float = if (analysis.isRtl) line.left else line.right
 
     /** Where the caret of an empty line goes. */
     private fun lineStartPosition(line: Line): Float {
@@ -317,17 +331,24 @@ internal class WebParagraph(
         val maxOffset = if (line.index == lines.lastIndex) {
             line.endIncludingNewline
         } else {
-            // Like Android: the offset after the last character would be on the next line.
-            max(line.start, line.endIncludingNewline - 1)
+            // Like Android: one caret position (a cluster, e.g. a CR LF or a placeholder) before
+            // the line end, as the offset after the last character would be on the next line.
+            max(line.start, analysis.previousClusterBoundary(line.endIncludingNewline))
         }
         val pieces = line.pieces.filter { !it.isEllipsis }
-        if (pieces.isEmpty()) return line.start
         val x = position.x
+        val isRtl = analysis.isRtl
+        if (pieces.isEmpty()) {
+            // A line showing only the ellipsis: before it, the line start; on it or past it, the
+            // end, as on a line that shows text before its ellipsis.
+            val ellipsis = line.pieces.firstOrNull() ?: return line.start
+            val beforeEllipsis = if (isRtl) x >= ellipsis.right else x < ellipsis.x
+            return if (beforeEllipsis) line.start else maxOffset
+        }
         // Past the edges of the line, the caret goes to the start or the end of the line in the
         // paragraph direction (like on Android and with Skia), whatever the direction of the
         // runs at the edges: e.g. clicking right of a left-to-right line ending with Arabic text
         // places the caret after the last character, not before the first Arabic one.
-        val isRtl = analysis.isRtl
         if (x < pieces.first().x) return if (isRtl) maxOffset else line.start
         if (x >= pieces.last().right) return if (isRtl) line.start else maxOffset
         val piece = pieces.firstOrNull { x >= it.x && x < it.right } ?: pieces.last()
@@ -335,7 +356,7 @@ internal class WebParagraph(
         return offset.coerceIn(line.start, maxOffset)
     }
 
-    /** The grapheme boundary of [piece] closest to [x]. */
+    /** The cluster boundary of [piece] closest to [x]. */
     private fun offsetInPiece(piece: Piece, x: Float): Int {
         if (piece.placeholder != null) {
             val middle = piece.x + piece.width / 2
@@ -346,10 +367,10 @@ internal class WebParagraph(
         val advance = if (piece.isRtl) piece.right - x else x - piece.x
         if (advance <= 0f) return piece.start
         if (advance >= piece.totalWidth) return piece.end
-        // Grapheme boundaries are few in a piece; walk them, measuring each prefix once.
+        // Cluster boundaries are few in a piece; walk them, measuring each prefix once.
         var previousOffset = piece.start
         var previousAdvance = 0f
-        var offset = TextUnicode.nextGraphemeBoundary(text, piece.start).coerceAtMost(piece.end)
+        var offset = analysis.nextClusterBoundary(piece.start).coerceAtMost(piece.end)
         while (true) {
             val currentAdvance = advanceInPiece(piece, offset)
             if (currentAdvance >= advance) {
@@ -358,7 +379,7 @@ internal class WebParagraph(
             if (offset >= piece.end) return piece.end
             previousOffset = offset
             previousAdvance = currentAdvance
-            offset = TextUnicode.nextGraphemeBoundary(text, offset).coerceAtMost(piece.end)
+            offset = analysis.nextClusterBoundary(offset).coerceAtMost(piece.end)
         }
     }
 
@@ -373,7 +394,7 @@ internal class WebParagraph(
             if (line.bottom <= rect.top || line.top >= rect.bottom) continue
             var offset = line.start
             while (offset < line.end) {
-                val next = TextUnicode.nextGraphemeBoundary(text, offset).coerceAtMost(line.end)
+                val next = analysis.nextClusterBoundary(offset).coerceAtMost(line.end)
                 val box = charBox(line, offset)
                 if (box != null) {
                     val charRect = Rect(box.left, line.top, box.right, line.bottom)
@@ -517,8 +538,17 @@ internal class WebParagraph(
         val brushSize = Size(width, height)
         val paints = HashMap<RunStyle, WebPaint>()
         fun paintFor(style: RunStyle): WebPaint = paints.getOrPut(style) {
-            createTextPaint(style, brushSize, blendMode)
+            createTextPaint(style, brushSize, blendMode, style.font.pixelRatio)
         }
+        val decorationPaints = HashMap<RunStyle, WebPaint>()
+        // The paint of the decorations of a run with [paint], which are in pixels: a paint only
+        // differs from the one in the units of the font in its stroke and shader.
+        fun decorationPaintFor(style: RunStyle, paint: WebPaint): WebPaint =
+            if (style.font.pixelRatio != 1f && (paint.shader != null || paint.style == PaintingStyle.Stroke)) {
+                decorationPaints.getOrPut(style) { createTextPaint(style, brushSize, blendMode, 1f) }
+            } else {
+                paint
+            }
         for (line in lines) {
             for (piece in line.pieces) {
                 if (piece.placeholder != null) continue
@@ -535,7 +565,9 @@ internal class WebParagraph(
                 }
                 val baseline = line.baseline + baselineShiftOf(style)
                 drawPieceText(drawer, piece, style, paint, baseline)
-                drawDecorations(canvas, piece, style, paint, baseline)
+                if (style.decoration != null) {
+                    drawDecorations(canvas, piece, style, decorationPaintFor(style, paint), baseline)
+                }
             }
         }
         bulletPainter?.paint(
@@ -557,23 +589,33 @@ internal class WebParagraph(
         return if (isLaidOut) line else null
     }
 
-    private fun createTextPaint(style: RunStyle, brushSize: Size, blendMode: BlendMode): WebPaint {
+    /** The paint of the text of [style], its stroke and shader in units of [unit] pixels. */
+    private fun createTextPaint(style: RunStyle, brushSize: Size, blendMode: BlendMode, unit: Float): WebPaint {
         val paint = WebPaint()
         val foreground = style.foreground
         val brush = foreground.brush
         if (brush is ShaderBrush) {
             brush.applyTo(brushSize, paint, if (foreground.alpha.isNaN()) 1f else foreground.alpha)
+            if (unit != 1f) {
+                val inUnits = Affine(a = 1 / unit, d = 1 / unit)
+                paint.shader = paint.shader?.let { Shader(it.webShader.transformed(inUnits)) }
+            }
         } else {
             paint.color = if (foreground.color.isSpecified) foreground.color else Color.Black
         }
         when (val drawStyle = style.drawStyle) {
             is Stroke -> {
                 paint.style = PaintingStyle.Stroke
-                paint.strokeWidth = drawStyle.width
+                paint.strokeWidth = drawStyle.width / unit
                 paint.strokeMiterLimit = drawStyle.miter
                 paint.strokeJoin = drawStyle.join
                 paint.strokeCap = drawStyle.cap
-                paint.pathEffect = drawStyle.pathEffect
+                val pathEffect = drawStyle.pathEffect
+                paint.pathEffect = if (unit != 1f && pathEffect is WebPathEffect.Dash) {
+                    pathEffect.scaled(1 / unit)
+                } else {
+                    pathEffect
+                }
             }
             Fill, null -> paint.style = PaintingStyle.Fill
         }
@@ -581,50 +623,55 @@ internal class WebParagraph(
         return paint
     }
 
+    /** The shadow of the text of [style], in the units of its font. */
     private fun textShadowOf(style: RunStyle): TextShadow? {
         val shadow = style.shadow ?: return null
         if (shadow == Shadow.None || shadow.color.alpha == 0f) return null
         // Like Android: a blur radius r is a Gaussian of deviation 0.57735 r + 0.5, and the canvas
         // shadowBlur is twice the deviation.
         val blur = if (shadow.blurRadius > 0f) 2 * (0.57735f * shadow.blurRadius + 0.5f) else 0f
-        return TextShadow(shadow.color.toArgb(), shadow.offset.x, shadow.offset.y, blur)
+        val ratio = style.font.pixelRatio
+        return TextShadow(shadow.color.toArgb(), shadow.offset.x / ratio, shadow.offset.y / ratio, blur / ratio)
     }
 
     private fun drawPieceText(drawer: TextDrawer, piece: Piece, style: RunStyle, paint: WebPaint, baseline: Float) {
-        val drawnText = piece.drawnText ?: return
-        if (drawnText.isBlank()) return
+        if (!piece.drawsText) return
         val font = style.font
         val shadow = textShadowOf(style)
         val transformed = font.scaleX != 1f || style.skewX != 0f
         if (piece.justifySpacing > 0f) {
-            // Justified: draw word by word, adding the spacing after every space.
-            var wordStart = 0
-            while (wordStart < drawnText.length) {
-                var wordEnd = wordStart
-                while (wordEnd < drawnText.length && !isJustifiableSpace(drawnText[wordEnd])) wordEnd++
-                if (wordEnd > wordStart) {
-                    val advance = advanceInPiece(piece, piece.start + wordStart)
-                    val wordWidth = TextMeasurement.width(font, drawnText, wordStart, wordEnd, piece.isRtl)
-                    val x = if (piece.isRtl) piece.right - advance - wordWidth else piece.x + advance
-                    val run = TextRunDrawing(
-                        drawnText.substring(wordStart, wordEnd), font.css, paint, piece.isRtl,
-                        font.letterSpacingCss, shadow,
-                    )
-                    drawer.draw(run, x, baseline, font.scaleX, style.skewX, transformed)
-                }
-                wordStart = wordEnd + 1
+            // Justified: drawn word by word, with the spacing after every space.
+            val words = piece.justifiedWords ?: justifiedWordsOf(piece).also { piece.justifiedWords = it }
+            for (word in words) {
+                val x = if (piece.isRtl) piece.right - word.advance - word.width else piece.x + word.advance
+                val run = TextRunDrawing(word.jsText, font.css, paint, piece.isRtl, font.letterSpacingCss, shadow, font.pixelRatio)
+                drawer.draw(run, x, baseline, font.scaleX, style.skewX, transformed)
             }
             return
         }
-        val run = TextRunDrawing(drawnText, font.css, paint, piece.isRtl, font.letterSpacingCss, shadow, piece.jsText)
+        val run = TextRunDrawing(piece.jsText, font.css, paint, piece.isRtl, font.letterSpacingCss, shadow, font.pixelRatio)
         drawer.draw(run, piece.x, baseline, font.scaleX, style.skewX, transformed)
     }
 
-    private fun isJustifiableSpace(c: Char) = c == ' ' || c == '\u00A0' || c == '\u3000'
+    /** The words of the justified [piece], between its justifiable spaces. */
+    private fun justifiedWordsOf(piece: Piece): List<JustifiedWord> {
+        val words = ArrayList<JustifiedWord>()
+        var wordStart = piece.start
+        while (wordStart < piece.end) {
+            var wordEnd = wordStart
+            while (wordEnd < piece.end && !analysis.isJustifiableSpace(wordEnd)) wordEnd++
+            if (wordEnd > wordStart) {
+                val width = analysis.runWidth(piece.style.font, wordStart, wordEnd, piece.isRtl)
+                words.add(JustifiedWord(advanceInPiece(piece, wordStart), width, analysis.jsRun(wordStart, wordEnd, piece.isRtl)))
+            }
+            wordStart = wordEnd + 1
+        }
+        return words
+    }
 
     private fun drawDecorations(canvas: Canvas, piece: Piece, style: RunStyle, paint: WebPaint, baseline: Float) {
         val decoration = style.decoration ?: return
-        if (decoration == TextDecoration.None || piece.drawnText.isNullOrEmpty()) return
+        if (decoration == TextDecoration.None || !piece.hasText) return
         val fontSize = style.fontSize
         val thickness = max(1f, fontSize / 14f)
         val metrics = TextMeasurement.metrics(style.font)

@@ -14,19 +14,54 @@
  * limitations under the License.
  */
 
+@file:OptIn(ExperimentalWasmJsInterop::class)
+
 package androidx.compose.ui.platform
 
+import androidx.compose.ui.InternalComposeUiApi
+import kotlin.js.ExperimentalWasmJsInterop
 import kotlin.js.js
 
-/** Whether the browser runs on macOS (but not on an iPad presenting itself as a Mac). */
-internal val isMacOsHost: Boolean by lazy { detectMacOs() }
+/**
+ * The operating system the browser runs on, as far as the browser tells: what the key bindings of
+ * the window and of text editing (foundation) depend on.
+ */
+@InternalComposeUiApi
+enum class HostOs {
+    MacOS,
+    Ios,
+    Windows,
+    Linux,
+    Android,
+    Unknown;
+
+    val isMacOS: Boolean get() = this == MacOS
+
+    companion object {
+        val current: HostOs by lazy {
+            when (detectHostOs()) {
+                1 -> MacOS
+                2 -> Ios
+                3 -> Windows
+                4 -> Android
+                5 -> Linux
+                else -> Unknown
+            }
+        }
+    }
+}
 
 // language=js
-private fun detectMacOs(): Boolean = js(
+private fun detectHostOs(): Int = js(
     """{
         const platform = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '';
-        if (!/^Mac/i.test(platform)) return false;
+        const userAgent = navigator.userAgent || '';
+        if (/iPhone|iPad|iPod/i.test(platform) || /iPhone|iPad|iPod/i.test(userAgent)) return 2;
         // iPadOS reports a Mac platform, but has a touch screen.
-        return !(navigator.maxTouchPoints > 1);
+        if (/^Mac/i.test(platform)) return navigator.maxTouchPoints > 1 ? 2 : 1;
+        if (/^Win/i.test(platform)) return 3;
+        if (/Android/i.test(platform) || /Android/i.test(userAgent)) return 4;
+        if (/Linux/i.test(platform)) return 5;
+        return 0;
     }"""
 )

@@ -14,17 +14,18 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalWasmJsInterop::class)
-
 package androidx.compose.ui.webcanvas.text
 
 import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextIndent
-import kotlin.js.ExperimentalWasmJsInterop
+import androidx.compose.ui.webcanvas.text.unicode.BidiParagraph
+import androidx.compose.ui.webcanvas.text.unicode.isLineTerminator
+import androidx.compose.ui.webcanvas.text.unicode.isMandatoryLineBreak
+import androidx.compose.ui.webcanvas.text.unicode.lineBreakPosition
+import androidx.compose.ui.webcanvas.text.unicode.trailingWhitespaceStart
 import kotlin.js.JsString
-import kotlin.js.toJsString
 import kotlin.math.max
 import kotlin.math.min
 
@@ -33,20 +34,24 @@ import kotlin.math.min
  * placeholder, or the ellipsis. Pieces of a line are stored in visual order, left to right.
  */
 internal class Piece(
-    /** The logical range of the text the piece shows. */
+    /** The logical range of the text the piece shows: none for the ellipsis. */
     val start: Int,
     val end: Int,
     val item: Int,
     val style: RunStyle,
     val isRtl: Boolean,
     val width: Float,
-    /** The text drawn; it's not `text[start, end)` for the ellipsis. */
-    val drawnText: String?,
+    /** The paragraph whose text the piece shows. */
+    private val analysis: ParagraphAnalysis,
     val placeholder: PlaceholderRun? = null,
     val isEllipsis: Boolean = false,
-    /** [drawnText] with the context that keeps its letters joined (see [contextualSubstring]). */
-    private val contextualText: String? = drawnText,
 ) {
+    /** Whether the piece shows text: the ellipsis, or a part of the paragraph's text. */
+    val hasText: Boolean get() = placeholder == null && (isEllipsis || end > start)
+
+    /** Whether the piece draws text: it [hasText] that isn't only whitespace. */
+    val drawsText: Boolean get() = hasText && (isEllipsis || !analysis.isBlank(start, end))
+
     /** The left edge, in paragraph coordinates. */
     var x: Float = 0f
 
@@ -66,14 +71,27 @@ internal class Piece(
 
     private var jsTextCache: JsString? = null
 
-    /** The drawn text as a run of the piece's direction (see [directionalRun]). */
+    /** The text drawn, as a run of the piece's direction (see [jsRunOf]). */
     val jsText: JsString
-        get() = jsTextCache
-            ?: directionalRun(contextualText ?: "", isRtl).toJsString().also { jsTextCache = it }
+        get() = jsTextCache ?: (
+            if (isEllipsis) directionalRun(LineLayout.Ellipsis, isRtl) else analysis.jsRun(start, end, isRtl)
+            ).also { jsTextCache = it }
 
-    /** Cached caret positions: `positions[i]` is the advance before the logical offset `start + i`. */
+    /** The words of the piece drawn one by one when the line is justified, once drawn. */
+    var justifiedWords: List<JustifiedWord>? = null
+
+    /**
+     * The caret positions measured in the piece: `caretAdvances[i]` is the advance before the
+     * logical offset `start + i`, NaN until measured (see `WebParagraph.advanceInPiece`).
+     */
     var caretAdvances: FloatArray? = null
 }
+
+/**
+ * A word of a justified piece, drawn on its own (see [Piece.justifySpacing]): [advance] from the
+ * start of the piece, of [width], drawn as [jsText].
+ */
+internal class JustifiedWord(val advance: Float, val width: Float, val jsText: JsString)
 
 /** A line of a laid out paragraph. Vertical metrics are in pixels, ascent and descent positive. */
 internal class Line(
@@ -124,6 +142,7 @@ internal class LineLayout(
     private val hasLineHeight: Boolean,
 ) {
     private val text = analysis.text
+    private val layoutText = analysis.layoutText
     val lines: List<Line>
     var didExceedMaxLines = false
         private set
@@ -178,46 +197,45 @@ internal class LineLayout(
 
         loop@ while (breakIndex < breaks.size) {
             val encoded = breaks[breakIndex]
-            val position = encoded ushr 1
-            val mandatory = encoded and 1 == 1
+            val position = lineBreakPosition(encoded)
+            val mandatory = isMandatoryLineBreak(encoded)
             if (position <= segmentStart && position != length) {
                 breakIndex++
                 continue
             }
             val segmentEnd = position
-            val visibleEnd = analysis.trimTrailingWhitespace(segmentStart, segmentEnd)
-            val segmentVisibleWidth = analysis.width(segmentStart, visibleEnd)
+            val segmentVisibleWidth = analysis.segmentWidth(breakIndex, segmentStart, visible = true)
             val available = availableWidth(ranges.size)
             if (lineWidth + segmentVisibleWidth > available + Epsilon && segmentStart > lineStart) {
                 // The segment doesn't fit: end the line at the previous opportunity.
                 val end = segmentStart
-                if (!emit(contentEnd(end), end, isHardBreak = false)) break@loop
+                if (!emit(analysis.contentEnd(end), end, isHardBreak = false)) break@loop
                 lineWidth = 0f
             }
             if (segmentVisibleWidth > availableWidth(ranges.size) + Epsilon &&
                 segmentStart == lineStart
             ) {
-                // A single segment wider than the line: break it between grapheme clusters.
+                // A single segment wider than the line: break it between clusters.
+                val visibleEnd = analysis.visibleEnd(segmentStart, segmentEnd)
                 var start = segmentStart
                 while (true) {
-                    val fit = fitGraphemes(start, visibleEnd, availableWidth(ranges.size))
+                    val fit = fitClusters(start, visibleEnd, availableWidth(ranges.size))
                     if (fit >= visibleEnd) break
                     if (!emit(fit, fit, isHardBreak = false)) break@loop
                     start = fit
                 }
                 lineWidth = analysis.width(start, segmentEnd)
             } else {
-                lineWidth += analysis.width(segmentStart, segmentEnd)
+                lineWidth += analysis.segmentWidth(breakIndex, segmentStart, visible = false)
             }
             segmentStart = segmentEnd
             if (mandatory) {
-                val end = contentEnd(position)
-                if (!emit(end, position, isHardBreak = true)) break@loop
+                if (!emit(analysis.contentEnd(position), position, isHardBreak = true)) break@loop
             }
             breakIndex++
         }
         if (!exceeded) {
-            if (lineStart < length || ranges.isEmpty() || (length > 0 && isLineTerminator(length - 1))) {
+            if (lineStart < length || ranges.isEmpty() || (length > 0 && isLineTerminator(layoutText[length - 1]))) {
                 if (ranges.size < maxLines) {
                     ranges.add(LineRange(lineStart, length, length, isHardBreak = false))
                 } else {
@@ -236,22 +254,13 @@ internal class LineLayout(
         return result
     }
 
-    private fun isLineTerminator(index: Int): Boolean = text[index] == '\n' || text[index] == '\r'
-
-    /** [end] moved back over a line terminator ending the line. */
-    private fun contentEnd(end: Int): Int {
-        var e = end
-        if (e > 0 && text[e - 1] == '\n') e--
-        if (e > 0 && text[e - 1] == '\r') e--
-        return e
-    }
-
     /**
-     * The largest grapheme boundary in [start]..[end] such that the text from [start] to it fits in
-     * [available], but at least the first cluster: every line shows something.
+     * The largest cluster boundary (see [ParagraphAnalysis.nextClusterBoundary]) in [start]..[end]
+     * such that the text from [start] to it fits in [available], but at least the first cluster:
+     * every line shows something.
      */
-    private fun fitGraphemes(start: Int, end: Int, available: Float): Int {
-        val boundaries = graphemeBoundariesBetween(start, end)
+    private fun fitClusters(start: Int, end: Int, available: Float): Int {
+        val boundaries = clusterBoundariesBetween(start, end)
         // The width of the text before a boundary grows with the boundary: binary search.
         var low = 0 // fits (always place the first cluster)
         var high = boundaries.size - 1
@@ -262,12 +271,12 @@ internal class LineLayout(
         return boundaries[low]
     }
 
-    /** The grapheme boundaries after [start], up to and including [end]. */
-    private fun graphemeBoundariesBetween(start: Int, end: Int): IntArray {
+    /** The cluster boundaries after [start], up to and including [end]. */
+    private fun clusterBoundariesBetween(start: Int, end: Int): IntArray {
         val result = ArrayList<Int>()
         var position = start
         while (position < end) {
-            position = TextUnicode.nextGraphemeBoundary(text, position).coerceAtMost(end)
+            position = analysis.nextClusterBoundary(position).coerceAtMost(end)
             result.add(position)
         }
         if (result.isEmpty()) result.add(end)
@@ -287,13 +296,13 @@ internal class LineLayout(
             // Like Android, the last line shows as much of the remaining text (up to the next hard
             // break) as fits together with the ellipsis.
             var remainingEnd = range.start
-            while (remainingEnd < text.length && !isLineTerminator(remainingEnd)) remainingEnd++
+            while (remainingEnd < text.length && !isLineTerminator(layoutText[remainingEnd])) remainingEnd++
             // The rest of the text is hidden in this line.
             lineEnd = remainingEnd
             lineEndIncludingNewline = text.length
-            end = analysis.trimTrailingWhitespace(range.start, remainingEnd)
+            end = analysis.visibleEnd(range.start, remainingEnd)
             if (analysis.width(range.start, end) > available + Epsilon) {
-                val boundaries = graphemeBoundariesBetween(range.start, end)
+                val boundaries = clusterBoundariesBetween(range.start, end)
                 var low = -1 // -1: nothing fits
                 var high = boundaries.size - 1
                 while (low < high) {
@@ -306,7 +315,7 @@ internal class LineLayout(
                 }
                 end = if (low >= 0) boundaries[low] else range.start
             }
-            end = analysis.trimTrailingWhitespace(range.start, end)
+            end = analysis.visibleEnd(range.start, end)
             ellipsisPiece = Piece(
                 start = end,
                 end = end,
@@ -314,7 +323,7 @@ internal class LineLayout(
                 style = ellipsisStyle,
                 isRtl = analysis.isRtl,
                 width = ellipsisWidth,
-                drawnText = Ellipsis,
+                analysis = analysis,
                 isEllipsis = true,
             )
         }
@@ -337,13 +346,8 @@ internal class LineLayout(
                             style = style,
                             isRtl = isRtl,
                             width = analysis.pieceWidth(item, position, itemEnd),
-                            drawnText = if (placeholder == null) text.substring(position, itemEnd) else null,
+                            analysis = analysis,
                             placeholder = placeholder,
-                            contextualText = if (placeholder == null) {
-                                contextualSubstring(text, position, itemEnd)
-                            } else {
-                                null
-                            },
                         )
                     )
                 }
@@ -352,8 +356,9 @@ internal class LineLayout(
             }
         }
 
-        val visibleEnd = analysis.trimTrailingWhitespace(range.start, end)
-        val pieces = reorder(logicalPieces, visibleEnd, ellipsisPiece)
+        val visibleEnd = analysis.visibleEnd(range.start, end)
+        val trailingStart = trailingWhitespaceStart(layoutText, range.start, end)
+        val pieces = reorder(logicalPieces, trailingStart, visibleEnd, ellipsisPiece)
 
         val line = Line(
             index = index,
@@ -370,58 +375,51 @@ internal class LineLayout(
     }
 
     /**
-     * Orders the pieces of a line visually (UAX #9 rules L1 and L2). Trailing whitespace is moved
-     * to the paragraph level, so it hangs at the end of the line in the paragraph direction.
+     * Orders the pieces of a line visually (UAX #9 rule L2). The separators and whitespace ending
+     * the line, from [trailingStart], take the paragraph level (rule L1), so that they hang at the
+     * end of the line in the paragraph direction. Pieces are cut there, and at [visibleEnd] where
+     * the hanging whitespace starts (see [positionPieces]); [trailingStart] is never after it.
      */
-    private fun reorder(logical: List<Piece>, visibleEnd: Int, ellipsis: Piece?): List<Piece> {
+    private fun reorder(
+        logical: List<Piece>,
+        trailingStart: Int,
+        visibleEnd: Int,
+        ellipsis: Piece?,
+    ): List<Piece> {
         val paragraphLevel = analysis.paragraphLevel
-        // Split pieces containing the start of the trailing whitespace, so that it can be moved.
-        val pieces = ArrayList<Piece>(logical.size + 2)
-        val levels = ArrayList<Int>(logical.size + 2)
-        for (piece in logical) {
-            if (piece.placeholder == null && piece.start < visibleEnd && piece.end > visibleEnd) {
-                pieces.add(piece.slice(piece.start, visibleEnd))
-                levels.add(analysis.levels[piece.start].toInt())
-                pieces.add(piece.slice(visibleEnd, piece.end, isRtl = paragraphLevel == 1))
-                levels.add(paragraphLevel)
-            } else if (piece.start >= visibleEnd && piece.placeholder == null) {
-                pieces.add(if (piece.isRtl == (paragraphLevel == 1)) piece else piece.withDirection(paragraphLevel == 1))
-                levels.add(paragraphLevel)
-            } else {
-                pieces.add(piece)
-                levels.add(analysis.levels[piece.start].toInt())
+        fun levelAt(start: Int): Int =
+            if (start >= trailingStart) paragraphLevel else analysis.levels[start].toInt()
+        // The part [from, to) of [piece], in the direction of its level.
+        fun part(piece: Piece, from: Int, to: Int): Piece {
+            val isRtl = levelAt(from) and 1 == 1
+            return when {
+                from != piece.start || to != piece.end -> piece.slice(from, to, isRtl)
+                piece.isRtl != isRtl -> piece.withDirection(isRtl)
+                else -> piece
             }
         }
-        if (ellipsis != null) {
-            pieces.add(ellipsis)
-            levels.add(paragraphLevel)
-        }
-        if (pieces.size <= 1) return pieces
-        var highest = 0
-        var lowestOdd = Int.MAX_VALUE
-        for (level in levels) {
-            highest = max(highest, level)
-            if (level and 1 == 1) lowestOdd = min(lowestOdd, level)
-        }
-        if (highest == 0) return pieces
-        // L2: from the highest level down to the lowest odd level, reverse every maximal sequence
-        // of pieces at that level or higher.
-        val order = IntArray(pieces.size) { it }
-        var level = highest
-        while (level >= lowestOdd && level > 0) {
-            var i = 0
-            while (i < order.size) {
-                if (levels[order[i]] >= level) {
-                    var j = i
-                    while (j + 1 < order.size && levels[order[j + 1]] >= level) j++
-                    order.reverse(i, j + 1)
-                    i = j + 1
-                } else {
-                    i++
+        val cuts = intArrayOf(trailingStart, visibleEnd)
+        val pieces = ArrayList<Piece>(logical.size + 3)
+        for (piece in logical) {
+            if (piece.placeholder != null) {
+                pieces.add(piece)
+                continue
+            }
+            var from = piece.start
+            for (cut in cuts) {
+                if (cut > from && cut < piece.end) {
+                    pieces.add(part(piece, from, cut))
+                    from = cut
                 }
             }
-            level--
+            pieces.add(part(piece, from, piece.end))
         }
+        if (ellipsis != null) pieces.add(ellipsis)
+        val levels = ByteArray(pieces.size) {
+            val piece = pieces[it]
+            (if (piece.isEllipsis) paragraphLevel else levelAt(piece.start)).toByte()
+        }
+        val order = BidiParagraph.reorderVisually(levels) ?: return pieces
         return List(pieces.size) { pieces[order[it]] }
     }
 
@@ -432,8 +430,7 @@ internal class LineLayout(
         style = style,
         isRtl = isRtl,
         width = analysis.pieceWidth(item, from, to),
-        drawnText = text.substring(from, to),
-        contextualText = contextualSubstring(text, from, to),
+        analysis = analysis,
     )
 
     private fun Piece.withDirection(isRtl: Boolean): Piece = Piece(
@@ -443,14 +440,9 @@ internal class LineLayout(
         style = style,
         isRtl = isRtl,
         width = width,
-        drawnText = drawnText,
+        analysis = analysis,
         placeholder = placeholder,
         isEllipsis = isEllipsis,
-        contextualText = if (drawnText != null && placeholder == null && !isEllipsis) {
-            contextualSubstring(text, start, end)
-        } else {
-            drawnText
-        },
     )
 
     /** Computes the x positions of the pieces of [line], aligning and justifying the line. */
@@ -483,7 +475,7 @@ internal class LineLayout(
 
         val justify = textAlign == TextAlign.Justify && !isLastInParagraph && free > 0f && alignWidth >= 0f
         val spaceExtra = if (justify) {
-            val spaces = countJustifiableSpaces(line)
+            val spaces = analysis.countJustifiableSpaces(line.start, line.visibleEnd)
             if (spaces > 0) free / spaces else 0f
         } else {
             0f
@@ -503,20 +495,10 @@ internal class LineLayout(
             ) {
                 piece.justifySpacing = spaceExtra
                 piece.justifyWidth =
-                    spaceExtra * countSpaces(piece.start, min(piece.end, line.visibleEnd))
+                    spaceExtra * analysis.countJustifiableSpaces(piece.start, min(piece.end, line.visibleEnd))
             }
             x += piece.totalWidth
         }
-    }
-
-    private fun countJustifiableSpaces(line: Line): Int = countSpaces(line.start, line.visibleEnd)
-
-    private fun countSpaces(start: Int, end: Int): Int {
-        var count = 0
-        for (i in start until end) {
-            if (text[i] == ' ' || text[i] == '\u00A0' || text[i] == '\u3000') count++
-        }
-        return count
     }
 
     /** Computes the ascent and descent of every line, then stacks the lines. */

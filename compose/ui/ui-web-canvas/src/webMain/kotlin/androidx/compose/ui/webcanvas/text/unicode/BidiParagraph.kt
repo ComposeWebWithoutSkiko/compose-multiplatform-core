@@ -42,14 +42,13 @@ import androidx.compose.ui.webcanvas.text.unicode.BidiClass.WS
 
 /**
  * The Unicode Bidirectional Algorithm ([UAX #9](https://www.unicode.org/reports/tr9/)) applied to
- * `text[start, end)`: resolves the embedding level of every UTF-16 code unit (rules P2-P3, X1-X10,
- * W1-W7, N0-N2 and I1-I2) and provides the per-line rules L1 and L2.
+ * [text] laid out at [paragraphLevel] (0 for left-to-right, 1 for right-to-left: Compose resolves
+ * the direction of a paragraph itself). Resolves the embedding level of every UTF-16 code unit
+ * (rules X1-X10, W1-W7, N0-N2, I1-I2, and the part of rule L1 that doesn't depend on where lines
+ * end); the rest of rule L1 is [trailingWhitespaceStart], and rule L2 is [reorderVisually].
  *
- * The range may contain several bidi paragraphs: following rule P1 it is split after every
- * paragraph separator (Bidi_Class B, e.g. `\n`, `\r`, U+2029; `\r\n` counts as one separator) and
- * every paragraph is resolved independently. With an explicit [requestedLevel] all paragraphs get
- * that level; with [LEVEL_DEFAULT_LTR] or [LEVEL_DEFAULT_RTL] every paragraph determines its own
- * level from its first strong character (like ICU and Android).
+ * Following rule P1, the text is split after every paragraph separator (Bidi_Class B, e.g. `\n`,
+ * `\r`, U+2029), and every paragraph is resolved independently.
  *
  * Both code units of a surrogate pair always get the same level. Characters removed by rule X9
  * (Bidi_Class BN, e.g. ZWJ, and the explicit embedding controls LRE, RLE, LRO, RLO, PDF) get the
@@ -58,249 +57,46 @@ import androidx.compose.ui.webcanvas.text.unicode.BidiClass.WS
  *
  * Instances are immutable. The constructor is not thread-safe (it reuses internal buffers), which
  * is fine on the single-threaded web targets.
- *
- * @param text the text; it must not change while this object is in use.
- * @param start start (inclusive) of the range of [text] to process.
- * @param end end (exclusive) of the range of [text] to process.
- * @param requestedLevel [LEVEL_LTR], [LEVEL_RTL], [LEVEL_DEFAULT_LTR] (rules P2-P3, falling back to
- *   LTR when there is no strong character) or [LEVEL_DEFAULT_RTL] (falling back to RTL).
  */
-internal class BidiParagraph(
-    val text: CharSequence,
-    val start: Int = 0,
-    val end: Int = text.length,
-    requestedLevel: Int = LEVEL_DEFAULT_LTR,
-) {
+internal class BidiParagraph(text: CharSequence, paragraphLevel: Int) {
     /**
-     * The resolved embedding levels, one per UTF-16 code unit: `levels[i]` is the level of
-     * `text[start + i]`. These are the levels before the line-dependent rule L1, see [lineLevels].
-     * Do not modify.
+     * The resolved embedding levels, one per UTF-16 code unit (`levels[i]` is the level of
+     * `text[i]`), with the part of rule L1 that doesn't depend on where lines end: segment and
+     * paragraph separators, and the whitespace, isolate formatting characters and characters
+     * removed by X9 before them, have the paragraph level. Do not modify.
      */
-    val levels: ByteArray
-
-    /** Number of bidi paragraphs in the range (at least 1, even for an empty range). */
-    val paragraphCount: Int
-
-    /** Exclusive end (absolute text index) of each paragraph. */
-    private val paragraphLimits: IntArray
-
-    private val paragraphLevels: ByteArray
-
-    /**
-     * The original Bidi_Class of every code unit, needed by rule L1, or null if every paragraph is
-     * trivially left-to-right (all levels 0), in which case L1 is a no-op.
-     */
-    private val classes: ByteArray?
-
-    /** True if every level is 0, i.e. the text needs no bidi reordering at all. */
-    val isLeftToRight: Boolean
+    val levels: ByteArray = ByteArray(text.length)
 
     init {
-        require(start in 0..end && end <= text.length) {
-            "Invalid range [$start, $end) for text of length ${text.length}"
+        require(paragraphLevel == 0 || paragraphLevel == 1) {
+            "Invalid paragraph level $paragraphLevel"
         }
-        require(requestedLevel in LEVEL_DEFAULT_RTL..LEVEL_RTL) {
-            "Invalid requested level $requestedLevel"
-        }
-        val length = end - start
-        levels = ByteArray(length)
-
-        // Rule P1: split into paragraphs after each paragraph separator.
-        var count = 0
-        var limits = IntArray(1)
-        var i = start
-        while (i < end) {
-            val c = text[i]
-            i++
-            if (isParagraphSeparator(c)) {
-                if (c == '\r' && i < end && text[i] == '\n') i++
-                if (i < end) {
-                    if (count == limits.size) limits = limits.copyOf(count * 2)
-                    limits[count++] = i
-                }
-            }
-        }
-        if (count == limits.size) limits = limits.copyOf(count + 1)
-        limits[count++] = end
-        paragraphCount = count
-        paragraphLimits = limits
-        paragraphLevels = ByteArray(count)
-
-        var classesOrNull: ByteArray? = null
         val resolver = BidiResolver.instance
-        var from = start
-        for (p in 0 until count) {
-            val to = limits[p]
-            paragraphLevels[p] = resolver.resolveParagraph(text, from, to, requestedLevel).toByte()
-            if (!resolver.isTriviallyLeftToRight) {
-                val classesArray = classesOrNull ?: ByteArray(length).also { classesOrNull = it }
-                resolver.writeResults(levels, classesArray, from - start)
+        var start = 0
+        while (start < text.length) {
+            // Rule P1: a paragraph ends after its separator. (The LF of a CR LF then makes a
+            // paragraph of its own, at the paragraph level like the end of the one before.)
+            var end = start
+            while (end < text.length) {
+                if (isParagraphSeparator(text[end++])) break
             }
-            from = to
+            resolver.resolveParagraph(text, start, end, paragraphLevel, levels)
+            start = end
         }
         resolver.trimBuffers()
-        classes = classesOrNull
-        isLeftToRight = classesOrNull == null || levels.all { it.toInt() == 0 }
-    }
-
-    /** The paragraph embedding level of the first paragraph: 0 for LTR, 1 for RTL. */
-    val paragraphLevel: Int
-        get() = paragraphLevels[0].toInt()
-
-    /** The paragraph embedding level (0 or 1) of the paragraph containing text index [index]. */
-    fun paragraphLevelAt(index: Int): Int = paragraphLevels[paragraphIndexOf(index)].toInt()
-
-    /** Index of the paragraph containing text index [index] (clamped to the valid paragraphs). */
-    fun paragraphIndexOf(index: Int): Int {
-        var low = 0
-        var high = paragraphCount - 1
-        while (low < high) {
-            val mid = (low + high) ushr 1
-            if (paragraphLimits[mid] <= index) low = mid + 1 else high = mid
-        }
-        return low
-    }
-
-    /** Start (inclusive, absolute text index) of paragraph number [paragraph]. */
-    fun paragraphStart(paragraph: Int): Int =
-        if (paragraph == 0) start else paragraphLimits[paragraph - 1]
-
-    /** End (exclusive, absolute text index) of paragraph number [paragraph]. */
-    fun paragraphEnd(paragraph: Int): Int = paragraphLimits[paragraph]
-
-    /** The resolved level (before rule L1) of the code unit at text index [index]. */
-    fun levelAt(index: Int): Int = levels[index - start].toInt()
-
-    /**
-     * Returns the end (exclusive) of the run of code units with the same resolved level that starts
-     * at text index [index], limited to [limit]. Iterating with this splits a paragraph into its
-     * directional runs (e.g. for measuring), before line breaking and rule L1.
-     */
-    fun levelRunEnd(index: Int, limit: Int = end): Int {
-        require(index in start until limit && limit <= end) {
-            "Invalid run start $index or limit $limit for bidi range [$start, $end)"
-        }
-        val level = levels[index - start]
-        var i = index + 1
-        while (i < limit && levels[i - start] == level) i++
-        return i
-    }
-
-    /**
-     * Returns the levels of the line `text[lineStart, lineEnd)` after applying rule L1: segment
-     * separators (tabs), paragraph separators, and any sequence of whitespace, isolate formatting
-     * characters and characters removed by X9 that precedes them or ends the line are reset to the
-     * paragraph level. `result[i]` is the level of `text[lineStart + i]`.
-     */
-    fun lineLevels(lineStart: Int, lineEnd: Int): ByteArray {
-        checkLine(lineStart, lineEnd)
-        val result = levels.copyOfRange(lineStart - start, lineEnd - start)
-        val classes = classes ?: return result
-        var paragraph = paragraphIndexOf(lineEnd - 1)
-        var level = paragraphLevels[paragraph]
-        var levelStart = paragraphStart(paragraph)
-        // Scan backwards: `resetting` is true while we are in a sequence of whitespace that ends
-        // the line or precedes a segment/paragraph separator.
-        var resetting = true
-        for (i in lineEnd - 1 downTo lineStart) {
-            if (i < levelStart) {
-                paragraph--
-                level = paragraphLevels[paragraph]
-                levelStart = paragraphStart(paragraph)
-            }
-            when (classes[i - start].toInt()) {
-                S,
-                B -> {
-                    result[i - lineStart] = level
-                    resetting = true
-                }
-                WS,
-                LRI,
-                RLI,
-                FSI,
-                PDI,
-                BN,
-                LRE,
-                RLE,
-                LRO,
-                RLO,
-                PDF -> if (resetting) result[i - lineStart] = level
-                else -> resetting = false
-            }
-        }
-        return result
-    }
-
-    /**
-     * Returns the runs of the line `text[lineStart, lineEnd)` in visual order (left to right),
-     * after applying rules L1 and L2. Each run is a maximal sequence of code units with the same
-     * level, encoded as three consecutive values `start, end, level` (absolute text indices, end
-     * exclusive). A run with an odd level is right-to-left: its characters are displayed in reverse
-     * order (glyph shaping and mirroring, rule L4, are up to the renderer).
-     */
-    fun visualRuns(lineStart: Int, lineEnd: Int): IntArray =
-        visualRunsOf(lineLevels(lineStart, lineEnd), lineStart)
-
-    /**
-     * Returns the absolute text indices of the line `text[lineStart, lineEnd)` in visual order
-     * (left to right) according to rules L1 and L2. Code units of a surrogate pair stay in logical
-     * order (high, low) within right-to-left runs, i.e. code points are reordered, not code units.
-     */
-    fun visualOrder(lineStart: Int, lineEnd: Int): IntArray {
-        val runs = visualRuns(lineStart, lineEnd)
-        val result = IntArray(lineEnd - lineStart)
-        var out = 0
-        var r = 0
-        while (r < runs.size) {
-            val runStart = runs[r]
-            val runEnd = runs[r + 1]
-            if (runs[r + 2] and 1 == 0) {
-                for (i in runStart until runEnd) result[out++] = i
-            } else {
-                var i = runEnd
-                while (i > runStart) {
-                    i--
-                    if (i > runStart && text[i].isLowSurrogate() && text[i - 1].isHighSurrogate()) {
-                        result[out++] = i - 1
-                        result[out++] = i
-                        i--
-                    } else {
-                        result[out++] = i
-                    }
-                }
-            }
-            r += 3
-        }
-        return result
-    }
-
-    private fun checkLine(lineStart: Int, lineEnd: Int) {
-        require(lineStart in start..lineEnd && lineEnd <= end) {
-            "Invalid line [$lineStart, $lineEnd) for bidi range [$start, $end)"
-        }
     }
 
     companion object {
-        /** Left-to-right paragraph level. */
-        const val LEVEL_LTR: Int = 0
-
-        /** Right-to-left paragraph level. */
-        const val LEVEL_RTL: Int = 1
-
-        /** Paragraph level from the first strong character (P2-P3), LTR if there is none. */
-        const val LEVEL_DEFAULT_LTR: Int = -1
-
-        /** Paragraph level from the first strong character (P2-P3), RTL if there is none. */
-        const val LEVEL_DEFAULT_RTL: Int = -2
-
         /** The maximum explicit embedding level (max_depth of UAX #9). */
         const val MAX_DEPTH: Int = 125
 
         /**
-         * Applies rule L2 to the [levels] of a line: returns the runs in visual order encoded as in
-         * [visualRuns], where the index of `levels[i]` is `offset + i`.
+         * Applies rule L2 to the [levels] of the elements of a line: returns its runs (maximal
+         * sequences of elements of the same level) in visual order, left to right, as three
+         * consecutive values `start, end, level` (indexes into [levels], end exclusive). A run with
+         * an odd level is right-to-left: its elements are displayed in reverse order.
          */
-        fun visualRunsOf(levels: ByteArray, offset: Int = 0): IntArray {
+        fun visualRunsOf(levels: ByteArray): IntArray {
             val length = levels.size
             if (length == 0) return IntArray(0)
             // Logical runs.
@@ -338,8 +134,8 @@ internal class BidiParagraph(
             val result = IntArray(runCount * 3)
             for (v in 0 until runCount) {
                 val run = order[v]
-                result[v * 3] = offset + runStarts[run]
-                result[v * 3 + 1] = offset + runStarts[run + 1]
+                result[v * 3] = runStarts[run]
+                result[v * 3 + 1] = runStarts[run + 1]
                 result[v * 3 + 2] = levels[runStarts[run]].toInt()
             }
             return result
@@ -347,10 +143,11 @@ internal class BidiParagraph(
 
         /**
          * Applies rule L2 to [levels]: returns, for each visual position (left to right), the index
-         * into [levels] of the element displayed there. Elements are reversed individually (no
-         * surrogate or cluster handling).
+         * into [levels] of the element displayed there, or null if that's the logical order (no
+         * level is odd). Elements are reversed individually (no surrogate or cluster handling).
          */
-        fun reorderVisually(levels: ByteArray): IntArray {
+        fun reorderVisually(levels: ByteArray): IntArray? {
+            if (levels.all { it.toInt() and 1 == 0 }) return null
             val runs = visualRunsOf(levels)
             val result = IntArray(levels.size)
             var out = 0
@@ -379,6 +176,44 @@ internal class BidiParagraph(
             }
     }
 }
+
+/**
+ * The start of the sequence of separators and whitespace (see [isWhitespaceForL1]) that ends the
+ * line `text[lineStart, lineEnd)`, which rule L1 gives the paragraph level: [BidiParagraph.levels]
+ * has it for the separators and the whitespace before them, but not for the whitespace that ends a
+ * line, since it depends on where lines end.
+ */
+internal fun trailingWhitespaceStart(text: CharSequence, lineStart: Int, lineEnd: Int): Int {
+    var i = lineEnd
+    while (i > lineStart) {
+        val codePoint = codePointBefore(text, i)
+        val type = bidiClass(codePoint)
+        if (type != S && type != B && !isWhitespaceForL1(type)) break
+        i -= charCount(codePoint)
+    }
+    return i
+}
+
+/**
+ * Whether rule L1 treats a character of Bidi_Class [type] as whitespace, which takes the paragraph
+ * level before a separator or at the end of a line: whitespace, isolate formatting characters, and
+ * the characters removed by X9 (as section 5.2 of UAX #9 recommends).
+ */
+private fun isWhitespaceForL1(type: Int): Boolean =
+    when (type) {
+        WS,
+        LRI,
+        RLI,
+        FSI,
+        PDI,
+        BN,
+        LRE,
+        RLE,
+        LRO,
+        RLO,
+        PDF -> true
+        else -> false
+    }
 
 /**
  * The implementation of the paragraph-level rules of UAX #9 for a single paragraph, operating on
@@ -418,21 +253,22 @@ private class BidiResolver {
 
     private var paragraphLevel = 0
 
-    /** Whether the last resolved paragraph has only level 0 (and nothing was computed). */
-    var isTriviallyLeftToRight = false
-        private set
-
     /**
-     * Resolves the levels of the paragraph `text[start, end)` and returns its paragraph level.
-     * Unless [isTriviallyLeftToRight], call [writeResults] to get the levels.
+     * Resolves the levels of the paragraph `text[start, end)` laid out at [paragraphLevel] and
+     * writes them to `levels[start, end)`, which holds zeros before.
      */
-    fun resolveParagraph(text: CharSequence, start: Int, end: Int, requestedLevel: Int): Int {
+    fun resolveParagraph(
+        text: CharSequence,
+        start: Int,
+        end: Int,
+        paragraphLevel: Int,
+        levels: ByteArray,
+    ) {
         val classes = BidiData.classes
         // Decode the code points.
         ensureCapacity(end - start)
         var n = 0
         var needsFullAlgorithm = false
-        var hasStrongL = false
         var i = start
         while (i < end) {
             var codePoint = text[i].code
@@ -447,7 +283,6 @@ private class BidiResolver {
             offsets[n] = i
             initialTypes[n] = type.toByte()
             when (type) {
-                L -> hasStrongL = true
                 R,
                 AL,
                 AN,
@@ -468,54 +303,18 @@ private class BidiResolver {
 
         // Fast path: without right-to-left characters and explicit formatting characters, a
         // paragraph with level 0 resolves to level 0 everywhere.
-        if (!needsFullAlgorithm) {
-            val level =
-                when (requestedLevel) {
-                    BidiParagraph.LEVEL_LTR -> 0
-                    BidiParagraph.LEVEL_RTL -> 1
-                    BidiParagraph.LEVEL_DEFAULT_LTR -> 0
-                    else -> if (hasStrongL) 0 else 1
-                }
-            if (level == 0) {
-                isTriviallyLeftToRight = true
-                paragraphLevel = 0
-                return 0
-            }
-        }
-        isTriviallyLeftToRight = false
+        if (!needsFullAlgorithm && paragraphLevel == 0) return
 
+        this.paragraphLevel = paragraphLevel
         determineMatchingIsolates()
-        paragraphLevel =
-            when (requestedLevel) {
-                BidiParagraph.LEVEL_LTR -> 0
-                BidiParagraph.LEVEL_RTL -> 1
-                else ->
-                    when (firstStrongType(0, n)) {
-                        L -> 0
-                        R -> 1
-                        else -> if (requestedLevel == BidiParagraph.LEVEL_DEFAULT_RTL) 1 else 0
-                    }
-            }
         determineExplicitEmbeddingLevels()
         resolveIsolatingRunSequences()
         assignLevelsToCharactersRemovedByX9()
-        return paragraphLevel
-    }
-
-    /**
-     * Writes the levels and the original classes of the last resolved paragraph, expanded to code
-     * units, to [levels] and [classes] starting at index [offset].
-     */
-    fun writeResults(levels: ByteArray, classes: ByteArray, offset: Int) {
-        val base = offset - offsets[0]
+        resetSeparatorsToParagraphLevel()
+        // Expanded to code units.
         for (k in 0 until size) {
-            val index = offsets[k] + base
-            levels[index] = resultLevels[k]
-            classes[index] = initialTypes[k]
-            if (codePoints[k] >= MIN_SUPPLEMENTARY_CODE_POINT) {
-                levels[index + 1] = resultLevels[k]
-                classes[index + 1] = initialTypes[k]
-            }
+            levels[offsets[k]] = resultLevels[k]
+            if (codePoints[k] >= MIN_SUPPLEMENTARY_CODE_POINT) levels[offsets[k] + 1] = resultLevels[k]
         }
     }
 
@@ -1014,6 +813,27 @@ private class BidiResolver {
         for (k in 0 until size) {
             if (isRemovedByX9(initialTypes[k].toInt())) {
                 resultLevels[k] = if (k == 0) paragraphLevel.toByte() else resultLevels[k - 1]
+            }
+        }
+    }
+
+    /**
+     * Rule L1 but at the end of lines (see [trailingWhitespaceStart]): segment and
+     * paragraph separators, and the whitespace before them (see [isWhitespaceForL1]), take the
+     * paragraph level.
+     */
+    private fun resetSeparatorsToParagraphLevel() {
+        val level = paragraphLevel.toByte()
+        var resetting = false
+        for (k in size - 1 downTo 0) {
+            val type = initialTypes[k].toInt()
+            if (type == S || type == B) {
+                resultLevels[k] = level
+                resetting = true
+            } else if (resetting && isWhitespaceForL1(type)) {
+                resultLevels[k] = level
+            } else {
+                resetting = false
             }
         }
     }

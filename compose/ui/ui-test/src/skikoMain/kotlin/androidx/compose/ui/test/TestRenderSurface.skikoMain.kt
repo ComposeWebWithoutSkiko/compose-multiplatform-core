@@ -41,6 +41,3 @@ internal expect fun createTestRenderSurface(width: Int, height: Int): TestRender
 
 /** Registers the graphics and text implementation of the platform. */
 internal expect fun registerTestComposeImplementation()
-
-/** The current value of a monotonic clock, in nanoseconds. */
-internal expect fun testNanoTime(): Long

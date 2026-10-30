@@ -40,7 +40,6 @@ class WordSegmentsTest {
             assertEquals(sampleBoundaries.size - 1, segments.segmentCount)
             assertEquals(sampleWordLike, List(segments.segmentCount) { segments.isWordLike(it) })
         }
-        assertContentEquals(sampleBoundaries, wordBoundaries(sample))
     }
 
     @Test
@@ -57,10 +56,6 @@ class WordSegmentsTest {
         assertRange(16, 16, wordRangeAt(sample, sample.length + 5))
         assertRange(0, 0, wordRangeAt(sample, -1))
         assertRange(0, 0, wordRangeAt("", 0))
-        val segments = wordSegments(sample)
-        assertEquals(4, segments.segmentAt(sample.indexOf('i')))
-        assertEquals(0, segments.segmentAt(-1))
-        assertEquals(7, segments.segmentAt(100))
     }
 
     @Test
@@ -84,25 +79,24 @@ class WordSegmentsTest {
     @Test
     fun longText() {
         val text = "word ".repeat(5000)
-        assertEquals(10001, wordBoundaries(text).size)
+        assertEquals(10001, wordSegments(text).boundaries.size)
         assertEquals(10001, approximateWordSegments(text).boundaries.size)
         assertContentEquals(intArrayOf(0, 2, 3, 5), approximateWordSegments("ab cd").boundaries)
     }
 
     @Test
     fun emptyText() {
-        assertContentEquals(intArrayOf(0), wordBoundaries(""))
+        assertContentEquals(intArrayOf(0), wordSegments("").boundaries)
         assertEquals(0, wordSegments("").segmentCount)
-        assertEquals(-1, wordSegments("").segmentAt(0))
         assertContentEquals(intArrayOf(0), approximateWordSegments("").boundaries)
     }
 
     @Test
     fun locales() {
-        assertContentEquals(intArrayOf(0, 5, 6, 11), wordBoundaries("hello world", "en-US"))
-        assertContentEquals(intArrayOf(0, 5, 6, 11), wordBoundaries("hello world", "de"))
+        assertContentEquals(intArrayOf(0, 5, 6, 11), wordSegments("hello world", "en-US").boundaries)
+        assertContentEquals(intArrayOf(0, 5, 6, 11), wordSegments("hello world", "de").boundaries)
         // An invalid locale falls back to the default one.
-        assertContentEquals(intArrayOf(0, 5, 6, 11), wordBoundaries("hello world", "not a locale!"))
+        assertContentEquals(intArrayOf(0, 5, 6, 11), wordSegments("hello world", "not a locale!").boundaries)
     }
 
     @Test
@@ -125,12 +119,22 @@ class WordSegmentsTest {
     fun boundariesAreGraphemeBoundaries() {
         val text = "Ke" + cp(0x301) + "ln, " + cp(0x1F1E9, 0x1F1EA) + " " +
             cp(0x5E9, 0x5DC, 0x5D5, 0x5DD) + " 42.5%"
-        val graphemes = graphemeBoundaries(text)
+        val graphemes = graphemeBoundariesOf(text)
         for (segments in listOf(wordSegments(text), approximateWordSegments(text))) {
             for (boundary in segments.boundaries) {
                 assertTrue(boundary in graphemes, "boundary $boundary")
             }
         }
+    }
+
+    @Test
+    fun theApproximationJoinsDigitGroupsOnlyAfterADigit() {
+        // As ICU does: a comma or a semicolon joins digits, not a letter and a digit.
+        assertWords("ab,5", 0, 2, 3, 4)
+        assertWords("a1,000", 0, 6)
+        assertContentEquals(intArrayOf(0, 1, 2, 3), approximateWordSegments("1,a").boundaries)
+        // Digit groups after a period: ICU splits them, the approximation keeps them together.
+        assertContentEquals(intArrayOf(0, 5), approximateWordSegments("x.1,2").boundaries)
     }
 
     @Test
@@ -141,7 +145,7 @@ class WordSegmentsTest {
     }
 
     private fun assertWords(text: String, vararg expected: Int) {
-        assertContentEquals(expected, wordBoundaries(text), "wordBoundaries of $text")
+        assertContentEquals(expected, wordSegments(text).boundaries, "words of $text")
         assertContentEquals(expected, approximateWordSegments(text).boundaries, "approximation of $text")
     }
 

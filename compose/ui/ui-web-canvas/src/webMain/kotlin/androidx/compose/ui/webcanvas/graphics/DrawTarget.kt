@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalWasmJsInterop::class)
-
 package androidx.compose.ui.webcanvas.graphics
 
 import androidx.compose.ui.graphics.BlendMode
@@ -23,10 +21,10 @@ import androidx.compose.ui.webcanvas.dom.CanvasElement
 import androidx.compose.ui.webcanvas.dom.Context2D
 import androidx.compose.ui.webcanvas.dom.CssColors
 import androidx.compose.ui.webcanvas.dom.JsStrings
-import androidx.compose.ui.webcanvas.dom.createCanvas
 import androidx.compose.ui.webcanvas.dom.createElementCanvas
-import androidx.compose.ui.webcanvas.dom.getContext2D
-import kotlin.js.ExperimentalWasmJsInterop
+import androidx.compose.ui.webcanvas.dom.releaseCanvas
+import androidx.compose.ui.webcanvas.dom.requireContext2D
+import androidx.compose.ui.webcanvas.dom.setLetterSpacing
 import kotlin.js.JsAny
 import kotlin.js.JsString
 import kotlin.js.toJsString
@@ -36,7 +34,11 @@ import kotlin.js.toJsString
  * in the device space of the canvas (offscreen layers are positioned within the root surface).
  *
  * It caches the state last applied to the context, to skip the (relatively expensive) calls
- * setting the same value again.
+ * setting the same value again. So a context has a single target, which all the canvases drawing
+ * into it share, its state is saved and restored through [save] and [restore], and code changing
+ * the state of the context outside of it calls [invalidateState] or [invalidateTransform]
+ * afterwards, unless it changes the state only between a `ctx.save()` and its `ctx.restore()`,
+ * which bring the state back as it was known.
  */
 internal class DrawTarget(
     val ctx: Context2D,
@@ -48,72 +50,130 @@ internal class DrawTarget(
     /** Called before drawing, e.g. to mark the image this target draws into as changed. */
     var onDraw: (() -> Unit)? = null
 
-    // Transformation currently set on the context.
-    private var tValid = false
-    private var ta = 0f
-    private var tb = 0f
-    private var tc = 0f
-    private var td = 0f
-    private var te = 0f
-    private var tf = 0f
-
-    private var globalAlpha = Double.NaN
-    private var compositeOperation: JsString? = null
-
-    private var fillColor = 0
-    private var fillColorValid = false
-    private var fillStyle: JsAny? = null
-
-    private var strokeColor = 0
-    private var strokeColorValid = false
-    private var strokeStyle: JsAny? = null
-
-    private var lineWidth = Double.NaN
-    private var lineCap: JsString? = null
-    private var lineJoin: JsString? = null
-    private var miterLimit = Double.NaN
-
-    private var imageSmoothing: Int = -1 // -1: unknown, 0: disabled, 1..3: low, medium, high
-
-    private var font: JsString? = null
-    private var direction: JsString? = null
-    private var isTextAlignLeft = false
-
     /**
-     * Forgets the cached state, which is needed after `ctx.restore()`: the context returns to the
-     * state of the matching `save()`, which isn't tracked.
+     * The state last applied to the context, as far as it's known: an unknown value (not valid,
+     * NaN or null) is applied again.
      *
-     * Transient state (shadow, filter, line dash, letter spacing) is always reset right after the
-     * draw that needs it, so it's at its default value at every `save()` and needs no tracking.
+     * Transient state (shadow, filter, line dash) is always reset right after the draw that needs
+     * it, so it's at its default value at every `save()` and needs no tracking.
      */
+    private class State {
+        // The transformation.
+        var tValid = false
+        var ta = 0f
+        var tb = 0f
+        var tc = 0f
+        var td = 0f
+        var te = 0f
+        var tf = 0f
+
+        var globalAlpha = Double.NaN
+        var compositeOperation: JsString? = null
+
+        var fillColor = 0
+        var fillColorValid = false
+        var fillStyle: JsAny? = null
+
+        var strokeColor = 0
+        var strokeColorValid = false
+        var strokeStyle: JsAny? = null
+
+        var lineWidth = Double.NaN
+        var lineCap: JsString? = null
+        var lineJoin: JsString? = null
+        var miterLimit = Double.NaN
+
+        var imageSmoothing: Int = -1 // -1: unknown, 0: disabled, 1..3: low, medium, high
+
+        var font: JsString? = null
+        var letterSpacing: JsString? = null
+        var direction: JsString? = null
+        var isTextAlignLeft = false
+
+        fun invalidate() {
+            tValid = false
+            globalAlpha = Double.NaN
+            compositeOperation = null
+            fillColorValid = false
+            fillStyle = null
+            strokeColorValid = false
+            strokeStyle = null
+            lineWidth = Double.NaN
+            lineCap = null
+            lineJoin = null
+            miterLimit = Double.NaN
+            imageSmoothing = -1
+            font = null
+            letterSpacing = null
+            direction = null
+            isTextAlignLeft = false
+        }
+
+        fun set(other: State) {
+            tValid = other.tValid
+            ta = other.ta
+            tb = other.tb
+            tc = other.tc
+            td = other.td
+            te = other.te
+            tf = other.tf
+            globalAlpha = other.globalAlpha
+            compositeOperation = other.compositeOperation
+            fillColor = other.fillColor
+            fillColorValid = other.fillColorValid
+            fillStyle = other.fillStyle
+            strokeColor = other.strokeColor
+            strokeColorValid = other.strokeColorValid
+            strokeStyle = other.strokeStyle
+            lineWidth = other.lineWidth
+            lineCap = other.lineCap
+            lineJoin = other.lineJoin
+            miterLimit = other.miterLimit
+            imageSmoothing = other.imageSmoothing
+            font = other.font
+            letterSpacing = other.letterSpacing
+            direction = other.direction
+            isTextAlignLeft = other.isTextAlignLeft
+        }
+    }
+
+    private var state = State()
+
+    /** The states saved by [save], the last one last; the ones past [savedCount] are spare. */
+    private val saved = ArrayList<State>()
+    private var savedCount = 0
+
+    /** Saves the state of the context (`ctx.save()`), which [restore] brings back. */
+    fun save() {
+        ctx.save()
+        if (savedCount == saved.size) saved.add(State())
+        saved[savedCount++].set(state)
+    }
+
+    /** Brings back the state of the context saved last (`ctx.restore()`), known as it was. */
+    fun restore() {
+        ctx.restore()
+        val restored = saved[--savedCount]
+        saved[savedCount] = state
+        state = restored
+    }
+
+    /** Forgets the cached state, after the state of the context was changed directly. */
     fun invalidateState() {
-        tValid = false
-        globalAlpha = Double.NaN
-        compositeOperation = null
-        fillColorValid = false
-        fillStyle = null
-        strokeColorValid = false
-        strokeStyle = null
-        lineWidth = Double.NaN
-        lineCap = null
-        lineJoin = null
-        miterLimit = Double.NaN
-        imageSmoothing = -1
-        font = null
-        direction = null
-        isTextAlignLeft = false
+        state.invalidate()
     }
 
     /** Forgets the transformation set on the context, after it was changed directly. */
     fun invalidateTransform() {
-        tValid = false
+        state.tValid = false
     }
 
     /** Sets the context transformation to [m], which is expressed in the root device space. */
     fun setTransform(m: Affine) {
+        val s = state
         val e = m.e - originX
         val f = m.f - originY
-        if (tValid && ta == m.a && tb == m.b && tc == m.c && td == m.d && te == e && tf == f) {
+        if (s.tValid && s.ta == m.a && s.tb == m.b && s.tc == m.c && s.td == m.d && s.te == e && s.tf == f) {
             return
         }
         ctx.setTransform(
@@ -124,107 +184,114 @@ internal class DrawTarget(
             e.toDouble(),
             f.toDouble(),
         )
-        tValid = true
-        ta = m.a
-        tb = m.b
-        tc = m.c
-        td = m.d
-        te = e
-        tf = f
+        s.tValid = true
+        s.ta = m.a
+        s.tb = m.b
+        s.tc = m.c
+        s.td = m.d
+        s.te = e
+        s.tf = f
     }
 
     /** Sets an identity transformation in the pixel space of this target. */
     fun setPixelTransform() {
-        if (tValid && ta == 1f && tb == 0f && tc == 0f && td == 1f && te == 0f && tf == 0f) return
+        val s = state
+        if (s.tValid && s.ta == 1f && s.tb == 0f && s.tc == 0f && s.td == 1f && s.te == 0f && s.tf == 0f) {
+            return
+        }
         ctx.setTransform(1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
-        tValid = true
-        ta = 1f
-        tb = 0f
-        tc = 0f
-        td = 1f
-        te = 0f
-        tf = 0f
+        s.tValid = true
+        s.ta = 1f
+        s.tb = 0f
+        s.tc = 0f
+        s.td = 1f
+        s.te = 0f
+        s.tf = 0f
     }
 
     fun setGlobalAlpha(value: Double) {
-        if (globalAlpha != value) {
+        if (state.globalAlpha != value) {
             ctx.globalAlpha = value
-            globalAlpha = value
+            state.globalAlpha = value
         }
     }
 
     fun setCompositeOperation(value: JsString) {
-        if (compositeOperation !== value) {
+        if (state.compositeOperation !== value) {
             ctx.globalCompositeOperation = value
-            compositeOperation = value
+            state.compositeOperation = value
         }
     }
 
     fun setFillColor(argb: Int) {
-        if (!fillColorValid || fillColor != argb) {
+        val s = state
+        if (!s.fillColorValid || s.fillColor != argb) {
             ctx.fillStyle = CssColors.of(argb)
-            fillColor = argb
-            fillColorValid = true
-            fillStyle = null
+            s.fillColor = argb
+            s.fillColorValid = true
+            s.fillStyle = null
         }
     }
 
     fun setFillStyle(style: JsAny) {
-        if (fillStyle !== style) {
+        val s = state
+        if (s.fillStyle !== style) {
             ctx.fillStyle = style
-            fillStyle = style
-            fillColorValid = false
+            s.fillStyle = style
+            s.fillColorValid = false
         }
     }
 
     fun setStrokeColor(argb: Int) {
-        if (!strokeColorValid || strokeColor != argb) {
+        val s = state
+        if (!s.strokeColorValid || s.strokeColor != argb) {
             ctx.strokeStyle = CssColors.of(argb)
-            strokeColor = argb
-            strokeColorValid = true
-            strokeStyle = null
+            s.strokeColor = argb
+            s.strokeColorValid = true
+            s.strokeStyle = null
         }
     }
 
     fun setStrokeStyle(style: JsAny) {
-        if (strokeStyle !== style) {
+        val s = state
+        if (s.strokeStyle !== style) {
             ctx.strokeStyle = style
-            strokeStyle = style
-            strokeColorValid = false
+            s.strokeStyle = style
+            s.strokeColorValid = false
         }
     }
 
     fun setLineWidth(value: Double) {
-        if (lineWidth != value) {
+        if (state.lineWidth != value) {
             ctx.lineWidth = value
-            lineWidth = value
+            state.lineWidth = value
         }
     }
 
     fun setLineCap(value: JsString) {
-        if (lineCap !== value) {
+        if (state.lineCap !== value) {
             ctx.lineCap = value
-            lineCap = value
+            state.lineCap = value
         }
     }
 
     fun setLineJoin(value: JsString) {
-        if (lineJoin !== value) {
+        if (state.lineJoin !== value) {
             ctx.lineJoin = value
-            lineJoin = value
+            state.lineJoin = value
         }
     }
 
     fun setMiterLimit(value: Double) {
-        if (miterLimit != value) {
+        if (state.miterLimit != value) {
             ctx.miterLimit = value
-            miterLimit = value
+            state.miterLimit = value
         }
     }
 
     /** 0: disabled, 1: low, 2: medium, 3: high. */
     fun setImageSmoothing(level: Int) {
-        if (imageSmoothing == level) return
+        if (state.imageSmoothing == level) return
         if (level == 0) {
             ctx.imageSmoothingEnabled = false
         } else {
@@ -235,13 +302,21 @@ internal class DrawTarget(
                 else -> JsStrings.high
             }
         }
-        imageSmoothing = level
+        state.imageSmoothing = level
     }
 
     fun setFont(value: JsString) {
-        if (font !== value) {
+        if (state.font !== value) {
             ctx.font = value
-            font = value
+            state.font = value
+        }
+    }
+
+    /** Sets the spacing between the letters of the text drawn next, a CSS length. */
+    fun setLetterSpacing(value: JsString) {
+        if (state.letterSpacing !== value) {
+            setLetterSpacing(ctx, value)
+            state.letterSpacing = value
         }
     }
 
@@ -250,13 +325,14 @@ internal class DrawTarget(
      * the default alignment (`start`) would turn into the right end of right-to-left text.
      */
     fun setDirection(value: JsString) {
-        if (direction !== value) {
+        val s = state
+        if (s.direction !== value) {
             ctx.direction = value
-            direction = value
+            s.direction = value
         }
-        if (!isTextAlignLeft) {
+        if (!s.isTextAlignLeft) {
             ctx.textAlign = JsStrings.left
-            isTextAlignLeft = true
+            s.isTextAlignLeft = true
         }
     }
 }
@@ -323,8 +399,8 @@ internal fun isUnboundedBlendMode(blendMode: BlendMode): Boolean =
     blendMode == BlendMode.Src || blendMode == BlendMode.SrcIn || blendMode == BlendMode.DstIn ||
         blendMode == BlendMode.SrcOut || blendMode == BlendMode.DstAtop
 
-// BlendMode is a value class over an Int: 0 Clear .. 28 Luminosity.
-private fun BlendMode.ordinalValue(): Int = when (this) {
+/** The number of the blend mode, from 0 (Clear) to 28 (Luminosity): BlendMode is a value class. */
+internal fun BlendMode.ordinalValue(): Int = when (this) {
     BlendMode.Clear -> 0
     BlendMode.Src -> 1
     BlendMode.Dst -> 2
@@ -360,7 +436,8 @@ private fun BlendMode.ordinalValue(): Int = when (this) {
 /**
  * A pool of offscreen canvases backing the layers of [WebCanvas.saveLayer] and the intermediate
  * images of their effects. Layers are created and dropped every frame (e.g. for a fading
- * animation), so their canvases are reused.
+ * animation), so their canvases are reused. They're `<canvas>` elements, whose contexts resolve
+ * the SVG filters that layers are drawn into them with (see [createElementCanvas]).
  */
 internal object LayerCanvasPool {
     private class Entry(
@@ -368,7 +445,6 @@ internal object LayerCanvasPool {
         val ctx: Context2D,
         val width: Int,
         val height: Int,
-        val isElement: Boolean,
     )
 
     private val free = ArrayList<Entry>()
@@ -380,20 +456,18 @@ internal object LayerCanvasPool {
         val ctx: Context2D,
         internal val capacityWidth: Int,
         internal val capacityHeight: Int,
-        internal val isElement: Boolean,
     )
 
     /**
      * Returns a cleared canvas of at least the given size, whose context has the default
-     * transformation, alpha and compositing operation. [element] asks for a `<canvas>` element,
-     * whose context resolves `url()` filters (see [createElementCanvas]).
+     * transformation, alpha, compositing operation and image smoothing.
      */
-    fun acquire(width: Int, height: Int, element: Boolean = false): Lease {
+    fun acquire(width: Int, height: Int): Lease {
         var bestIndex = -1
         var bestArea = Long.MAX_VALUE
         for (i in free.indices) {
             val entry = free[i]
-            if (entry.isElement == element && entry.width >= width && entry.height >= height) {
+            if (entry.width >= width && entry.height >= height) {
                 val area = entry.width.toLong() * entry.height
                 if (area < bestArea) {
                     bestArea = area
@@ -407,35 +481,28 @@ internal object LayerCanvasPool {
             ctx.setTransform(1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
             ctx.globalAlpha = 1.0
             ctx.globalCompositeOperation = SourceOverOperation
+            ctx.imageSmoothingEnabled = true
+            ctx.imageSmoothingQuality = JsStrings.low
             // Clearing the whole canvas lets the browser drop its previous content, instead of
             // keeping a copy for the draws that still refer to it.
             ctx.clearRect(0.0, 0.0, entry.width.toDouble(), entry.height.toDouble())
-            return Lease(entry.canvas, ctx, entry.width, entry.height, element)
+            return Lease(entry.canvas, ctx, entry.width, entry.height)
         }
         // Round up so that slightly different sizes (e.g. during animations) share canvases.
         val capacityWidth = roundUp(width)
         val capacityHeight = roundUp(height)
-        val canvas = if (element) {
-            createElementCanvas(capacityWidth, capacityHeight)
-        } else {
-            createCanvas(capacityWidth, capacityHeight)
-        }
-        val ctx = getContext2D(canvas, willReadFrequently = false) ?: error("Canvas 2D is not supported")
-        return Lease(canvas, ctx, capacityWidth, capacityHeight, element)
+        val canvas = createElementCanvas(capacityWidth, capacityHeight)
+        return Lease(canvas, requireContext2D(canvas), capacityWidth, capacityHeight)
     }
 
     fun release(lease: Lease) {
         val pixels = free.sumOf { it.width.toLong() * it.height } +
             lease.capacityWidth.toLong() * lease.capacityHeight
         if (free.size >= MaxFreeEntries || pixels > MaxFreePixels) {
-            // Drop the canvas; the browser frees its memory once it's unreachable.
-            lease.canvas.width = 0
-            lease.canvas.height = 0
+            releaseCanvas(lease.canvas)
             return
         }
-        free.add(
-            Entry(lease.canvas, lease.ctx, lease.capacityWidth, lease.capacityHeight, lease.isElement)
-        )
+        free.add(Entry(lease.canvas, lease.ctx, lease.capacityWidth, lease.capacityHeight))
     }
 
     private fun roundUp(size: Int): Int = ((size + 63) / 64) * 64

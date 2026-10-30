@@ -372,9 +372,7 @@ def write_tables(ucd, version, path):
     parts.append('//   python3 compose/ui/ui-web-canvas/scripts/generate_unicode_tables.py\n')
     parts.append('// from the repository root. See the script for a description of the encoding, which is\n')
     parts.append('// decoded by UnicodePropertyTable.kt.\n\n')
-    parts.append('package %s\n\n' % PACKAGE)
-    parts.append('/** Version of the Unicode Character Database the tables were generated from. */\n')
-    parts.append('internal const val UNICODE_VERSION: String = "%s"\n' % version)
+    parts.append('package %s\n' % PACKAGE)
 
     stats = []
     for name, doc, table in build_tables(ucd):

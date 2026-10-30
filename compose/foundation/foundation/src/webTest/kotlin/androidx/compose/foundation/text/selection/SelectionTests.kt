@@ -37,8 +37,10 @@ import androidx.compose.ui.test.runComposeUiTest
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import kotlin.test.Test
-import androidx.compose.foundation.text.HostOs
+import androidx.compose.ui.InternalComposeUiApi
+import androidx.compose.ui.platform.HostOs
 
+@OptIn(InternalComposeUiApi::class)
 private val ResolvedKeyboardActions
     get() = when (HostOs.current) {
         HostOs.MacOS -> MacosKeyboardActions

@@ -14,11 +14,8 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalWasmJsInterop::class)
-
 package androidx.compose.ui.webcanvas.dom
 
-import kotlin.js.ExperimentalWasmJsInterop
 import kotlin.js.JsAny
 import kotlin.js.JsString
 import kotlin.js.js
@@ -80,6 +77,7 @@ internal external interface Context2D : JsAny {
     fun stroke(path: JsAny)
     fun clip(fillRule: JsString)
     fun clip(path: JsAny, fillRule: JsString)
+    fun isPointInPath(path: JsAny, x: Double, y: Double, fillRule: JsString): Boolean
 
     fun fillRect(x: Double, y: Double, w: Double, h: Double)
     fun strokeRect(x: Double, y: Double, w: Double, h: Double)
@@ -116,6 +114,15 @@ internal external interface Context2D : JsAny {
 
     fun getImageData(sx: Int, sy: Int, sw: Int, sh: Int): ImageData
     fun putImageData(data: ImageData, dx: Int, dy: Int)
+    fun putImageData(
+        data: ImageData,
+        dx: Int,
+        dy: Int,
+        dirtyX: Int,
+        dirtyY: Int,
+        dirtyWidth: Int,
+        dirtyHeight: Int,
+    )
 }
 
 internal external interface CanvasGradient : JsAny {
@@ -130,9 +137,15 @@ internal external interface TextMetrics : JsAny {
     val actualBoundingBoxRight: Double
     val actualBoundingBoxAscent: Double
     val actualBoundingBoxDescent: Double
-    val fontBoundingBoxAscent: Double
-    val fontBoundingBoxDescent: Double
 }
+
+/** The `fontBoundingBoxAscent` of [metrics]: NaN where the browser lacks it (Firefox before 116). */
+// language=js
+internal fun fontBoundingBoxAscentOf(metrics: TextMetrics): Double = js("+metrics.fontBoundingBoxAscent")
+
+/** The `fontBoundingBoxDescent` of [metrics]: NaN where the browser lacks it (Firefox before 116). */
+// language=js
+internal fun fontBoundingBoxDescentOf(metrics: TextMetrics): Double = js("+metrics.fontBoundingBoxDescent")
 
 internal external interface ImageData : JsAny {
     val width: Int
@@ -144,15 +157,6 @@ internal external interface CanvasElement : JsAny {
     var width: Int
     var height: Int
 }
-
-// language=js
-internal fun createLinearGradientCompat(
-    ctx: Context2D,
-    x0: Double,
-    y0: Double,
-    x1: Double,
-    y1: Double,
-): CanvasGradient = js("ctx.createLinearGradient(x0, y0, x1, y1)")
 
 /** Creates a conic gradient, or returns `null` if the browser doesn't support them. */
 // language=js
@@ -170,6 +174,10 @@ internal fun setLineDash(ctx: Context2D, intervals: JsAny): Unit = js("ctx.setLi
 // language=js
 internal fun clearLineDash(ctx: Context2D): Unit = js("ctx.setLineDash([])")
 
+/**
+ * Sets the letter spacing of [ctx], a CSS length. Browsers without `ctx.letterSpacing` (Safari before
+ * 18.4, Firefox before 115) ignore it in measurement and drawing alike.
+ */
 // language=js
 internal fun setLetterSpacing(ctx: Context2D, value: JsString): Unit = js("ctx.letterSpacing = value")
 
@@ -224,9 +232,9 @@ internal fun setPatternTransform(
 
 /**
  * Creates a `<canvas>` element of the given size, which isn't part of the page: unlike an
- * `OffscreenCanvas`, its 2D context resolves `url()` references in `ctx.filter` (see
- * [androidx.compose.ui.webcanvas.graphics.SvgColorFilters]). Falls back to [createCanvas] without
- * a document.
+ * `OffscreenCanvas`, its 2D context resolves `url()` references in `ctx.filter`, to the document
+ * (see [filterScopeOf] and [androidx.compose.ui.webcanvas.graphics.SvgColorFilters]). Falls back
+ * to [createCanvas] without a document.
  */
 // language=js
 internal fun createElementCanvas(width: Int, height: Int): CanvasElement = js(
@@ -258,12 +266,46 @@ internal fun createCanvas(width: Int, height: Int): CanvasElement = js(
     }"""
 )
 
+/**
+ * The node whose tree resolves the `url()` references of the filters of [ctx] (`ctx.filter`): the
+ * shadow root of a `<canvas>` element in a shadow tree, or else its document. `null` for an
+ * `OffscreenCanvas`, which resolves none.
+ */
+// language=js
+internal fun filterScopeOf(ctx: Context2D): JsAny? = js(
+    """{
+        const canvas = ctx.canvas;
+        if (typeof HTMLCanvasElement === 'undefined' || !(canvas instanceof HTMLCanvasElement)) return null;
+        const root = canvas.getRootNode();
+        return (typeof ShadowRoot !== 'undefined' && root instanceof ShadowRoot) ? root : canvas.ownerDocument;
+    }"""
+)
+
 // language=js
 internal fun getContext2D(canvas: JsAny, willReadFrequently: Boolean): Context2D? =
     js("canvas.getContext('2d', { willReadFrequently: willReadFrequently })")
 
+/** The 2D context of a canvas created to draw offscreen, which the browser always provides. */
+internal fun requireContext2D(canvas: JsAny, willReadFrequently: Boolean = false): Context2D =
+    getContext2D(canvas, willReadFrequently) ?: error("Canvas 2D is not supported")
+
+/** Frees the memory of [canvas] right away, rather than when it's collected. */
+internal fun releaseCanvas(canvas: CanvasElement) {
+    canvas.width = 0
+    canvas.height = 0
+}
+
+/**
+ * A context that throws whenever it's used: the context of a canvas that must not draw anything,
+ * so that a draw reaching it fails instead of drawing.
+ */
 // language=js
-internal fun createPath2D(): JsAny = js("new Path2D()")
+internal fun createThrowingContext2D(): Context2D = js(
+    """new Proxy({}, {
+        get(target, name) { throw new Error('This context must not be used: ' + String(name)); },
+        set(target, name) { throw new Error('This context must not be used: ' + String(name)); },
+    })"""
+)
 
 /** A JS array of numbers, built incrementally from Kotlin. */
 internal external interface JsNumberArray : JsAny
@@ -285,11 +327,8 @@ internal fun FloatArray.toJsNumberArray(): JsAny {
 
 /** Feature detection results for the Canvas 2D API of the current browser. */
 internal object CanvasFeatures {
-    /** Whether `ctx.filter` is applied (missing in Safari before 18). */
+    /** Whether `ctx.filter` is applied (missing in Safari, 27.2 included). */
     val filter: Boolean by lazy { detectCanvasFilter() }
-
-    /** Whether `ctx.letterSpacing` is supported. */
-    val letterSpacing: Boolean by lazy { detectLetterSpacing() }
 }
 
 // language=js
@@ -303,21 +342,6 @@ private fun detectCanvasFilter(): Boolean = js(
             if (!ctx || !('filter' in ctx)) return false;
             ctx.filter = 'blur(1px)';
             return ctx.filter === 'blur(1px)';
-        } catch (e) {
-            return false;
-        }
-    }"""
-)
-
-// language=js
-private fun detectLetterSpacing(): Boolean = js(
-    """{
-        try {
-            const canvas = (typeof OffscreenCanvas !== 'undefined')
-                ? new OffscreenCanvas(1, 1)
-                : document.createElement('canvas');
-            const ctx = canvas.getContext('2d');
-            return !!ctx && ('letterSpacing' in ctx);
         } catch (e) {
             return false;
         }
@@ -342,6 +366,7 @@ internal object JsStrings {
     val ltr = "ltr".toJsString()
     val rtl = "rtl".toJsString()
     val normal = "normal".toJsString()
+    val zeroPx = "0px".toJsString()
 
     val low = "low".toJsString()
     val medium = "medium".toJsString()
@@ -353,5 +378,4 @@ internal object JsStrings {
     val noRepeat = "no-repeat".toJsString()
 
     val transparent = "rgba(0,0,0,0)".toJsString()
-    val black = "#000".toJsString()
 }

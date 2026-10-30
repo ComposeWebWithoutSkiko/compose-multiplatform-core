@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-@file:OptIn(InternalComposeUiApi::class, ExperimentalWasmJsInterop::class)
+@file:OptIn(InternalComposeUiApi::class)
 
 package androidx.compose.ui.webcanvas.graphics
 
@@ -28,6 +28,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.ImageShader
 import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.graphics.Shader
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.VertexMode
 import androidx.compose.ui.graphics.Vertices
@@ -40,7 +41,6 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.webcanvas.SharedWebGLContext
 import androidx.compose.ui.webcanvas.WebCanvasGraphicsContext
-import kotlin.js.ExperimentalWasmJsInterop
 import kotlin.js.JsAny
 import kotlin.js.js
 import kotlin.math.abs
@@ -57,6 +57,9 @@ class SharedWebGLTest {
     fun register() {
         registerWebCanvasComposeImplementation()
     }
+
+    /** The shared context: every browser the tests run in supports WebGL 2. */
+    private fun sharedContext(): JsAny = assertNotNull(SharedWebGLContext.context, "WebGL 2 isn't available")
 
     private fun image(width: Int = 20, height: Int = 20, draw: Canvas.() -> Unit): ImageBitmap {
         val image = ImageBitmap(width, height)
@@ -102,7 +105,7 @@ class SharedWebGLTest {
 
     @Test
     fun composeDrawsLeaveTheGLStateAsTheyFoundIt() {
-        val gl = SharedWebGLContext.context ?: return println("WebGL 2 isn't available: skipped")
+        val gl = sharedContext()
         val objects = setUpState(gl)
         try {
             val before = describeState(gl, objects)
@@ -115,7 +118,7 @@ class SharedWebGLTest {
 
     @Test
     fun framebufferImageShowsTheFrameTheRightWayUp() {
-        val gl = SharedWebGLContext.context ?: return println("WebGL 2 isn't available: skipped")
+        val gl = sharedContext()
         // Green at the bottom (the GL origin), red at the top.
         val framebuffer = createFramebuffer(gl, 20, 20, red = 0.0, green = 1.0, blue = 0.0)
         clearTop(gl, framebuffer, 20, 20, red = 1.0, green = 0.0, blue = 0.0, fraction = 0.5)
@@ -132,7 +135,7 @@ class SharedWebGLTest {
 
     @Test
     fun framebufferImagesKeepTheirFramesWhenTheDrawingBufferIsReused() {
-        val gl = SharedWebGLContext.context ?: return println("WebGL 2 isn't available: skipped")
+        val gl = sharedContext()
         val red = createFramebuffer(gl, 20, 20, red = 1.0, green = 0.0, blue = 0.0)
         val blue = createFramebuffer(gl, 30, 10, red = 0.0, green = 0.0, blue = 1.0)
         val redFrames = SharedWebGLContext.createFramebufferImage(red, 20, 20)
@@ -166,7 +169,7 @@ class SharedWebGLTest {
 
     @Test
     fun framebufferImageRepeatsAsAPattern() {
-        val gl = SharedWebGLContext.context ?: return println("WebGL 2 isn't available: skipped")
+        val gl = sharedContext()
         // Something larger than the frame in the drawing buffer first.
         drawWithWebGL()
         val framebuffer = createFramebuffer(gl, 10, 10, red = 0.0, green = 0.0, blue = 1.0)
@@ -188,7 +191,7 @@ class SharedWebGLTest {
 
     @Test
     fun releasedFramebufferImageDrawsNothing() {
-        val gl = SharedWebGLContext.context ?: return println("WebGL 2 isn't available: skipped")
+        val gl = sharedContext()
         val framebuffer = createFramebuffer(gl, 10, 10, red = 1.0, green = 0.0, blue = 0.0)
         val frames = SharedWebGLContext.createFramebufferImage(framebuffer, 10, 10)
         SharedWebGLContext.releaseFramebufferImage(frames)
@@ -198,8 +201,26 @@ class SharedWebGLTest {
     }
 
     @Test
+    fun theShadersOfAReleasedFramebufferImageDrawNothing() {
+        val gl = sharedContext()
+        val framebuffer = createFramebuffer(gl, 10, 10, red = 1.0, green = 0.0, blue = 0.0)
+        val frames = SharedWebGLContext.createFramebufferImage(framebuffer, 10, 10)
+        // A pattern of the image, and an image of the shader (clamped past the image).
+        val shaders = listOf(
+            ImageShader(frames, TileMode.Repeated, TileMode.Repeated),
+            ImageShader(frames, TileMode.Clamp, TileMode.Clamp),
+        )
+        fun drawnWith(shader: Shader) = image { drawRect(Rect(0f, 0f, 20f, 20f), Paint().apply { this.shader = shader }) }
+        val before = shaders.map { drawnWith(it) }
+        SharedWebGLContext.releaseFramebufferImage(frames)
+        deleteFramebuffer(gl, framebuffer)
+        for (image in before) assertColor(Color.Red, image.toPixelMap()[5, 5])
+        for (shader in shaders) assertColor(Color.Transparent, drawnWith(shader).toPixelMap()[5, 5])
+    }
+
+    @Test
     fun theContextIsCreatedOnce() {
-        val gl = SharedWebGLContext.context ?: return println("WebGL 2 isn't available: skipped")
+        val gl = sharedContext()
         drawWithWebGL()
         assertSame(gl, SharedWebGLContext.context)
         assertNotNull(SharedWebGLContext.canvas)

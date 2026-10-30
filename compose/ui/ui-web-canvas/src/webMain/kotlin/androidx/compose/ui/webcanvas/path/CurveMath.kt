@@ -32,10 +32,10 @@ internal const val ScalarNearlyZero: Float = 1f / (1 shl 12)
 internal const val QuarterConicWeight: Float = 0.70710677f
 
 /** Skia's `SkConic::kMaxConicToQuadPOW2`. */
-internal const val MaxConicToQuadPow2: Int = 5
+private const val MaxConicToQuadPow2: Int = 5
 
 /** Number of points written by [chopConicIntoQuadsPow2] for the maximal subdivision. */
-internal const val MaxConicQuadPoints: Int = 2 * (1 shl MaxConicToQuadPow2) + 1
+private const val MaxConicQuadPoints: Int = 2 * (1 shl MaxConicToQuadPow2) + 1
 
 internal fun nearlyEqual(a: Float, b: Float): Boolean = abs(a - b) <= ScalarNearlyZero
 
@@ -54,9 +54,38 @@ internal fun f32(value: Float): Float {
     return F32Buffer[0]
 }
 
+/** Skia's `sk_float_midpoint`, used by `SkRect::centerX/centerY`. */
+internal fun midpoint(a: Float, b: Float): Float = ((a.toDouble() + b.toDouble()) * 0.5).toFloat()
+
 /** Returns the bit pattern-preserving "next float towards zero" of a non-negative [value]. */
 internal fun nextFloatTowardsZero(value: Float): Float =
     if (value == 0f || !value.isFinite()) value else Float.fromBits(value.toRawBits() - 1)
+
+/** Returns a buffer for the quadratics of [chopConicIntoQuads], large enough for any conic. */
+internal fun conicQuadBuffer(): FloatArray = FloatArray(2 * MaxConicQuadPoints)
+
+/**
+ * Approximates the conic of a path whose control point is point [p] of [points] (its start point is
+ * the one before) by quadratics within [tolerance] ([computeConicQuadPow2], then
+ * [chopConicIntoQuadsPow2]). Writes their points into [dst], a [conicQuadBuffer]: the start point,
+ * then control/end point pairs, so quadratic `q` starts at float `4 * q`. Returns their count.
+ */
+internal fun chopConicIntoQuads(
+    points: FloatArray,
+    p: Int,
+    weight: Float,
+    tolerance: Float,
+    dst: FloatArray,
+): Int {
+    val x0 = points[2 * p - 2]
+    val y0 = points[2 * p - 1]
+    val x1 = points[2 * p]
+    val y1 = points[2 * p + 1]
+    val x2 = points[2 * p + 2]
+    val y2 = points[2 * p + 3]
+    val pow2 = computeConicQuadPow2(x0, y0, x1, y1, x2, y2, weight, tolerance)
+    return chopConicIntoQuadsPow2(x0, y0, x1, y1, x2, y2, weight, pow2, dst)
+}
 
 /**
  * Returns the number of times (as a power of 2) a conic must be subdivided so that the quadratic
@@ -65,7 +94,7 @@ internal fun nextFloatTowardsZero(value: Float): Float =
  * A non-positive or non-finite tolerance or non-finite points produce a single quadratic, matching
  * the reference implementation of `PathIterator`.
  */
-internal fun computeConicQuadPow2(
+private fun computeConicQuadPow2(
     x0: Float,
     y0: Float,
     x1: Float,
@@ -102,13 +131,14 @@ internal fun computeConicQuadPow2(
 }
 
 /**
- * Approximates the conic (x0, y0) (x1, y1) (x2, y2) with [weight] by `2^pow2` quadratic Béziers
- * (Skia's `SkConic::chopIntoQuadsPOW2`).
+ * Approximates the conic (x0, y0) (x1, y1) (x2, y2) with [weight] by quadratic Béziers (Skia's
+ * `SkConic::chopIntoQuadsPOW2`): `2^pow2` of them, or 2 for a conic of an extreme weight whose
+ * first halves are a pair of lines, so the number returned is the one to rely on.
  *
- * Writes `2 * quadCount + 1` points (start point, then control/end point pairs) into [dst] starting
- * at float index [dstOffset] and returns the number of quadratics.
+ * Writes `2 * quadCount + 1` points (start point, then control/end point pairs) into [dst] and
+ * returns the number of quadratics.
  */
-internal fun chopConicIntoQuadsPow2(
+private fun chopConicIntoQuadsPow2(
     x0: Float,
     y0: Float,
     x1: Float,
@@ -118,16 +148,15 @@ internal fun chopConicIntoQuadsPow2(
     weight: Float,
     pow2: Int,
     dst: FloatArray,
-    dstOffset: Int,
 ): Int {
     var level = pow2.coerceIn(0, MaxConicToQuadPow2)
-    dst[dstOffset] = x0
-    dst[dstOffset + 1] = y0
+    dst[0] = x0
+    dst[1] = y0
     var handled = false
     if (level == MaxConicToQuadPow2) {
         // An extreme weight would generate many quads: check whether the first chop already
         // degenerates into a pair of lines.
-        val halves = FloatArray(10)
+        val halves = ConicHalves
         chopConicAtHalf(x0, y0, x1, y1, x2, y2, weight, halves, 0)
         if (
             halves[2] == halves[4] &&
@@ -135,26 +164,26 @@ internal fun chopConicIntoQuadsPow2(
                 halves[4] == halves[6] &&
                 halves[5] == halves[7]
         ) {
-            dst[dstOffset + 2] = halves[2]
-            dst[dstOffset + 3] = halves[3]
-            dst[dstOffset + 4] = halves[2]
-            dst[dstOffset + 5] = halves[3]
-            dst[dstOffset + 6] = halves[2]
-            dst[dstOffset + 7] = halves[3]
-            dst[dstOffset + 8] = halves[8]
-            dst[dstOffset + 9] = halves[9]
+            dst[2] = halves[2]
+            dst[3] = halves[3]
+            dst[4] = halves[2]
+            dst[5] = halves[3]
+            dst[6] = halves[2]
+            dst[7] = halves[3]
+            dst[8] = halves[8]
+            dst[9] = halves[9]
             level = 1
             handled = true
         }
     }
     if (!handled) {
-        subdivideConic(x0, y0, x1, y1, x2, y2, weight, level, dst, dstOffset + 2)
+        subdivideConic(x0, y0, x1, y1, x2, y2, weight, level, dst, 2)
     }
     val quadCount = 1 shl level
     val pointCount = 2 * quadCount + 1
     var allFinite = true
     for (i in 0 until pointCount * 2) {
-        if (!dst[dstOffset + i].isFinite()) {
+        if (!dst[i].isFinite()) {
             allFinite = false
             break
         }
@@ -162,14 +191,21 @@ internal fun chopConicIntoQuadsPow2(
     if (!allFinite) {
         // Pin ourselves to the middle of the hull, as Skia does.
         for (i in 1 until pointCount - 1) {
-            dst[dstOffset + 2 * i] = x1
-            dst[dstOffset + 2 * i + 1] = y1
+            dst[2 * i] = x1
+            dst[2 * i + 1] = y1
         }
     }
     return quadCount
 }
 
 private fun between(a: Float, b: Float, c: Float): Boolean = (a - b) * (c - b) <= 0f
+
+/**
+ * The halves of the conics [subdivideConic] cuts: 10 floats for each level `l` from
+ * `10 * (l - 1)` on, which stay while the levels below cut the first half.
+ * [chopConicIntoQuadsPow2] checks its first chop in the floats of level 1 before subdividing.
+ */
+private val ConicHalves = FloatArray(10 * MaxConicToQuadPow2)
 
 /** Port of Skia's recursive `subdivide()` used by `SkConic::chopIntoQuadsPOW2`. */
 private fun subdivideConic(
@@ -191,34 +227,58 @@ private fun subdivideConic(
         dst[offset + 3] = y2
         return offset + 4
     }
-    val h = FloatArray(10)
-    val newWeight = chopConicAtHalf(x0, y0, x1, y1, x2, y2, weight, h, 0)
+    val h = ConicHalves
+    val o = 10 * (level - 1)
+    val newWeight = chopConicAtHalf(x0, y0, x1, y1, x2, y2, weight, h, o)
     val startY = y0
     val endY = y2
     if (between(startY, y1, endY)) {
         // If the input is monotonic and the output is not, the scan converter hangs.
         // Ensure that the chopped conics maintain their y-order.
-        val midY = h[5]
+        val midY = h[o + 5]
         if (!between(startY, midY, endY)) {
             val closerY = if (abs(midY - startY) < abs(midY - endY)) startY else endY
-            h[5] = closerY
+            h[o + 5] = closerY
         }
-        if (!between(startY, h[3], h[5])) {
-            h[3] = startY
+        if (!between(startY, h[o + 3], h[o + 5])) {
+            h[o + 3] = startY
         }
-        if (!between(h[5], h[7], endY)) {
-            h[7] = endY
+        if (!between(h[o + 5], h[o + 7], endY)) {
+            h[o + 7] = endY
         }
     }
-    val next = subdivideConic(h[0], h[1], h[2], h[3], h[4], h[5], newWeight, level - 1, dst, offset)
-    return subdivideConic(h[4], h[5], h[6], h[7], h[8], h[9], newWeight, level - 1, dst, next)
+    val next =
+        subdivideConic(
+            h[o],
+            h[o + 1],
+            h[o + 2],
+            h[o + 3],
+            h[o + 4],
+            h[o + 5],
+            newWeight,
+            level - 1,
+            dst,
+            offset,
+        )
+    return subdivideConic(
+        h[o + 4],
+        h[o + 5],
+        h[o + 6],
+        h[o + 7],
+        h[o + 8],
+        h[o + 9],
+        newWeight,
+        level - 1,
+        dst,
+        next,
+    )
 }
 
 /**
  * Splits a conic at t = 0.5 (Skia's `SkConic::chop`). Writes the 5 points of the two halves (p0,
  * c0, mid, c1, p2) into [dst] at [offset] and returns the weight shared by both halves.
  */
-internal fun chopConicAtHalf(
+private fun chopConicAtHalf(
     x0: Float,
     y0: Float,
     x1: Float,
@@ -558,8 +618,9 @@ internal fun chopConicAt(
 }
 
 /**
- * Extracts the part of a conic between [t1] and [t2] (Skia's `SkConic::chopAt(t1, t2, dst)`).
- * Writes 3 points into [dst] at [offset] and returns the weight of the sub-conic.
+ * Extracts the part of a conic between [t1] and [t2], where `0 < t1 < t2 < 1` (Skia's
+ * `SkConic::chopAt(t1, t2, dst)`; the parts from 0 or to 1 are halves, see [chopConicAt]). Writes 3
+ * points into [dst] at [offset] and returns the weight of the sub-conic.
  */
 internal fun chopConicBetween(
     x0: Float,
@@ -574,39 +635,6 @@ internal fun chopConicBetween(
     dst: FloatArray,
     offset: Int,
 ): Float {
-    if (t1 == 0f || t2 == 1f) {
-        if (t1 == 0f && t2 == 1f) {
-            dst[offset] = x0
-            dst[offset + 1] = y0
-            dst[offset + 2] = x1
-            dst[offset + 3] = y1
-            dst[offset + 4] = x2
-            dst[offset + 5] = y2
-            return weight
-        }
-        val halves = FloatArray(10)
-        val weights = FloatArray(2)
-        if (
-            chopConicAt(
-                x0,
-                y0,
-                x1,
-                y1,
-                x2,
-                y2,
-                weight,
-                if (t1 != 0f) t1 else t2,
-                halves,
-                0,
-                weights,
-                0,
-            )
-        ) {
-            val which = if (t1 != 0f) 1 else 0
-            halves.copyInto(dst, offset, which * 4, which * 4 + 6)
-            return weights[which]
-        }
-    }
     // Numerator/denominator coefficients of the rational quadratic.
     val p1wx = x1 * weight
     val p1wy = y1 * weight
@@ -684,7 +712,7 @@ internal fun cubicSegmentCount(
 }
 
 /** Upper bound on the number of line segments a single curve is flattened into. */
-internal const val MaxFlattenSegments: Int = 1024
+private const val MaxFlattenSegments: Int = 1024
 
 private fun segmentCountFor(n: Double): Int =
     if (!(n > 1.0)) 1

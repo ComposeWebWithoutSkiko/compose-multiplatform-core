@@ -14,20 +14,14 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalWasmJsInterop::class)
-
 package androidx.compose.ui.webcanvas.path
 
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.RoundRect
-import androidx.compose.ui.graphics.Matrix
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathFillType
-import kotlin.js.ExperimentalWasmJsInterop
-import kotlin.js.JsAny
-import kotlin.js.js
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
@@ -79,81 +73,87 @@ class PathDataTest {
     }
 
     @Test
-    fun asOval() {
-        val rect = Rect(10f, 20f, 50f, 40f)
-        for (direction in Path.Direction.entries) {
-            assertEquals(rect, WebPath().apply { addOval(rect, direction) }.snapshot().asOval())
-        }
-        // Full arcs start at other points.
-        assertEquals(rect, WebPath().apply { addArc(rect, 90f, 360f) }.snapshot().asOval())
-        assertEquals(rect, WebPath().apply { addArc(rect, 180f, -360f) }.snapshot().asOval())
-        // Round rects with large radii are ovals.
-        assertEquals(
-            Rect(0f, 0f, 10f, 10f),
-            WebPath()
-                .apply { addRoundRect(RoundRect(0f, 0f, 10f, 10f, 5f, 5f)) }
-                .snapshot()
-                .asOval(),
-        )
-        // Translated ovals.
-        val moved =
-            WebPath().apply {
-                addOval(rect)
-                translate(androidx.compose.ui.geometry.Offset(0.1f, 0.3f))
-            }
-        assertRectClose(rect.translate(0.1f, 0.3f), moved.snapshot().asOval()!!, 1e-4f)
-
-        assertNull(WebPath().apply { addArc(rect, 0f, 270f) }.snapshot().asOval())
-        assertNull(
-            WebPath().apply { addRoundRect(RoundRect(rect, CornerRadius(4f))) }.snapshot().asOval()
-        )
-        assertNull(rectPath(0f, 0f, 1f, 1f).snapshot().asOval())
-        // Rotated by 45 degrees: still conics, but not an axis-aligned oval.
-        val rotated =
-            WebPath().apply {
-                addOval(rect)
-                transform(Matrix().apply { rotateZ(45f) })
-            }
-        assertNull(rotated.snapshot().asOval())
-    }
-
-    @Test
     fun asRoundRect() {
-        val roundRect = RoundRect(0f, 0f, 100f, 50f, 10f, 5f)
-        for (direction in Path.Direction.entries) {
-            assertEquals(
-                roundRect,
-                WebPath().apply { addRoundRect(roundRect, direction) }.snapshot().asRoundRect(),
-            )
+        val out = FloatArray(12)
+        // Corners of their own radii, one of them square.
+        val radii = floatArrayOf(10f, 5f, 0f, 0f, 20f, 20f, 4f, 8f)
+        for (clockwise in listOf(true, false)) {
+            for (start in 0 until 8) {
+                val path = WebPath().apply { addRoundRect(0f, 0f, 100f, 50f, radii, clockwise, start) }
+                assertTrue(path.snapshot().asRoundRect(out), "clockwise $clockwise from $start")
+                assertContentEquals(floatArrayOf(0f, 0f, 100f, 50f) + radii, out)
+            }
         }
-        val perCorner =
-            RoundRect(
-                Rect(0f, 0f, 100f, 50f),
-                topLeft = CornerRadius(10f, 5f),
-                topRight = CornerRadius(0f),
-                bottomRight = CornerRadius(20f, 20f),
-                bottomLeft = CornerRadius(4f, 8f),
-            )
-        assertEquals(
-            perCorner,
-            WebPath().apply { addRoundRect(perCorner) }.snapshot().asRoundRect(),
-        )
+        // A circle, as an oval.
+        assertTrue(circlePath(5f, 5f, 5f).snapshot().asRoundRect(out))
+        assertContentEquals(floatArrayOf(0f, 0f, 10f, 10f, 5f, 5f, 5f, 5f, 5f, 5f, 5f, 5f), out)
 
-        // Radii are reported after Skia's normalization.
-        val scaled = WebPath().apply { addRoundRect(RoundRect(0f, 0f, 100f, 10f, 20f, 20f)) }
-        assertEquals(RoundRect(0f, 0f, 100f, 10f, 5f, 5f), scaled.snapshot().asRoundRect())
-
-        assertNull(rectPath(0f, 0f, 10f, 10f).snapshot().asRoundRect())
-        assertNull(circlePath(5f, 5f, 5f).snapshot().asRoundRect())
-        assertNull(
+        // Not rounded rectangles.
+        assertFalse(rectPath(0f, 0f, 10f, 10f).snapshot().asRoundRect(out), "a rectangle")
+        assertFalse(
             WebPath()
                 .apply {
-                    addRoundRect(roundRect)
-                    addRoundRect(roundRect)
+                    addRoundRect(RoundRect(0f, 0f, 10f, 10f, 2f, 2f))
+                    addRoundRect(RoundRect(20f, 0f, 30f, 10f, 2f, 2f))
                 }
                 .snapshot()
-                .asRoundRect()
+                .asRoundRect(out),
+            "two contours",
         )
+        val open = WebPath().apply {
+            moveTo(0f, 5f)
+            conicTo(0f, 0f, 5f, 0f, QuarterConicWeight)
+            conicTo(10f, 0f, 10f, 5f, QuarterConicWeight)
+            conicTo(10f, 10f, 5f, 10f, QuarterConicWeight)
+            conicTo(0f, 10f, 0f, 5f, QuarterConicWeight)
+        }
+        assertFalse(open.snapshot().asRoundRect(out), "open")
+        val flatCorners = WebPath().apply {
+            moveTo(0f, 5f)
+            conicTo(0f, 0f, 5f, 0f, 0.5f)
+            conicTo(10f, 0f, 10f, 5f, 0.5f)
+            conicTo(10f, 10f, 5f, 10f, 0.5f)
+            conicTo(0f, 10f, 0f, 5f, 0.5f)
+            close()
+        }
+        assertFalse(flatCorners.snapshot().asRoundRect(out), "not quarter ellipses")
+        val crossing = WebPath().apply {
+            moveTo(0f, 8f)
+            conicTo(0f, 0f, 8f, 0f, QuarterConicWeight)
+            lineTo(2f, 0f)
+            conicTo(10f, 0f, 10f, 8f, QuarterConicWeight)
+            conicTo(10f, 10f, 8f, 10f, QuarterConicWeight)
+            conicTo(0f, 10f, 0f, 8f, QuarterConicWeight)
+            close()
+        }
+        assertFalse(crossing.snapshot().asRoundRect(out), "corners overlapping along an edge")
+        // Around the bounds once more by lines through their corners: even-odd, nothing inside.
+        val twice = WebPath().apply {
+            moveTo(0f, 3f)
+            conicTo(0f, 0f, 3f, 0f, QuarterConicWeight)
+            lineTo(10f, 0f)
+            lineTo(10f, 10f)
+            lineTo(0f, 10f)
+            lineTo(0f, 0f)
+            lineTo(7f, 0f)
+            conicTo(10f, 0f, 10f, 3f, QuarterConicWeight)
+            lineTo(10f, 7f)
+            conicTo(10f, 10f, 7f, 10f, QuarterConicWeight)
+            lineTo(3f, 10f)
+            conicTo(0f, 10f, 0f, 7f, QuarterConicWeight)
+            close()
+        }
+        assertFalse(twice.snapshot().asRoundRect(out), "twice around")
+        val cubic = WebPath().apply {
+            moveTo(0f, 5f)
+            conicTo(0f, 0f, 5f, 0f, QuarterConicWeight)
+            conicTo(10f, 0f, 10f, 5f, QuarterConicWeight)
+            cubicTo(10f, 7f, 7f, 10f, 5f, 10f)
+            conicTo(0f, 10f, 0f, 5f, QuarterConicWeight)
+            close()
+        }
+        assertFalse(cubic.snapshot().asRoundRect(out), "a cubic")
+        assertFalse(WebPath().snapshot().asRoundRect(out), "empty")
     }
 
     @Test
@@ -208,20 +208,46 @@ class PathDataTest {
 
     @Test
     fun emptyPathData() {
-        assertTrue(PathData.Empty.isEmpty)
-        assertEquals(Rect.Zero, PathData.Empty.bounds)
-        assertTrue(PathData.Empty.isConvex)
-        assertEquals(0, PathData.Empty.toWebPath().snapshot().verbCount)
+        val empty = WebPath().snapshot()
+        assertTrue(empty.isEmpty)
+        assertEquals(Rect.Zero, empty.bounds)
+        assertTrue(empty.isConvex)
     }
 
     @Test
-    fun toWebPathCopiesTheGeometry() {
-        val data = rectPath(0f, 0f, 10f, 10f).apply { fillType = PathFillType.EvenOdd }.snapshot()
-        val copy = data.toWebPath()
-        assertEquals(PathFillType.EvenOdd, copy.fillType)
-        copy.lineTo(50f, 50f)
-        assertEquals(5, data.verbCount)
-        assertEquals(listOf(M, L, L, L, Z, M, L), verbsOf(copy))
+    fun sameGeometry() {
+        val rect = rectPath(0f, 0f, 10f, 10f).snapshot()
+        assertTrue(rect.hasSameGeometry(rectPath(0f, 0f, 10f, 10f).snapshot()))
+        assertFalse(rect.hasSameGeometry(rectPath(0f, 0f, 10f, 11f).snapshot()))
+        assertFalse(
+            rect.hasSameGeometry(
+                rectPath(0f, 0f, 10f, 10f).apply { fillType = PathFillType.EvenOdd }.snapshot()
+            )
+        )
+        // The same points, other verbs.
+        val lineThenQuad =
+            WebPath().apply {
+                moveTo(0f, 0f)
+                lineTo(10f, 0f)
+                quadraticTo(10f, 10f, 0f, 10f)
+            }
+        val quadThenLine =
+            WebPath().apply {
+                moveTo(0f, 0f)
+                quadraticTo(10f, 0f, 10f, 10f)
+                lineTo(0f, 10f)
+            }
+        assertFalse(lineThenQuad.snapshot().hasSameGeometry(quadThenLine.snapshot()))
+        // The same points, other conic weights.
+        fun conic(weight: Float) =
+            WebPath()
+                .apply {
+                    moveTo(0f, 0f)
+                    conicTo(10f, 0f, 10f, 10f, weight)
+                }
+                .snapshot()
+        assertTrue(conic(0.5f).hasSameGeometry(conic(0.5f)))
+        assertFalse(conic(0.5f).hasSameGeometry(conic(0.6f)))
     }
 
     @Test
@@ -229,7 +255,7 @@ class PathDataTest {
         val path = rectPath(0f, 0f, 10f, 10f)
         val data = path.snapshot()
         assertNull(data.path2D)
-        path.toPath2D()
+        data.toPath2D()
         assertSame(data, path.snapshot())
         val cached = data.path2D
         assertTrue(cached != null)
@@ -256,8 +282,6 @@ class PathDataTest {
         for (fillType in listOf(PathFillType.NonZero, PathFillType.EvenOdd)) {
             path.fillType = fillType
             val data = path.snapshot()
-            val path2D = data.toPath2D()
-            val rule = canvasFillRule(data)
             var checked = 0
             for (i in 0 until 60) {
                 for (j in 0 until 40) {
@@ -265,8 +289,8 @@ class PathDataTest {
                     val y = 0.5f + j * 5.07f
                     if (isNearOutline(data, x, y, 0.5)) continue
                     assertEquals(
+                        isInsideFlattened(data, x, y),
                         data.contains(x, y),
-                        isPointInPath(path2D, x.toDouble(), y.toDouble(), rule),
                         "($x, $y) with $fillType",
                     )
                     checked++
@@ -275,7 +299,15 @@ class PathDataTest {
             assertTrue(checked > 2000)
         }
     }
-}
 
-private fun isPointInPath(path: JsAny, x: Double, y: Double, rule: String): Boolean =
-    js("new OffscreenCanvas(1, 1).getContext('2d').isPointInPath(path, x, y, rule)")
+    @Test
+    fun containsCountsPointsOnTheOutlineAsInside() {
+        val data = rectPath(0f, 0f, 10f, 10f).snapshot()
+        assertTrue(data.contains(0f, 5f))
+        assertTrue(data.contains(10f, 5f))
+        assertTrue(data.contains(5f, 10f))
+        assertTrue(data.contains(10f, 10f))
+        assertFalse(data.contains(10.01f, 5f))
+        assertFalse(data.contains(5f, -0.01f))
+    }
+}

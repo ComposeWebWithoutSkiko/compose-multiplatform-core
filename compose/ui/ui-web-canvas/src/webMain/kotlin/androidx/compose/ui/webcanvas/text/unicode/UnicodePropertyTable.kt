@@ -40,12 +40,6 @@ internal class EncodedDataReader(private val data: String) {
         }
     }
 
-    /** Reads the next zigzag-encoded signed integer. */
-    fun nextSigned(): Int {
-        val n = next()
-        return (n ushr 1) xor -(n and 1)
-    }
-
     /** Whether there is more data to read. */
     fun hasNext(): Boolean {
         while (position < data.length) {

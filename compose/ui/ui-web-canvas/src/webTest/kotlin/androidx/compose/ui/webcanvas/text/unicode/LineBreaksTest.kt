@@ -24,6 +24,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class LineBreaksTest {
+    private fun cp(vararg codePoints: Int): String = codePointsToString(codePoints)
 
     @Test
     fun encoding() {
@@ -126,14 +127,19 @@ class LineBreaksTest {
     }
 
     @Test
-    fun resolvedLineBreakClasses() {
-        assertEquals(LineBreakClass.AL, resolvedLineBreakClass(0x0E01))
-        assertEquals(LineBreakClass.CM, resolvedLineBreakClass(0x0E31))
-        assertEquals(LineBreakClass.AL, resolvedLineBreakClass(0x00A7))
-        assertEquals(LineBreakClass.NS, resolvedLineBreakClass(0x3041))
-        assertEquals(LineBreakClass.AL, resolvedLineBreakClass(0xE000))
-        assertEquals(LineBreakClass.AL, resolvedLineBreakClass(0xD800))
-        assertEquals(LineBreakClass.QU, resolvedLineBreakClass(0x201C))
+    fun classesAreResolvedPerLB1() {
+        // AI, SA, XX and SG break like AL: not after a letter (LB28).
+        assertBreaks(cp('a'.code, 0x00A7), "2!") // SECTION SIGN, AI
+        assertBreaks(cp('a'.code, 0x0E01), "2!") // THAI CHARACTER KO KAI, SA
+        assertBreaks(cp('a'.code, 0xE000), "2!") // private use, XX
+        assertBreaks("a\uD800", "2!") // lone surrogate, SG
+        // SA with General_Category Mn stays with what it follows, like CM (LB9), not after an
+        // ideograph like AL would.
+        assertBreaks(cp(0x4E00, 0x0E31), "2!") // THAI CHARACTER MAI HAN-AKAT
+        // CJ doesn't start a line, like NS (LB21), not after an ideograph like ID would.
+        assertBreaks(cp(0x4E00, 0x3041), "2!") // HIRAGANA LETTER SMALL A
+        // Initial and final quotation marks are QU (LB19).
+        assertBreaks(cp('a'.code, 0x201C, 'b'.code, 0x201D), "4!")
     }
 
     @Test
@@ -143,6 +149,14 @@ class LineBreaksTest {
         assertTrue(isLineBreakWhitespace('\n'.code))
         assertTrue(isLineBreakWhitespace(0x3000)) // IDEOGRAPHIC SPACE
         assertTrue(isLineBreakWhitespace(0x2003)) // EM SPACE
+        // Mandatory breaks whose character hangs, as in SkParagraph.
+        assertTrue(isLineBreakWhitespace(0x000B)) // LINE TABULATION
+        assertTrue(isLineBreakWhitespace(0x000C)) // FORM FEED
+        assertTrue(isLineBreakWhitespace(0x2028)) // LINE SEPARATOR
+        assertTrue(isLineBreakWhitespace(0x2029)) // PARAGRAPH SEPARATOR
+        // ICU's whitespace, but not SkParagraph's.
+        assertFalse(isLineBreakWhitespace(0x001C)) // FILE SEPARATOR
+        assertFalse(isLineBreakWhitespace(0x2007)) // FIGURE SPACE, a no-break space
         assertFalse(isLineBreakWhitespace(0x00A0)) // NO-BREAK SPACE
         assertFalse(isLineBreakWhitespace(0x202F)) // NARROW NO-BREAK SPACE
         assertFalse(isLineBreakWhitespace(0x200B)) // ZERO WIDTH SPACE

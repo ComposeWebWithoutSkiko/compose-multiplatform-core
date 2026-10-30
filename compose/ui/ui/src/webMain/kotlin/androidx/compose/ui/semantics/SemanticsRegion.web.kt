@@ -29,9 +29,12 @@ private class RectListSemanticsRegion : SemanticsRegion {
     private var rects = IntArray(16)
     private var count = 0
 
+    // The rectangles of the region being built from those of [rects] (see [rebuild]).
+    private var built = IntArray(16)
+    private var builtCount = 0
+
     override fun set(rect: IntRect) {
-        count = 0
-        add(rect.left, rect.top, rect.right, rect.bottom)
+        rebuild { add(rect.left, rect.top, rect.right, rect.bottom) }
     }
 
     override val bounds: IntRect
@@ -53,33 +56,26 @@ private class RectListSemanticsRegion : SemanticsRegion {
     override val isEmpty: Boolean
         get() = count == 0
 
-    override fun intersect(region: SemanticsRegion): Boolean {
+    override fun intersect(region: SemanticsRegion): Boolean = rebuild {
         val other = region as RectListSemanticsRegion
-        val source = rects.copyOf(count * 4)
-        val sourceCount = count
-        count = 0
-        for (i in 0 until sourceCount) {
+        for (i in 0 until count) {
             for (j in 0 until other.count) {
                 add(
-                    max(source[i * 4], other.rects[j * 4]),
-                    max(source[i * 4 + 1], other.rects[j * 4 + 1]),
-                    min(source[i * 4 + 2], other.rects[j * 4 + 2]),
-                    min(source[i * 4 + 3], other.rects[j * 4 + 3]),
+                    max(rects[i * 4], other.rects[j * 4]),
+                    max(rects[i * 4 + 1], other.rects[j * 4 + 1]),
+                    min(rects[i * 4 + 2], other.rects[j * 4 + 2]),
+                    min(rects[i * 4 + 3], other.rects[j * 4 + 3]),
                 )
             }
         }
-        return count > 0
     }
 
-    override fun difference(rect: IntRect): Boolean {
-        val source = rects.copyOf(count * 4)
-        val sourceCount = count
-        count = 0
-        for (i in 0 until sourceCount) {
-            val left = source[i * 4]
-            val top = source[i * 4 + 1]
-            val right = source[i * 4 + 2]
-            val bottom = source[i * 4 + 3]
+    override fun difference(rect: IntRect): Boolean = rebuild {
+        for (i in 0 until count) {
+            val left = rects[i * 4]
+            val top = rects[i * 4 + 1]
+            val right = rects[i * 4 + 2]
+            val bottom = rects[i * 4 + 3]
             if (rect.left >= right || rect.right <= left || rect.top >= bottom ||
                 rect.bottom <= top
             ) {
@@ -95,19 +91,32 @@ private class RectListSemanticsRegion : SemanticsRegion {
             add(left, bandTop, min(right, rect.left), bandBottom)
             add(max(left, rect.right), bandTop, right, bandBottom)
         }
+    }
+
+    /**
+     * Makes the region the rectangles that [build] adds (see [add]), reading those of the region:
+     * they are built apart, then the arrays are swapped. Returns whether the region isn't empty.
+     */
+    private inline fun rebuild(build: () -> Unit): Boolean {
+        builtCount = 0
+        build()
+        val previous = rects
+        rects = built
+        built = previous
+        count = builtCount
         return count > 0
     }
 
     private fun add(left: Int, top: Int, right: Int, bottom: Int) {
         if (left >= right || top >= bottom) return
-        if ((count + 1) * 4 > rects.size) {
-            rects = rects.copyOf(rects.size * 2)
+        if ((builtCount + 1) * 4 > built.size) {
+            built = built.copyOf(built.size * 2)
         }
-        rects[count * 4] = left
-        rects[count * 4 + 1] = top
-        rects[count * 4 + 2] = right
-        rects[count * 4 + 3] = bottom
-        count++
+        built[builtCount * 4] = left
+        built[builtCount * 4 + 1] = top
+        built[builtCount * 4 + 2] = right
+        built[builtCount * 4 + 3] = bottom
+        builtCount++
     }
 }
 

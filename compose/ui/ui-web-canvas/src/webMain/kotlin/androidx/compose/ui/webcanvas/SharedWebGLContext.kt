@@ -32,23 +32,23 @@ import kotlin.js.JsAny
  * [createFramebufferImage].
  */
 @InternalComposeUiApi
-object SharedWebGLContext {
+public object SharedWebGLContext {
     /** The `WebGL2RenderingContext`, created on the first call, or `null` without WebGL 2. */
-    val context: JsAny? get() = SharedWebGL.context
+    public val context: JsAny? get() = SharedWebGL.context
 
     /** The canvas of [context] (not part of the page), or `null` without WebGL 2. */
-    val canvas: JsAny? get() = SharedWebGL.canvas
+    public val canvas: JsAny? get() = SharedWebGL.canvas
 
     /** Increments whenever the context is restored after a loss, which drops every GL object. */
-    val generation: Int get() = SharedWebGL.generation
+    public val generation: Int get() = SharedWebGL.generation
 
-    fun isContextLost(): Boolean = SharedWebGL.isContextLost()
+    public fun isContextLost(): Boolean = SharedWebGL.isContextLost()
 
     /**
      * Tells Compose that code other than Compose's used the context, so that it doesn't assume
      * that the drawing buffer still holds what it put there.
      */
-    fun markUsed() {
+    public fun markUsed() {
         SharedWebGL.markUsed()
     }
 
@@ -58,16 +58,16 @@ object SharedWebGLContext {
      * bottom-left origin. Call [invalidateFramebufferImage] after rendering a new frame into the
      * framebuffer, and [releaseFramebufferImage] before deleting it.
      */
-    fun createFramebufferImage(framebuffer: JsAny, width: Int, height: Int): ImageBitmap =
+    public fun createFramebufferImage(framebuffer: JsAny, width: Int, height: Int): ImageBitmap =
         FramebufferImageBitmap(framebuffer, width, height)
 
     /** Tells an image from [createFramebufferImage] that a new frame was rendered. */
-    fun invalidateFramebufferImage(image: ImageBitmap) {
+    public fun invalidateFramebufferImage(image: ImageBitmap) {
         (image as? FramebufferImageBitmap)?.invalidate()
     }
 
     /** Detaches an image from [createFramebufferImage] from its framebuffer, which goes away. */
-    fun releaseFramebufferImage(image: ImageBitmap) {
+    public fun releaseFramebufferImage(image: ImageBitmap) {
         (image as? FramebufferImageBitmap)?.release()
     }
 }

@@ -16,10 +16,11 @@
 
 package androidx.compose.ui.webcanvas.text.unicode
 
+import kotlin.js.JsAny
+import kotlin.js.js
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
-import kotlin.test.assertSame
 
 /**
  * Tests the grapheme clusters, which come from the browser's `Intl.Segmenter`, and their
@@ -91,20 +92,15 @@ class GraphemeBoundariesTest {
     }
 
     @Test
-    fun boundariesOfATextAreSegmentedOnce() {
+    fun aTextIsSegmentedOnce() {
         val text = cp(0x43C, 0x438, 0x301, 0x440).repeat(1000)
-        val boundaries = graphemeBoundaries(text)
-        assertEquals(3001, boundaries.size)
-        assertSame(boundaries, graphemeBoundaries(text))
-        // An equal text is the same text.
-        assertSame(boundaries, graphemeBoundaries(StringBuilder(text).toString()))
-        var position = 0
-        var clusters = 0
-        while (position < text.length) {
-            position = nextGraphemeBoundary(text, position)
-            clusters++
+        val calls = segmentCallsDuring {
+            assertEquals(3001, graphemeBoundariesOf(text).size)
+            assertEquals(3001, graphemeBoundariesOf(text).size)
+            // An equal text is the same text.
+            assertEquals(3001, graphemeBoundariesOf(StringBuilder(text).toString()).size)
         }
-        assertEquals(3000, clusters)
+        assertEquals(1, calls)
     }
 
     @Test
@@ -127,6 +123,43 @@ class GraphemeBoundariesTest {
     }
 
     private fun assertBoundaries(text: String, vararg expected: Int) {
-        assertContentEquals(expected, graphemeBoundaries(text), "boundaries of $text")
+        assertContentEquals(expected, graphemeBoundariesOf(text), "boundaries of $text")
     }
 }
+
+/** The grapheme cluster boundaries of [text], as [nextGraphemeBoundary] steps through them. */
+internal fun graphemeBoundariesOf(text: String): IntArray {
+    val boundaries = mutableListOf(0)
+    while (boundaries.last() < text.length) boundaries.add(nextGraphemeBoundary(text, boundaries.last()))
+    return boundaries.toIntArray()
+}
+
+/** Counts the calls of `Intl.Segmenter.prototype.segment` while [block] runs. */
+private fun segmentCallsDuring(block: () -> Unit): Int {
+    val spy = spyOnSegment()
+    try {
+        block()
+    } finally {
+        stopSpying(spy)
+    }
+    return callCount(spy)
+}
+
+// language=js
+private fun spyOnSegment(): JsAny = js(
+    """{
+        const prototype = Intl.Segmenter.prototype, original = prototype.segment;
+        const spy = { count: 0, original: original };
+        prototype.segment = function () {
+            spy.count++;
+            return original.apply(this, arguments);
+        };
+        return spy;
+    }"""
+)
+
+// language=js
+private fun stopSpying(spy: JsAny): Unit = js("{ Intl.Segmenter.prototype.segment = spy.original; }")
+
+// language=js
+private fun callCount(spy: JsAny): Int = js("spy.count")

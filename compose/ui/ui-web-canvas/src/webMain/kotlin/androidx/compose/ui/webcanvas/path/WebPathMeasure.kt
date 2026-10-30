@@ -30,7 +30,7 @@ import androidx.compose.ui.graphics.PathMeasure
  * path are not observed.
  */
 internal class WebPathMeasure : PathMeasure {
-    private var iterator: ContourMeasureIter? = null
+    /** The first contour of the path with a non-zero length. */
     private var contour: ContourMeasure? = null
     private val scratchPos = FloatArray(2)
     private val scratchTan = FloatArray(2)
@@ -38,33 +38,9 @@ internal class WebPathMeasure : PathMeasure {
     override val length: Float
         get() = contour?.length ?: 0f
 
-    /** True if the current contour is closed (or the path was set with `forceClosed`). */
-    val isClosed: Boolean
-        get() = contour?.isClosed ?: false
-
     override fun setPath(path: Path?, forceClosed: Boolean) {
-        if (path == null) {
-            iterator = null
-            contour = null
-            return
-        }
-        setPath(path.asWebPath().snapshot(), forceClosed)
-    }
-
-    /** Measures [data], see [setPath]. */
-    fun setPath(data: PathData, forceClosed: Boolean) {
-        val iter = ContourMeasureIter(data, forceClosed)
-        iterator = iter
-        contour = iter.next()
-    }
-
-    /**
-     * Moves to the next contour with a non-zero length. Returns false (and clears the current
-     * contour) when there is none (Skia's `SkPathMeasure::nextContour`).
-     */
-    fun nextContour(): Boolean {
-        contour = iterator?.next()
-        return contour != null
+        // The contour refers to the points of the path: a snapshot, which later changes don't touch.
+        contour = path?.let { ContourMeasureIter(it.asWebPath().snapshot(), forceClosed).next() }
     }
 
     override fun getSegment(

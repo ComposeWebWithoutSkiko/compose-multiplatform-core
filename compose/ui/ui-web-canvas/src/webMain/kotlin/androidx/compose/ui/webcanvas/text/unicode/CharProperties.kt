@@ -25,26 +25,6 @@ private object EmojiData {
     val table = UnicodePropertyTable(EMOJI_DATA)
 }
 
-/**
- * Returns true if [codePoint] has the Unicode White_Space property (PropList.txt), which includes
- * the no-break spaces. See [isLineBreakWhitespace] for the ICU `u_isWhitespace` definition.
- */
-internal fun isWhitespace(codePoint: Int): Boolean =
-    when (codePoint) {
-        in 0x09..0x0D,
-        0x20,
-        0x85,
-        0xA0,
-        0x1680,
-        in 0x2000..0x200A,
-        0x2028,
-        0x2029,
-        0x202F,
-        0x205F,
-        0x3000 -> true
-        else -> false
-    }
-
 /** Returns true if [codePoint] has the Extended_Pictographic property (UTS #51). */
 internal fun isExtendedPictographic(codePoint: Int): Boolean =
     EmojiData.table[codePoint] and EXTENDED_PICTOGRAPHIC != 0

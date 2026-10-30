@@ -23,17 +23,19 @@ import androidx.compose.foundation.text.contextmenu.builder.TextContextMenuBuild
 import androidx.compose.foundation.text.contextmenu.builder.item
 import androidx.compose.foundation.text.contextmenu.modifier.appendTextContextMenuComponents
 import androidx.compose.foundation.text.getLocalizedString
+import androidx.compose.ui.InternalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.isMetaPressed
 import androidx.compose.ui.input.key.key
-import androidx.compose.foundation.text.HostOs
+import androidx.compose.ui.platform.HostOs
 
 // this doesn't sounds very sustainable
 // it would end up being a function for any conceptual keyevent (selectall, cut, copy, paste)
 // TODO(b/1564937)
+@OptIn(InternalComposeUiApi::class)
 internal actual fun isCopyKeyEvent(keyEvent: KeyEvent): Boolean {
     val isCtrlOrCmdPressed = when (HostOs.current) {
         HostOs.MacOS -> keyEvent.isMetaPressed

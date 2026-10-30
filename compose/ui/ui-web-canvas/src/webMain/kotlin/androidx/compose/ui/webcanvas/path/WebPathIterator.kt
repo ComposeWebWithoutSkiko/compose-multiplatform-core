@@ -25,11 +25,13 @@ import androidx.compose.ui.graphics.PathSegment
 /**
  * [PathIterator] over a [WebPath].
  *
- * The iterator walks the verbs exactly as they are stored (like the Android implementation and the
- * documented contract of [PathIterator]): every [PathSegment.Type.Close] is reported as is, without
- * a synthesized closing line, and trailing moveTos are reported too. Conics are either reported as
- * [PathSegment.Type.Conic] or converted to `2^n` quadratics with Skia's `chopIntoQuadsPOW2`, `n`
- * being derived from [tolerance] like Skia's `SkConic::computeQuadPOW2`.
+ * The iterator walks the verbs as they are stored, like Skia's `SkPath::Iter`, which the iterator of
+ * the Skia-based targets uses: a [PathSegment.Type.Close] whose contour doesn't end at its start is
+ * preceded by a [PathSegment.Type.Line] back to the start, so that code walking the segments (e.g.
+ * `PathHitTester`) sees every edge, and trailing moveTos are reported too. Conics are either
+ * reported as [PathSegment.Type.Conic] or converted to quadratics with Skia's `chopIntoQuadsPOW2`:
+ * `2^n` of them, `n` being derived from [tolerance] like Skia's `SkConic::computeQuadPOW2`, or 2
+ * for a conic of an extreme weight whose first halves are a pair of lines.
  *
  * The iterator works on a snapshot taken at creation time, so mutating the path afterwards does not
  * affect an ongoing iteration.
@@ -44,123 +46,164 @@ internal class WebPathIterator(
     private var pointIndex = 0
     private var weightIndex = 0
 
+    /** The index of the first point of the current contour. */
+    private var contourStart = 0
+
+    /** Whether the line closing the current contour was reported, and its close is next. */
+    private var isClosing = false
+
     // Quadratics converted from the current conic, see [nextConvertedQuad].
     private var quadBuffer: FloatArray? = null
     private var quadCount = 0
     private var quadIndex = 0
 
+    // Where the points of the segment [advance] moved to are, for [writePoints]: [segmentFloats]
+    // floats of [segmentSource] from [segmentOffset] on or, for the line closing the contour, the
+    // point at [segmentOffset] and the first point of the contour. [segmentWeight] is its weight.
+    private var segmentSource: FloatArray = data.points
+    private var segmentOffset = 0
+    private var segmentFloats = 0
+    private var segmentIsClosingLine = false
+    private var segmentWeight = 0f
+
     override fun calculateSize(includeConvertedConics: Boolean): Int {
-        var size = data.verbCount
-        if (
+        val convertConics =
             includeConvertedConics && conicEvaluation == PathIterator.ConicEvaluation.AsQuadratics
-        ) {
-            val pts = data.points
-            var p = 0
-            var w = 0
-            for (i in 0 until data.verbCount) {
-                val verb = data.verbs[i]
-                if (verb == PathVerb.Conic) {
-                    val pow2 =
-                        computeConicQuadPow2(
-                            pts[2 * p - 2],
-                            pts[2 * p - 1],
-                            pts[2 * p],
-                            pts[2 * p + 1],
-                            pts[2 * p + 2],
-                            pts[2 * p + 3],
-                            data.conicWeights[w++],
-                            tolerance,
-                        )
-                    size += (1 shl pow2) - 1
+        var size = data.verbCount
+        // The conics are converted as [next] converts them, to count the quadratics it returns,
+        // into a buffer of their own: [quadBuffer] may hold quadratics still to be returned.
+        var quads: FloatArray? = null
+        var p = 0
+        var w = 0
+        var start = 0
+        for (i in 0 until data.verbCount) {
+            val verb = data.verbs[i]
+            when (verb) {
+                PathVerb.Move -> start = p
+                PathVerb.Conic -> {
+                    val weight = data.conicWeights[w++]
+                    if (convertConics) {
+                        val buffer = quads ?: conicQuadBuffer().also { quads = it }
+                        size += chopConicIntoQuads(data.points, p, weight, tolerance, buffer) - 1
+                    }
                 }
-                p += PathVerb.pointCount(verb)
+                PathVerb.Close -> if (needsClosingLine(p, start)) size++
             }
+            p += PathVerb.pointCount(verb)
         }
         return size
+    }
+
+    /**
+     * Whether the contour starting at point [start] and ending before point [end] needs a line
+     * back to its start before its close.
+     */
+    private fun needsClosingLine(end: Int, start: Int): Boolean {
+        val last = end - 1
+        val pts = data.points
+        return last > start &&
+            (pts[2 * last] != pts[2 * start] || pts[2 * last + 1] != pts[2 * start + 1])
     }
 
     override fun hasNext(): Boolean = quadIndex < quadCount || verbIndex < data.verbCount
 
     override fun next(outPoints: FloatArray, offset: Int): PathSegment.Type {
         check(outPoints.size - offset >= 8) { "The points array must contain at least 8 floats" }
-        if (quadIndex < quadCount) {
-            return nextConvertedQuad(outPoints, offset)
+        val type = advance()
+        writePoints(outPoints, offset)
+        if (type == PathSegment.Type.Conic) {
+            outPoints[offset + 6] = segmentWeight
+            outPoints[offset + 7] = segmentWeight
         }
-        if (verbIndex >= data.verbCount) return PathSegment.Type.Done
-
-        val pts = data.points
-        val p = pointIndex
-        val verb = data.verbs[verbIndex++]
-        pointIndex += PathVerb.pointCount(verb)
-        return when (verb) {
-            PathVerb.Move -> {
-                outPoints[offset] = pts[2 * p]
-                outPoints[offset + 1] = pts[2 * p + 1]
-                PathSegment.Type.Move
-            }
-            PathVerb.Line -> {
-                pts.copyInto(outPoints, offset, 2 * p - 2, 2 * p + 2)
-                PathSegment.Type.Line
-            }
-            PathVerb.Quad -> {
-                pts.copyInto(outPoints, offset, 2 * p - 2, 2 * p + 4)
-                PathSegment.Type.Quadratic
-            }
-            PathVerb.Conic -> {
-                val weight = data.conicWeights[weightIndex++]
-                if (conicEvaluation == PathIterator.ConicEvaluation.AsConic) {
-                    pts.copyInto(outPoints, offset, 2 * p - 2, 2 * p + 4)
-                    outPoints[offset + 6] = weight
-                    outPoints[offset + 7] = weight
-                    PathSegment.Type.Conic
-                } else {
-                    convertConic(p, weight)
-                    nextConvertedQuad(outPoints, offset)
-                }
-            }
-            PathVerb.Cubic -> {
-                pts.copyInto(outPoints, offset, 2 * p - 2, 2 * p + 6)
-                PathSegment.Type.Cubic
-            }
-            PathVerb.Close -> PathSegment.Type.Close
-            else -> PathSegment.Type.Done
-        }
+        return type
     }
 
     override fun next(): PathSegment {
         if (!hasNext()) return DoneSegment
-        val points = FloatArray(8)
-        val type = next(points, 0)
-        return when (type) {
-            PathSegment.Type.Move -> PathSegment(type, points.copyOf(2), 0f)
-            PathSegment.Type.Line -> PathSegment(type, points.copyOf(4), 0f)
-            PathSegment.Type.Quadratic -> PathSegment(type, points.copyOf(6), 0f)
-            PathSegment.Type.Conic -> PathSegment(type, points.copyOf(6), points[6])
-            PathSegment.Type.Cubic -> PathSegment(type, points, 0f)
+        return when (val type = advance()) {
             PathSegment.Type.Close -> CloseSegment
-            else -> DoneSegment
+            PathSegment.Type.Done -> DoneSegment
+            else -> {
+                // The points go right into the array of the segment.
+                val points = FloatArray(segmentFloats).also { writePoints(it, 0) }
+                PathSegment(type, points, if (type == PathSegment.Type.Conic) segmentWeight else 0f)
+            }
         }
     }
 
-    /** Converts the conic whose control point is at point index [p] into quadratics. */
-    private fun convertConic(p: Int, weight: Float) {
-        val pts = data.points
-        val x0 = pts[2 * p - 2]
-        val y0 = pts[2 * p - 1]
-        val x1 = pts[2 * p]
-        val y1 = pts[2 * p + 1]
-        val x2 = pts[2 * p + 2]
-        val y2 = pts[2 * p + 3]
-        val pow2 = computeConicQuadPow2(x0, y0, x1, y1, x2, y2, weight, tolerance)
-        val buffer = quadBuffer ?: FloatArray(2 * MaxConicQuadPoints).also { quadBuffer = it }
-        quadCount = chopConicIntoQuadsPow2(x0, y0, x1, y1, x2, y2, weight, pow2, buffer, 0)
-        quadIndex = 0
+    /** Moves to the next segment, noting where its points are (see [writePoints]). */
+    private fun advance(): PathSegment.Type {
+        segmentIsClosingLine = false
+        if (quadIndex < quadCount) return nextConvertedQuad()
+        if (verbIndex >= data.verbCount) {
+            segmentFloats = 0
+            return PathSegment.Type.Done
+        }
+
+        val p = pointIndex
+        val verb = data.verbs[verbIndex++]
+        pointIndex += PathVerb.pointCount(verb)
+        // The points of a segment are its start, the last point of the previous one, and its own.
+        segmentSource = data.points
+        segmentOffset = 2 * p - 2
+        segmentFloats = 2 * PathVerb.pointCount(verb) + 2
+        return when (verb) {
+            PathVerb.Move -> {
+                contourStart = p
+                segmentOffset = 2 * p
+                segmentFloats = 2
+                PathSegment.Type.Move
+            }
+            PathVerb.Line -> PathSegment.Type.Line
+            PathVerb.Quad -> PathSegment.Type.Quadratic
+            PathVerb.Conic -> {
+                segmentWeight = data.conicWeights[weightIndex++]
+                if (conicEvaluation == PathIterator.ConicEvaluation.AsConic) {
+                    PathSegment.Type.Conic
+                } else {
+                    val buffer = quadBuffer ?: conicQuadBuffer().also { quadBuffer = it }
+                    quadCount = chopConicIntoQuads(data.points, p, segmentWeight, tolerance, buffer)
+                    quadIndex = 0
+                    nextConvertedQuad()
+                }
+            }
+            PathVerb.Cubic -> PathSegment.Type.Cubic
+            PathVerb.Close -> {
+                if (!isClosing && needsClosingLine(p, contourStart)) {
+                    // The line back to the start first; the close is reported next.
+                    isClosing = true
+                    verbIndex--
+                    segmentFloats = 4
+                    segmentIsClosingLine = true
+                    PathSegment.Type.Line
+                } else {
+                    isClosing = false
+                    segmentFloats = 0
+                    PathSegment.Type.Close
+                }
+            }
+            else -> PathSegment.Type.Done
+        }
     }
 
-    private fun nextConvertedQuad(outPoints: FloatArray, offset: Int): PathSegment.Type {
-        val buffer = quadBuffer!!
+    /** Writes the points of the last segment (see [advance]) into [out] from [offset]. */
+    private fun writePoints(out: FloatArray, offset: Int) {
+        if (segmentIsClosingLine) {
+            val pts = data.points
+            out[offset] = pts[segmentOffset]
+            out[offset + 1] = pts[segmentOffset + 1]
+            out[offset + 2] = pts[2 * contourStart]
+            out[offset + 3] = pts[2 * contourStart + 1]
+        } else {
+            segmentSource.copyInto(out, offset, segmentOffset, segmentOffset + segmentFloats)
+        }
+    }
+
+    private fun nextConvertedQuad(): PathSegment.Type {
         // Quad i starts at point 2 * i of the buffer (start, control, end).
-        buffer.copyInto(outPoints, offset, 4 * quadIndex, 4 * quadIndex + 6)
+        segmentSource = quadBuffer!!
+        segmentOffset = 4 * quadIndex
+        segmentFloats = 6
         quadIndex++
         if (quadIndex == quadCount) {
             quadIndex = 0

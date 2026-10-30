@@ -52,7 +52,8 @@ import kotlin.test.assertTrue
 class ParagraphIndentAndBulletsTest {
     private val density = Density(1f)
     private val style = TextStyle(fontSize = 20.sp)
-    private val fontFamilyResolver = createFontFamilyResolver()
+    // After the implementation is registered.
+    private val fontFamilyResolver by lazy { createFontFamilyResolver() }
 
     @BeforeTest
     fun register() {

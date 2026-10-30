@@ -201,7 +201,11 @@ private object LineBreakData {
             }.toByte()
         }
 
-    /** Internal table value -> class resolved per rule LB1. */
+    /**
+     * Internal table value -> class resolved per rule LB1 (without dictionary or language-specific
+     * tailoring): AI, SG, XX and SA become AL (SA with General_Category Mn or Mc becomes CM) and CJ
+     * becomes NS.
+     */
     val resolvedClass =
         ByteArray(INTERNAL_CLASS_COUNT) {
             when (it) {
@@ -223,30 +227,22 @@ internal fun lineBreakClass(codePoint: Int): Int =
     LineBreakData.rawClass[LineBreakData.table[codePoint]].toInt()
 
 /**
- * Returns the Line_Break class of [codePoint] resolved per rule LB1 (without dictionary or
- * language-specific tailoring): AI, SG, XX and SA become AL (SA with General_Category Mn or Mc
- * becomes CM) and CJ becomes NS.
- */
-internal fun resolvedLineBreakClass(codePoint: Int): Int =
-    LineBreakData.resolvedClass[LineBreakData.table[codePoint]].toInt()
-
-/**
  * Returns true if [codePoint] belongs to the `$EastAsian` set of UAX #14, i.e. its East_Asian_Width
  * is Fullwidth, Wide or Halfwidth.
  */
 internal fun isEastAsianWidth(codePoint: Int): Boolean = LineBreakData.eastAsian[codePoint] != 0
 
 /**
- * Returns true for whitespace that may hang past the end of a line when it is wrapped, using the
- * definition of ICU's `u_isWhitespace` and `java.lang.Character.isWhitespace`: General_Category Zs,
- * Zl or Zp except the no-break spaces U+00A0, U+2007 and U+202F, plus the controls U+0009..U+000D
- * and U+001C..U+001F.
+ * Returns true for whitespace that hangs past the end of a line, which the line's visible end and
+ * width leave out: SkParagraph's whitespace breaks. These are ICU's `u_isWhitespace` characters
+ * (General_Category Zs, Zl or Zp except the no-break spaces U+00A0, U+2007 and U+202F, plus the
+ * controls U+0009..U+000D and U+001C..U+001F), except U+001C..U+001F, which SkParagraph's check
+ * of single ASCII characters doesn't count.
  */
 internal fun isLineBreakWhitespace(codePoint: Int): Boolean =
     when (codePoint) {
         0x20,
         in 0x09..0x0D,
-        in 0x1C..0x1F,
         0x1680,
         in 0x2000..0x2006,
         in 0x2008..0x200A,
@@ -257,22 +253,40 @@ internal fun isLineBreakWhitespace(codePoint: Int): Boolean =
         else -> false
     }
 
+/** A break at [position], encoded as [lineBreaks] returns them. */
+internal fun encodeLineBreak(position: Int, isMandatory: Boolean): Int =
+    (position shl 1) or (if (isMandatory) 1 else 0)
+
 /** The position of a break returned by [lineBreaks]. */
 internal fun lineBreakPosition(encodedBreak: Int): Int = encodedBreak ushr 1
 
 /**
- * Whether a break returned by [lineBreaks] is mandatory (after a hard line break such as `\n`, or
- * at the end of the text) rather than an opportunity.
+ * Whether a break returned by [lineBreaks] is mandatory (after a line terminator, see
+ * [isLineTerminator], or at the end of the text) rather than an opportunity.
  */
 internal fun isMandatoryLineBreak(encodedBreak: Int): Boolean = encodedBreak and 1 != 0
+
+/**
+ * Whether [c] is a line terminator: a character after which a line must end (classes BK, CR, LF
+ * and NL, rules LB4 and LB5; a CR followed by an LF ends the line after the LF), and which the
+ * line doesn't show.
+ */
+internal fun isLineTerminator(c: Char): Boolean =
+    when (lineBreakClass(c.code)) {
+        BK,
+        CR,
+        LF,
+        NL -> true
+        else -> false
+    }
 
 /**
  * Computes the line break opportunities of `text[start, end)` according to the default rules of
  * [UAX #14](https://www.unicode.org/reports/tr14/) (LB1-LB31, without tailoring; SA characters are
  * treated per LB1, i.e. without a dictionary).
  *
- * Returns the breaks in increasing order. Each element encodes a break as `(position shl 1) or (1
- * if mandatory else 0)`, see [lineBreakPosition] and [isMandatoryLineBreak]; a break at `position`
+ * Returns the breaks in increasing order, encoded with [encodeLineBreak] (which keeps the order
+ * of the positions; see [lineBreakPosition] and [isMandatoryLineBreak]); a break at `position`
  * means that a new line may (or, if mandatory, must) start at `text[position]`. Positions are
  * absolute indices into [text] in `(start, end]`: there is never a break at [start] (LB2) and the
  * last element is always a mandatory break at [end] (LB3), also for an empty range.
@@ -327,7 +341,7 @@ private object LineBreaker {
             for (k in 1 until n) {
                 val decision = decide(text, k, n, lastNonSpace, numeric, regionalIndicators)
                 if (decision != NO_BREAK) {
-                    result[count++] = (unitStart[k] shl 1) or (if (decision == MANDATORY) 1 else 0)
+                    result[count++] = encodeLineBreak(unitStart[k], isMandatory = decision == MANDATORY)
                 }
                 val c = classes[k].toInt()
                 if (c != SP) lastNonSpace = k
@@ -335,7 +349,7 @@ private object LineBreaker {
                 regionalIndicators = if (c == RI) regionalIndicators + 1 else 0
             }
         }
-        result[count++] = (end shl 1) or 1
+        result[count++] = encodeLineBreak(end, isMandatory = true)
         val output = result.copyOf(count)
         if (unitStart.size > MAX_RETAINED_CAPACITY) {
             // Do not keep the buffers of a very long text.

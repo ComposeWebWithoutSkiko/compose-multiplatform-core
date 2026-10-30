@@ -37,7 +37,6 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import org.khronos.webgl.WebGLRenderingContext.Companion.COLOR_BUFFER_BIT
@@ -71,7 +70,7 @@ class WebGLRenderTargetPainterTests : OnCanvasTests {
             renderTarget = rememberWebGLRenderTarget(IntSize(32, 32))
         }
 
-        val target = renderTarget ?: return@runApplicationTest skipWithoutWebGL2()
+        val target = assertCreated(renderTarget)
         awaitAnimationFrame()
         awaitIdle()
 
@@ -101,7 +100,7 @@ class WebGLRenderTargetPainterTests : OnCanvasTests {
             }
         }
 
-        val target = renderTarget ?: return@runApplicationTest skipWithoutWebGL2()
+        val target = assertCreated(renderTarget)
         awaitAnimationFrame()
         awaitIdle()
 
@@ -155,7 +154,7 @@ class WebGLRenderTargetPainterTests : OnCanvasTests {
             }
         }
 
-        val target = renderTarget ?: return@runApplicationTest skipWithoutWebGL2()
+        val target = assertCreated(renderTarget)
         val compositionsBefore = compositions
         repeat(frames + 2) { awaitAnimationFrame() }
         awaitIdle()
@@ -186,24 +185,12 @@ class WebGLRenderTargetPainterTests : OnCanvasTests {
             renderTarget = rememberWebGLRenderTarget(IntSize(16, 16))
         }
 
-        val target = renderTarget ?: return@runApplicationTest skipWithoutWebGL2()
+        val target = assertCreated(renderTarget)
         awaitIdle()
 
         val painter = target.painter
         assertSame(painter, target.painter, "the target handed out a second painter")
         assertEquals(painter, target.painter, "the painter is not equal to itself")
         assertEquals(painter.hashCode(), target.painter.hashCode(), "unstable hashCode")
-    }
-
-    /**
-     * Compose only creates a render target when it renders through a WebGL2 canvas, so a missing
-     * target is a valid outcome - as long as the canvas really has no WebGL2 context.
-     */
-    private fun skipWithoutWebGL2() {
-        assertFalse(
-            getCanvas().getContext("webgl2") != null,
-            "no render target although the Compose canvas has a WebGL2 context"
-        )
-        println("skipped: the Compose canvas does not have a WebGL2 context")
     }
 }

@@ -14,13 +14,10 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalWasmJsInterop::class)
-
 package androidx.compose.ui.webcanvas.path
 
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.PathFillType
-import kotlin.js.ExperimentalWasmJsInterop
 import kotlin.js.JsAny
 
 /**
@@ -61,9 +58,10 @@ internal object PathVerb {
  *
  * The storage mirrors Skia's `SkPathRef`: a verb array, an interleaved x/y point array and an array
  * of conic weights. The arrays may be larger than the logical content and may be shared with the
- * [WebPath] the snapshot was taken from (which only appends past the end of the snapshot, or copies
- * the arrays before rewriting them), so only the first [verbCount] verbs, [pointCount] points and
- * [conicWeightCount] weights are meaningful. Callers must never mutate the arrays.
+ * [WebPath] the snapshot was taken from (which only appends past the end of the snapshot, or
+ * replaces the arrays by new ones rather than rewriting them), so only the first [verbCount] verbs,
+ * [pointCount] points and [conicWeightCount] weights are meaningful. Callers must never mutate the
+ * arrays.
  *
  * Derived data (bounds, convexity, the browser `Path2D`, flattened polygons, ...) is computed
  * lazily and cached on the snapshot.
@@ -210,28 +208,26 @@ internal constructor(
         }
     }
 
-    /** Returns a new mutable [WebPath] holding a copy of this geometry. */
-    fun toWebPath(): WebPath = WebPath().also { it.setFrom(this) }
+    /** Whether [other] draws the same geometry: the same fill type, verbs, points and weights. */
+    fun hasSameGeometry(other: PathData): Boolean {
+        if (
+            fillType != other.fillType ||
+                verbCount != other.verbCount ||
+                pointCount != other.pointCount ||
+                conicWeightCount != other.conicWeightCount
+        ) {
+            return false
+        }
+        for (i in 0 until verbCount) if (verbs[i] != other.verbs[i]) return false
+        for (i in 0 until 2 * pointCount) if (points[i] != other.points[i]) return false
+        for (i in 0 until conicWeightCount) if (conicWeights[i] != other.conicWeights[i]) return false
+        return true
+    }
 
     override fun toString(): String = buildString {
         append("PathData(fillType=").append(fillType).append(", ")
         appendVerbs(this@PathData)
         append(")")
-    }
-
-    companion object {
-        /** An empty path with the [PathFillType.NonZero] fill type. */
-        val Empty: PathData =
-            PathData(
-                ByteArray(0),
-                0,
-                FloatArray(0),
-                0,
-                FloatArray(0),
-                0,
-                PathFillType.NonZero,
-                InitialLastMoveToIndex,
-            )
     }
 }
 

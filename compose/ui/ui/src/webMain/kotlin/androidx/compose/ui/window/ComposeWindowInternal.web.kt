@@ -56,6 +56,7 @@ import androidx.compose.ui.internal.focusExt
 import androidx.compose.ui.navigationevent.BackNavigationEventInput
 import androidx.compose.ui.platform.DefaultArchitectureComponentsOwner
 import androidx.compose.ui.platform.EmptyPlatformWindowInsets
+import androidx.compose.ui.platform.HostOs
 import androidx.compose.ui.platform.PlatformContext
 import androidx.compose.ui.platform.PlatformDragAndDropManager
 import androidx.compose.ui.platform.PlatformTextInputMethodRequest
@@ -71,7 +72,6 @@ import androidx.compose.ui.platform.webgl.WebGLInteropContext
 import androidx.compose.ui.platform.WindowInfoImpl
 import androidx.compose.ui.platform.registerWebCanvasComposeImplementation
 import androidx.compose.ui.platform.accessibility.ComposeWebSemanticsListener
-import androidx.compose.ui.platform.isMacOsHost
 import androidx.compose.ui.platform.isPostingTasksSupported
 import androidx.compose.ui.scene.CanvasLayersComposeScene
 import androidx.compose.ui.platform.FrameRecomposer
@@ -418,8 +418,6 @@ internal class ComposeWindow(
                 get() = configuration.isClearFocusOnMouseDownEnabled
         }
 
-    internal val htmlCanvas: HTMLCanvasElement get() = canvas
-
     /** The WebGL2 context of embedded WebGL content, or `null` if the browser lacks WebGL2. */
     internal val webGLInterop: WebGLInteropContext? by lazy(LazyThreadSafetyMode.NONE) {
         WebGLInteropContext.sharedOrNull()
@@ -484,7 +482,7 @@ internal class ComposeWindow(
         }
     }
 
-    private val isMacOS = isMacOsHost
+    private val isMacOS = HostOs.current.isMacOS
 
     private var canvasFocused = false
 

@@ -64,10 +64,6 @@ internal class Affine(
     val averageScale: Float
         get() = sqrt(abs(determinant))
 
-    /** The larger of the scales along the x and y axes. */
-    val maxScale: Float
-        get() = max(sqrt(a * a + b * b), sqrt(c * c + d * d))
-
     fun set(other: Affine): Affine {
         a = other.a
         b = other.b

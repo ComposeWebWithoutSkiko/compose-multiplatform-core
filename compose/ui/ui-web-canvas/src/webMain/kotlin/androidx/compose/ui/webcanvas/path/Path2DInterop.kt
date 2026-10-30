@@ -14,12 +14,12 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalWasmJsInterop::class)
-
 package androidx.compose.ui.webcanvas.path
 
-import androidx.compose.ui.graphics.PathFillType
-import kotlin.js.ExperimentalWasmJsInterop
+import androidx.compose.ui.webcanvas.dom.Context2D
+import androidx.compose.ui.webcanvas.dom.createCanvas
+import androidx.compose.ui.webcanvas.dom.getContext2D
+import androidx.compose.ui.webcanvas.graphics.toJs
 import kotlin.js.JsAny
 import kotlin.js.js
 
@@ -57,16 +57,8 @@ internal fun PathData.toPath2D(): JsAny {
                 p += 2
             }
             PathVerb.Conic -> {
-                val weight = conicWeights[w++]
-                val x0 = pts[2 * p - 2]
-                val y0 = pts[2 * p - 1]
-                val x1 = pts[2 * p]
-                val y1 = pts[2 * p + 1]
-                val x2 = pts[2 * p + 2]
-                val y2 = pts[2 * p + 3]
-                val pow2 = computeConicQuadPow2(x0, y0, x1, y1, x2, y2, weight, tolerance)
-                val buffer = quads ?: FloatArray(2 * MaxConicQuadPoints).also { quads = it }
-                val count = chopConicIntoQuadsPow2(x0, y0, x1, y1, x2, y2, weight, pow2, buffer, 0)
+                val buffer = quads ?: conicQuadBuffer().also { quads = it }
+                val count = chopConicIntoQuads(pts, p, conicWeights[w++], tolerance, buffer)
                 for (q in 0 until count) {
                     val o = 2 + 4 * q
                     path2DQuadTo(path, buffer[o], buffer[o + 1], buffer[o + 2], buffer[o + 3])
@@ -95,12 +87,25 @@ internal fun PathData.toPath2D(): JsAny {
 /** Tolerance used to approximate conics by quadratics for display. */
 private fun displayConicTolerance(data: PathData): Float {
     val extent = maxOf(data.right - data.left, data.bottom - data.top)
-    return (extent * 0.001f).coerceIn(0.01f, 0.1f)
+    return (extent * 0.001f).coerceIn(0.01f, MaxDisplayConicTolerance)
 }
 
-/** Returns the Canvas2D fill rule name ("nonzero" or "evenodd") for [data]. */
-internal fun canvasFillRule(data: PathData): String =
-    if (data.fillType == PathFillType.EvenOdd) "evenodd" else "nonzero"
+/** The largest distance between a conic and the quadratics drawing it (see [toPath2D]), in path units. */
+internal const val MaxDisplayConicTolerance = 0.1f
+
+/**
+ * Returns true if the point ([x], [y]) is inside this path according to its fill type, by the
+ * browser's hit test of its [Path2D][toPath2D]: points on the outline are inside, like with Skia's
+ * `SkPath::contains`.
+ */
+internal fun PathData.contains(x: Float, y: Float): Boolean =
+    hitTestContext.isPointInPath(toPath2D(), x.toDouble(), y.toDouble(), fillType.toJs())
+
+/** A context for hit tests, whose transformation stays the identity. */
+private val hitTestContext: Context2D by lazy {
+    getContext2D(createCanvas(1, 1), willReadFrequently = false)
+        ?: error("Canvas 2D is not supported")
+}
 
 private fun newPath2D(): JsAny = js("new Path2D()")
 

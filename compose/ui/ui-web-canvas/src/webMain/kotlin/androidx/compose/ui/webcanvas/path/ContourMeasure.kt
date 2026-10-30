@@ -25,32 +25,38 @@ import kotlin.math.sqrt
  * `SkContourMeasure`: curves are approximated by chords using adaptive subdivision with a 0.5 unit
  * tolerance, and positions are then evaluated on the exact curves.
  *
+ * Unlike Skia, which copies the points of the contour, the segments refer to the points of the path
+ * where they are: each segment to the start point of its curve in [data].
+ *
  * Instances are created by [ContourMeasureIter].
  */
 internal class ContourMeasure
 internal constructor(
+    /** The path of the contour, whose points and conic weights the segments refer to. */
+    private val data: PathData,
+    /** The index of the first point of the contour, where its closing line ends. */
+    private val firstPoint: Int,
     private val segDistance: FloatArray,
+    /** The index of the start point of the curve of each segment. */
     private val segPointIndex: IntArray,
     private val segTValue: IntArray,
     private val segType: ByteArray,
+    /** The weight of the conic of each conic segment. */
+    private val segWeight: FloatArray,
     private val segCount: Int,
-    /**
-     * Points of the contour. Conic segments store their weight as the x coordinate of an extra
-     * point before their control point, like Skia.
-     */
-    private val pts: FloatArray,
     /** Total length of the contour. */
     val length: Float,
     /** True if the contour is closed (or was measured with `forceClosed`). */
     val isClosed: Boolean,
 ) {
-    private val scratch = FloatArray(4)
+    /** The parameter within its segment of the distance [distanceToSegment] found last. */
+    private var foundT = 0f
 
     /**
      * Finds the segment containing [distance] (which must be within `0..length`) and the parameter
-     * `t` within that segment, written into [tOut]. Returns the segment index.
+     * `t` within that segment, set as [foundT]. Returns the segment index.
      */
-    private fun distanceToSegment(distance: Float, tOut: FloatArray): Int {
+    private fun distanceToSegment(distance: Float): Int {
         // Lower bound: first segment whose distance is >= the target distance.
         var lo = 0
         var hi = segCount - 1
@@ -68,9 +74,13 @@ internal constructor(
             }
         }
         val segT = tValueToScalar(segTValue[index])
-        tOut[0] = startT + (segT - startT) * (distance - startD) / (segDistance[index] - startD)
+        foundT = startT + (segT - startT) * (distance - startD) / (segDistance[index] - startD)
         return index
     }
+
+    /** The offset in the points of [data] of the end point of the line segment [seg]. */
+    private fun lineEnd(seg: Int): Int =
+        if (segType[seg] == SegClose) 2 * firstPoint else 2 * segPointIndex[seg] + 2
 
     /**
      * Computes the position and the normalized tangent at [distance] (pinned to `0..length`).
@@ -80,33 +90,27 @@ internal constructor(
      */
     fun getPosTan(distance: Float, pos: FloatArray?, tangent: FloatArray?): Boolean {
         if (distance.isNaN()) return false
-        val d = distance.coerceIn(0f, length)
-        val tOut = FloatArray(1)
-        val seg = distanceToSegment(d, tOut)
-        val t = tOut[0]
+        val seg = distanceToSegment(distance.coerceIn(0f, length))
+        val t = foundT
         if (t.isNaN()) return false
-        computePosTan(segPointIndex[seg], segType[seg], t, pos, tangent)
+        computePosTan(seg, t, pos, tangent)
         return true
     }
 
-    private fun computePosTan(
-        pointIndex: Int,
-        type: Byte,
-        t: Float,
-        pos: FloatArray?,
-        tangent: FloatArray?,
-    ) {
-        val p = pts
-        val o = 2 * pointIndex
-        when (type) {
-            SegLine -> {
+    private fun computePosTan(seg: Int, t: Float, pos: FloatArray?, tangent: FloatArray?) {
+        val p = data.points
+        val o = 2 * segPointIndex[seg]
+        when (segType[seg]) {
+            SegLine,
+            SegClose -> {
+                val e = lineEnd(seg)
                 if (pos != null) {
-                    pos[0] = p[o] + (p[o + 2] - p[o]) * t
-                    pos[1] = p[o + 1] + (p[o + 3] - p[o + 1]) * t
+                    pos[0] = p[o] + (p[e] - p[o]) * t
+                    pos[1] = p[o + 1] + (p[e + 1] - p[o + 1]) * t
                 }
                 if (tangent != null) {
-                    tangent[0] = p[o + 2] - p[o]
-                    tangent[1] = p[o + 3] - p[o + 1]
+                    tangent[0] = p[e] - p[o]
+                    tangent[1] = p[e + 1] - p[o + 1]
                 }
             }
             SegQuad -> {
@@ -127,18 +131,18 @@ internal constructor(
                 }
             }
             SegConic -> {
-                val w = p[o + 2]
+                val w = segWeight[seg]
                 if (pos != null) {
-                    evalConic(p[o], p[o + 1], p[o + 4], p[o + 5], p[o + 6], p[o + 7], w, t, pos, 0)
+                    evalConic(p[o], p[o + 1], p[o + 2], p[o + 3], p[o + 4], p[o + 5], w, t, pos, 0)
                 }
                 if (tangent != null) {
                     evalConicTangent(
                         p[o],
                         p[o + 1],
+                        p[o + 2],
+                        p[o + 3],
                         p[o + 4],
                         p[o + 5],
-                        p[o + 6],
-                        p[o + 7],
                         w,
                         t,
                         tangent,
@@ -195,27 +199,26 @@ internal constructor(
         if (!(start <= stop)) return false // Catches NaN values as well.
         if (segCount == 0) return false
 
-        val tOut = FloatArray(1)
-        var seg = distanceToSegment(start, tOut)
-        var startT = tOut[0]
+        var seg = distanceToSegment(start)
+        var startT = foundT
         if (!startT.isFinite()) return false
-        val stopSeg = distanceToSegment(stop, tOut)
-        val stopT = tOut[0]
+        val stopSeg = distanceToSegment(stop)
+        val stopT = foundT
         if (!stopT.isFinite()) return false
 
         if (startWithMoveTo) {
-            computePosTan(segPointIndex[seg], segType[seg], startT, scratch, null)
-            dst.moveTo(scratch[0], scratch[1])
+            computePosTan(seg, startT, StartPoint, null)
+            dst.moveTo(StartPoint[0], StartPoint[1])
         }
         if (segPointIndex[seg] == segPointIndex[stopSeg]) {
-            segTo(segPointIndex[seg], segType[seg], startT, stopT, dst)
+            segTo(seg, startT, stopT, dst)
         } else {
             do {
-                segTo(segPointIndex[seg], segType[seg], startT, 1f, dst)
+                segTo(seg, startT, 1f, dst)
                 seg = nextSegment(seg)
                 startT = 0f
             } while (segPointIndex[seg] < segPointIndex[stopSeg])
-            segTo(segPointIndex[seg], segType[seg], 0f, stopT, dst)
+            segTo(seg, 0f, stopT, dst)
         }
         return true
     }
@@ -230,8 +233,8 @@ internal constructor(
         return next
     }
 
-    /** Port of `SkContourMeasure_segTo`. */
-    private fun segTo(pointIndex: Int, type: Byte, startT: Float, stopT: Float, dst: WebPath) {
+    /** Port of `SkContourMeasure_segTo`: appends the curve of [seg] from [startT] to [stopT]. */
+    private fun segTo(seg: Int, startT: Float, stopT: Float, dst: WebPath) {
         if (startT == stopT) {
             if (!dst.isEmpty) {
                 // If the dash has a zero-length on segment, add a corresponding zero-length line.
@@ -240,21 +243,25 @@ internal constructor(
             }
             return
         }
-        val p = pts
-        val o = 2 * pointIndex
-        when (type) {
-            SegLine -> {
+        val p = data.points
+        val o = 2 * segPointIndex[seg]
+        // The halves of a curve cut at startT go to the first part of Cut, the halves of its end
+        // cut again at stopT to the second.
+        val cut = Cut
+        when (segType[seg]) {
+            SegLine,
+            SegClose -> {
+                val e = lineEnd(seg)
                 if (stopT == 1f) {
-                    dst.lineTo(p[o + 2], p[o + 3])
+                    dst.lineTo(p[e], p[e + 1])
                 } else {
                     dst.lineTo(
-                        p[o] + (p[o + 2] - p[o]) * stopT,
-                        p[o + 1] + (p[o + 3] - p[o + 1]) * stopT,
+                        p[o] + (p[e] - p[o]) * stopT,
+                        p[o + 1] + (p[e + 1] - p[o + 1]) * stopT,
                     )
                 }
             }
             SegQuad -> {
-                val tmp0 = FloatArray(10)
                 if (startT == 0f) {
                     if (stopT == 1f) {
                         dst.quadraticTo(p[o + 2], p[o + 3], p[o + 4], p[o + 5])
@@ -267,10 +274,10 @@ internal constructor(
                             p[o + 4],
                             p[o + 5],
                             stopT,
-                            tmp0,
+                            cut,
                             0,
                         )
-                        dst.quadraticTo(tmp0[2], tmp0[3], tmp0[4], tmp0[5])
+                        dst.quadraticTo(cut[2], cut[3], cut[4], cut[5])
                     }
                 } else {
                     chopQuadAt(
@@ -281,63 +288,57 @@ internal constructor(
                         p[o + 4],
                         p[o + 5],
                         startT,
-                        tmp0,
+                        cut,
                         0,
                     )
                     if (stopT == 1f) {
-                        dst.quadraticTo(tmp0[6], tmp0[7], tmp0[8], tmp0[9])
+                        dst.quadraticTo(cut[6], cut[7], cut[8], cut[9])
                     } else {
-                        val tmp1 = FloatArray(10)
                         chopQuadAt(
-                            tmp0[4],
-                            tmp0[5],
-                            tmp0[6],
-                            tmp0[7],
-                            tmp0[8],
-                            tmp0[9],
+                            cut[4],
+                            cut[5],
+                            cut[6],
+                            cut[7],
+                            cut[8],
+                            cut[9],
                             (stopT - startT) / (1f - startT),
-                            tmp1,
-                            0,
+                            cut,
+                            CutHalves,
                         )
-                        dst.quadraticTo(tmp1[2], tmp1[3], tmp1[4], tmp1[5])
+                        dst.quadraticTo(
+                            cut[CutHalves + 2],
+                            cut[CutHalves + 3],
+                            cut[CutHalves + 4],
+                            cut[CutHalves + 5],
+                        )
                     }
                 }
             }
             SegConic -> {
                 val x0 = p[o]
                 val y0 = p[o + 1]
-                val w = p[o + 2]
-                val x1 = p[o + 4]
-                val y1 = p[o + 5]
-                val x2 = p[o + 6]
-                val y2 = p[o + 7]
+                val x1 = p[o + 2]
+                val y1 = p[o + 3]
+                val x2 = p[o + 4]
+                val y2 = p[o + 5]
+                val w = segWeight[seg]
+                val weights = CutWeights
                 if (startT == 0f) {
                     if (stopT == 1f) {
                         dst.conicTo(x1, y1, x2, y2, w)
-                    } else {
-                        val halves = FloatArray(10)
-                        val weights = FloatArray(2)
-                        if (chopConicAt(x0, y0, x1, y1, x2, y2, w, stopT, halves, 0, weights, 0)) {
-                            dst.conicTo(halves[2], halves[3], halves[4], halves[5], weights[0])
-                        }
+                    } else if (chopConicAt(x0, y0, x1, y1, x2, y2, w, stopT, cut, 0, weights, 0)) {
+                        dst.conicTo(cut[2], cut[3], cut[4], cut[5], weights[0])
+                    }
+                } else if (stopT == 1f) {
+                    if (chopConicAt(x0, y0, x1, y1, x2, y2, w, startT, cut, 0, weights, 0)) {
+                        dst.conicTo(cut[6], cut[7], cut[8], cut[9], weights[1])
                     }
                 } else {
-                    if (stopT == 1f) {
-                        val halves = FloatArray(10)
-                        val weights = FloatArray(2)
-                        if (chopConicAt(x0, y0, x1, y1, x2, y2, w, startT, halves, 0, weights, 0)) {
-                            dst.conicTo(halves[6], halves[7], halves[8], halves[9], weights[1])
-                        }
-                    } else {
-                        val part = FloatArray(6)
-                        val weight =
-                            chopConicBetween(x0, y0, x1, y1, x2, y2, w, startT, stopT, part, 0)
-                        dst.conicTo(part[2], part[3], part[4], part[5], weight)
-                    }
+                    val weight = chopConicBetween(x0, y0, x1, y1, x2, y2, w, startT, stopT, cut, 0)
+                    dst.conicTo(cut[2], cut[3], cut[4], cut[5], weight)
                 }
             }
             else -> {
-                val tmp0 = FloatArray(14)
                 if (startT == 0f) {
                     if (stopT == 1f) {
                         dst.cubicTo(p[o + 2], p[o + 3], p[o + 4], p[o + 5], p[o + 6], p[o + 7])
@@ -352,10 +353,10 @@ internal constructor(
                             p[o + 6],
                             p[o + 7],
                             stopT,
-                            tmp0,
+                            cut,
                             0,
                         )
-                        dst.cubicTo(tmp0[2], tmp0[3], tmp0[4], tmp0[5], tmp0[6], tmp0[7])
+                        dst.cubicTo(cut[2], cut[3], cut[4], cut[5], cut[6], cut[7])
                     }
                 } else {
                     chopCubicAt(
@@ -368,27 +369,33 @@ internal constructor(
                         p[o + 6],
                         p[o + 7],
                         startT,
-                        tmp0,
+                        cut,
                         0,
                     )
                     if (stopT == 1f) {
-                        dst.cubicTo(tmp0[8], tmp0[9], tmp0[10], tmp0[11], tmp0[12], tmp0[13])
+                        dst.cubicTo(cut[8], cut[9], cut[10], cut[11], cut[12], cut[13])
                     } else {
-                        val tmp1 = FloatArray(14)
                         chopCubicAt(
-                            tmp0[6],
-                            tmp0[7],
-                            tmp0[8],
-                            tmp0[9],
-                            tmp0[10],
-                            tmp0[11],
-                            tmp0[12],
-                            tmp0[13],
+                            cut[6],
+                            cut[7],
+                            cut[8],
+                            cut[9],
+                            cut[10],
+                            cut[11],
+                            cut[12],
+                            cut[13],
                             (stopT - startT) / (1f - startT),
-                            tmp1,
-                            0,
+                            cut,
+                            CutHalves,
                         )
-                        dst.cubicTo(tmp1[2], tmp1[3], tmp1[4], tmp1[5], tmp1[6], tmp1[7])
+                        dst.cubicTo(
+                            cut[CutHalves + 2],
+                            cut[CutHalves + 3],
+                            cut[CutHalves + 4],
+                            cut[CutHalves + 5],
+                            cut[CutHalves + 6],
+                            cut[CutHalves + 7],
+                        )
                     }
                 }
             }
@@ -401,14 +408,11 @@ internal constructor(
  * with a zero length are skipped.
  *
  * @param forceClosed measure every contour as if it was closed.
- * @param resScale scale applied to the measuring tolerance (values > 1 measure more precisely).
  */
 internal class ContourMeasureIter(
     private val data: PathData,
     private val forceClosed: Boolean,
-    resScale: Float = 1f,
 ) {
-    private val tolerance = CheapDistLimit * (1f / resScale)
     private var verbIndex = 0
     private var pointIndex = 0
     private var weightIndex = 0
@@ -418,11 +422,18 @@ internal class ContourMeasureIter(
     private var segPointIndex = IntArray(16)
     private var segTValue = IntArray(16)
     private var segType = ByteArray(16)
+    private var segWeight = FloatArray(16)
     private var segCount = 0
 
-    // Points of the contour being built.
-    private var pts = FloatArray(32)
-    private var ptCount = 0
+    /**
+     * The halves of the curves being subdivided, [CutHalves] floats per level of the recursion:
+     * the parameters of the curves are 30-bit fixed point numbers, whose spans each level halves,
+     * so it's at most 30 levels deep.
+     */
+    private val subdivisions = FloatArray(30 * CutHalves)
+
+    /** The middle point of a conic being subdivided. */
+    private val conicMiddle = FloatArray(2)
 
     /** Returns the next contour with a non-zero length, or null when done. */
     fun next(): ContourMeasure? {
@@ -437,82 +448,53 @@ internal class ContourMeasureIter(
         var distance = 0f
         var haveSeenClose = forceClosed
         var haveSeenMoveTo = false
+        var firstPoint = pointIndex
+        // The segments are kept by the contour: new arrays for each one.
         segCount = 0
-        ptCount = 0
         segDistance = FloatArray(16)
         segPointIndex = IntArray(16)
         segTValue = IntArray(16)
         segType = ByteArray(16)
-        pts = FloatArray(32)
+        segWeight = FloatArray(16)
 
         val verbs = data.verbs
-        val src = data.points
+        val pts = data.points
         while (verbIndex < data.verbCount) {
             val verb = verbs[verbIndex]
             if (haveSeenMoveTo && verb == PathVerb.Move) break
-            val p = pointIndex
+            // The start point of the curve of the verb: the last point of the previous one.
+            val start = pointIndex - 1
+            val o = 2 * start
             when (verb) {
                 PathVerb.Move -> {
-                    appendPoint(src[2 * p], src[2 * p + 1])
+                    firstPoint = pointIndex
                     haveSeenMoveTo = true
                 }
                 PathVerb.Line -> {
-                    val prevD = distance
                     distance =
-                        computeLineSeg(
-                            src[2 * p - 2],
-                            src[2 * p - 1],
-                            src[2 * p],
-                            src[2 * p + 1],
-                            distance,
-                            ptCount - 1,
-                        )
-                    if (distance > prevD) {
-                        appendPoint(src[2 * p], src[2 * p + 1])
-                    }
+                        computeLineSeg(pts[o], pts[o + 1], pts[o + 2], pts[o + 3], distance, start)
                 }
                 PathVerb.Quad -> {
-                    val prevD = distance
-                    val quad = src.copyOfRange(2 * p - 2, 2 * p + 4)
-                    distance = computeQuadSegs(quad, distance, 0, MaxTValue, ptCount - 1)
-                    if (distance > prevD) {
-                        appendPoint(src[2 * p], src[2 * p + 1])
-                        appendPoint(src[2 * p + 2], src[2 * p + 3])
-                    }
+                    distance = computeQuadSegs(pts, o, distance, 0, MaxTValue, start, depth = 0)
                 }
                 PathVerb.Conic -> {
-                    val w = data.conicWeights[weightIndex]
-                    val prevD = distance
-                    val conic = src.copyOfRange(2 * p - 2, 2 * p + 4)
                     distance =
                         computeConicSegs(
-                            conic,
-                            w,
+                            pts,
+                            o,
+                            data.conicWeights[weightIndex],
                             distance,
                             0,
-                            conic[0],
-                            conic[1],
+                            pts[o],
+                            pts[o + 1],
                             MaxTValue,
-                            conic[4],
-                            conic[5],
-                            ptCount - 1,
+                            pts[o + 4],
+                            pts[o + 5],
+                            start,
                         )
-                    if (distance > prevD) {
-                        // Store the conic weight in the next point, followed by the last 2 points.
-                        appendPoint(w, 0f)
-                        appendPoint(src[2 * p], src[2 * p + 1])
-                        appendPoint(src[2 * p + 2], src[2 * p + 3])
-                    }
                 }
                 PathVerb.Cubic -> {
-                    val prevD = distance
-                    val cubic = src.copyOfRange(2 * p - 2, 2 * p + 6)
-                    distance = computeCubicSegs(cubic, distance, 0, MaxTValue, ptCount - 1)
-                    if (distance > prevD) {
-                        appendPoint(src[2 * p], src[2 * p + 1])
-                        appendPoint(src[2 * p + 2], src[2 * p + 3])
-                        appendPoint(src[2 * p + 4], src[2 * p + 5])
-                    }
+                    distance = computeCubicSegs(pts, o, distance, 0, MaxTValue, start, depth = 0)
                 }
                 PathVerb.Close -> haveSeenClose = true
             }
@@ -525,54 +507,55 @@ internal class ContourMeasureIter(
         if (segCount == 0) return null
 
         if (haveSeenClose) {
-            val prevD = distance
-            val lastIndex = ptCount - 1
-            val firstX = pts[0]
-            val firstY = pts[1]
+            // The closing line, from the last point of the contour back to its first one.
+            val last = 2 * (pointIndex - 1)
+            val first = 2 * firstPoint
             distance =
                 computeLineSeg(
-                    pts[2 * lastIndex],
-                    pts[2 * lastIndex + 1],
-                    firstX,
-                    firstY,
+                    pts[last],
+                    pts[last + 1],
+                    pts[first],
+                    pts[first + 1],
                     distance,
-                    lastIndex,
+                    pointIndex - 1,
+                    SegClose,
                 )
-            if (distance > prevD) {
-                appendPoint(firstX, firstY)
-            }
         }
         return ContourMeasure(
+            data,
+            firstPoint,
             segDistance,
             segPointIndex,
             segTValue,
             segType,
+            segWeight,
             segCount,
-            pts,
             distance,
             haveSeenClose,
         )
     }
 
-    private fun appendPoint(x: Float, y: Float) {
-        if (2 * ptCount + 2 > pts.size) pts = pts.copyOf(pts.size * 2)
-        pts[2 * ptCount] = x
-        pts[2 * ptCount + 1] = y
-        ptCount++
-    }
-
-    private fun appendSegment(distance: Float, pointIndex: Int, type: Byte, tValue: Int) {
+    /** Adds a segment; [weight] is the weight of the conic of a conic segment. */
+    private fun appendSegment(
+        distance: Float,
+        pointIndex: Int,
+        type: Byte,
+        tValue: Int,
+        weight: Float = 0f,
+    ) {
         if (segCount == segDistance.size) {
             val size = segCount * 2
             segDistance = segDistance.copyOf(size)
             segPointIndex = segPointIndex.copyOf(size)
             segTValue = segTValue.copyOf(size)
             segType = segType.copyOf(size)
+            segWeight = segWeight.copyOf(size)
         }
         segDistance[segCount] = distance
         segPointIndex[segCount] = pointIndex
         segType[segCount] = type
         segTValue[segCount] = tValue
+        segWeight[segCount] = weight
         segCount++
     }
 
@@ -583,40 +566,59 @@ internal class ContourMeasureIter(
         y1: Float,
         distance: Float,
         pointIndex: Int,
+        type: Byte = SegLine,
     ): Float {
         val d = pointDistance(x0, y0, x1, y1)
         val prevD = distance
         val newD = distance + d
         if (newD > prevD) {
-            appendSegment(newD, pointIndex, SegLine, MaxTValue)
+            appendSegment(newD, pointIndex, type, MaxTValue)
         }
         return newD
     }
 
-    private fun quadTooCurvy(q: FloatArray): Boolean {
+    /** Whether the quad of the 6 floats of [q] from [at] is too curved to be measured as a chord. */
+    private fun quadTooCurvy(q: FloatArray, at: Int): Boolean {
         // diff = (a/4 + b/2 + c/4) - (a/2 + c/2)
-        val dx = q[2] * 0.5f - (q[0] + q[4]) * 0.5f * 0.5f
-        val dy = q[3] * 0.5f - (q[1] + q[5]) * 0.5f * 0.5f
+        val dx = q[at + 2] * 0.5f - (q[at] + q[at + 4]) * 0.5f * 0.5f
+        val dy = q[at + 3] * 0.5f - (q[at + 1] + q[at + 5]) * 0.5f * 0.5f
         val dist = max(abs(dx), abs(dy))
-        return dist > tolerance
+        return dist > CheapDistLimit
     }
 
+    /**
+     * Measures the quad of the 6 floats of [q] from [at], cutting it in halves into [subdivisions]
+     * at the level [depth] of the recursion where it's too curved.
+     */
     private fun computeQuadSegs(
         q: FloatArray,
+        at: Int,
         distance: Float,
         minT: Int,
         maxT: Int,
         pointIndex: Int,
+        depth: Int,
     ): Float {
         var d = distance
-        if (tSpanBigEnough(maxT - minT) && quadTooCurvy(q)) {
-            val tmp = FloatArray(10)
+        if (tSpanBigEnough(maxT - minT) && quadTooCurvy(q, at)) {
+            val halves = depth * CutHalves
             val halfT = (minT + maxT) ushr 1
-            chopQuadAt(q[0], q[1], q[2], q[3], q[4], q[5], 0.5f, tmp, 0)
-            d = computeQuadSegs(tmp.copyOfRange(0, 6), d, minT, halfT, pointIndex)
-            d = computeQuadSegs(tmp.copyOfRange(4, 10), d, halfT, maxT, pointIndex)
+            chopQuadAt(
+                q[at],
+                q[at + 1],
+                q[at + 2],
+                q[at + 3],
+                q[at + 4],
+                q[at + 5],
+                0.5f,
+                subdivisions,
+                halves,
+            )
+            // The halves share their middle point; the next level cuts past them.
+            d = computeQuadSegs(subdivisions, halves, d, minT, halfT, pointIndex, depth + 1)
+            d = computeQuadSegs(subdivisions, halves + 4, d, halfT, maxT, pointIndex, depth + 1)
         } else {
-            val len = pointDistance(q[0], q[1], q[4], q[5])
+            val len = pointDistance(q[at], q[at + 1], q[at + 4], q[at + 5])
             val prevD = d
             d += len
             if (d > prevD) {
@@ -637,11 +639,13 @@ internal class ContourMeasureIter(
         val midEndsX = (firstX + lastX) * 0.5f
         val midEndsY = (firstY + lastY) * 0.5f
         val dist = max(abs(midX - midEndsX), abs(midY - midEndsY))
-        return dist > tolerance
+        return dist > CheapDistLimit
     }
 
+    /** Measures the conic of the 6 floats of [conic] from [at] between [minT] and [maxT]. */
     private fun computeConicSegs(
         conic: FloatArray,
+        at: Int,
         weight: Float,
         distance: Float,
         minT: Int,
@@ -654,26 +658,26 @@ internal class ContourMeasureIter(
     ): Float {
         var d = distance
         val halfT = (minT + maxT) ushr 1
-        val half = FloatArray(2)
         evalConic(
-            conic[0],
-            conic[1],
-            conic[2],
-            conic[3],
-            conic[4],
-            conic[5],
+            conic[at],
+            conic[at + 1],
+            conic[at + 2],
+            conic[at + 3],
+            conic[at + 4],
+            conic[at + 5],
             weight,
             tValueToScalar(halfT),
-            half,
+            conicMiddle,
             0,
         )
-        val halfX = half[0]
-        val halfY = half[1]
+        val halfX = conicMiddle[0]
+        val halfY = conicMiddle[1]
         if (!halfX.isFinite() || !halfY.isFinite()) return d
         if (tSpanBigEnough(maxT - minT) && conicTooCurvy(minX, minY, halfX, halfY, maxX, maxY)) {
             d =
                 computeConicSegs(
                     conic,
+                    at,
                     weight,
                     d,
                     minT,
@@ -687,6 +691,7 @@ internal class ContourMeasureIter(
             d =
                 computeConicSegs(
                     conic,
+                    at,
                     weight,
                     d,
                     halfT,
@@ -702,7 +707,7 @@ internal class ContourMeasureIter(
             val prevD = d
             d += len
             if (d > prevD) {
-                appendSegment(d, pointIndex, SegConic, maxT)
+                appendSegment(d, pointIndex, SegConic, maxT, weight)
             }
         }
         return d
@@ -711,39 +716,59 @@ internal class ContourMeasureIter(
     private fun cheapDistExceedsLimit(px: Float, py: Float, x: Float, y: Float): Boolean {
         val dist = max(abs(x - px), abs(y - py))
         // just made up the 1/2
-        return dist > tolerance
+        return dist > CheapDistLimit
     }
 
-    private fun cubicTooCurvy(c: FloatArray): Boolean =
+    /** Whether the cubic of the 8 floats of [c] from [at] is too curved to be measured as a chord. */
+    private fun cubicTooCurvy(c: FloatArray, at: Int): Boolean =
         cheapDistExceedsLimit(
-            c[2],
-            c[3],
-            c[0] + (c[6] - c[0]) * (1f / 3),
-            c[1] + (c[7] - c[1]) * (1f / 3),
+            c[at + 2],
+            c[at + 3],
+            c[at] + (c[at + 6] - c[at]) * (1f / 3),
+            c[at + 1] + (c[at + 7] - c[at + 1]) * (1f / 3),
         ) ||
             cheapDistExceedsLimit(
-                c[4],
-                c[5],
-                c[0] + (c[6] - c[0]) * (2f / 3),
-                c[1] + (c[7] - c[1]) * (2f / 3),
+                c[at + 4],
+                c[at + 5],
+                c[at] + (c[at + 6] - c[at]) * (2f / 3),
+                c[at + 1] + (c[at + 7] - c[at + 1]) * (2f / 3),
             )
 
+    /**
+     * Measures the cubic of the 8 floats of [c] from [at], cutting it in halves into [subdivisions]
+     * at the level [depth] of the recursion where it's too curved.
+     */
     private fun computeCubicSegs(
         c: FloatArray,
+        at: Int,
         distance: Float,
         minT: Int,
         maxT: Int,
         pointIndex: Int,
+        depth: Int,
     ): Float {
         var d = distance
-        if (tSpanBigEnough(maxT - minT) && cubicTooCurvy(c)) {
-            val tmp = FloatArray(14)
+        if (tSpanBigEnough(maxT - minT) && cubicTooCurvy(c, at)) {
+            val halves = depth * CutHalves
             val halfT = (minT + maxT) ushr 1
-            chopCubicAt(c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], 0.5f, tmp, 0)
-            d = computeCubicSegs(tmp.copyOfRange(0, 8), d, minT, halfT, pointIndex)
-            d = computeCubicSegs(tmp.copyOfRange(6, 14), d, halfT, maxT, pointIndex)
+            chopCubicAt(
+                c[at],
+                c[at + 1],
+                c[at + 2],
+                c[at + 3],
+                c[at + 4],
+                c[at + 5],
+                c[at + 6],
+                c[at + 7],
+                0.5f,
+                subdivisions,
+                halves,
+            )
+            // The halves share their middle point; the next level cuts past them.
+            d = computeCubicSegs(subdivisions, halves, d, minT, halfT, pointIndex, depth + 1)
+            d = computeCubicSegs(subdivisions, halves + 6, d, halfT, maxT, pointIndex, depth + 1)
         } else {
-            val len = pointDistance(c[0], c[1], c[6], c[7])
+            val len = pointDistance(c[at], c[at + 1], c[at + 6], c[at + 7])
             val prevD = d
             d += len
             if (d > prevD) {
@@ -758,6 +783,21 @@ private const val SegLine: Byte = 0
 private const val SegQuad: Byte = 1
 private const val SegCubic: Byte = 2
 private const val SegConic: Byte = 3
+
+/** The line closing a contour, from its last point to its first one. */
+private const val SegClose: Byte = 4
+
+/** The floats of the halves of a curve cut in two: the 7 points of 2 cubics (a quad takes 5). */
+private const val CutHalves = 14
+
+/** The curves [ContourMeasure.getSegment] cuts: twice their halves. */
+private val Cut = FloatArray(2 * CutHalves)
+
+/** The weights of the conics [ContourMeasure.getSegment] cuts. */
+private val CutWeights = FloatArray(2)
+
+/** The point a segment [ContourMeasure.getSegment] appends starts at. */
+private val StartPoint = FloatArray(2)
 
 /** Parameter values are stored as 30-bit fixed point numbers, like Skia. */
 private const val MaxTValue = 0x3FFFFFFF
@@ -777,7 +817,7 @@ private fun pointDistance(x0: Float, y0: Float, x1: Float, y1: Float): Float {
 }
 
 /** Normalizes the vector stored in [v] (Skia's `SkPoint::normalize`); zero if impossible. */
-internal fun normalize(v: FloatArray) {
+private fun normalize(v: FloatArray) {
     val x = v[0]
     val y = v[1]
     val mag = sqrt(x.toDouble() * x + y.toDouble() * y)

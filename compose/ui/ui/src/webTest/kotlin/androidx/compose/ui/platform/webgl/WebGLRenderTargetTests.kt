@@ -46,7 +46,6 @@ import androidx.compose.ui.unit.dp
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNotSame
@@ -88,7 +87,7 @@ class WebGLRenderTargetTests : OnCanvasTests {
             }
         }
 
-        val target = renderTarget ?: return@runApplicationTest skipWithoutWebGL2()
+        val target = assertCreated(renderTarget)
         awaitAnimationFrame()
         awaitIdle()
 
@@ -128,7 +127,7 @@ class WebGLRenderTargetTests : OnCanvasTests {
             }
         }
 
-        val target = renderTarget ?: return@runApplicationTest skipWithoutWebGL2()
+        val target = assertCreated(renderTarget)
         repeat(frames + 2) { awaitAnimationFrame() }
         awaitIdle()
 
@@ -188,7 +187,7 @@ class WebGLRenderTargetTests : OnCanvasTests {
             }
         }
 
-        val target = renderTarget ?: return@runApplicationTest skipWithoutWebGL2()
+        val target = assertCreated(renderTarget)
         awaitAnimationFrame()
         awaitIdle()
 
@@ -279,7 +278,7 @@ class WebGLRenderTargetTests : OnCanvasTests {
             }
         }
 
-        val target = renderTarget ?: return@runApplicationTest skipWithoutWebGL2()
+        val target = assertCreated(renderTarget)
 
         // Compose draws into its canvas with the Canvas 2D API, so its pixels can be read directly
         // (in device pixels, from the top).
@@ -342,7 +341,7 @@ class WebGLRenderTargetTests : OnCanvasTests {
             }
         }
 
-        val a = first ?: return@runApplicationTest skipWithoutWebGL2()
+        val a = assertCreated(first)
         val b = assertNotNull(second, "only one of the targets was created")
         assertSame(a.webGLContext, b.webGLContext, "the targets render with different contexts")
         // Compose never gets idle here: the layer in perspective changes on every frame.
@@ -387,7 +386,7 @@ class WebGLRenderTargetTests : OnCanvasTests {
             }
         }
 
-        val target = renderTarget ?: return@runApplicationTest skipWithoutWebGL2()
+        val target = assertCreated(renderTarget)
         awaitAnimationFrame()
         awaitIdle()
 
@@ -425,21 +424,9 @@ class WebGLRenderTargetTests : OnCanvasTests {
         }
         return pixel
     }
-
-    /**
-     * A render target needs WebGL2, so a missing target is a valid outcome - as long as the
-     * browser really lacks WebGL2.
-     */
-    private fun skipWithoutWebGL2() {
-        assertFalse(supportsWebGL2(), "no render target although the browser supports WebGL2")
-        println("skipped: the browser does not support WebGL2")
-    }
 }
 
 private fun Int.toHexString(): String = toUInt().toString(16)
-
-// language=js
-private fun supportsWebGL2(): Boolean = js("!!document.createElement('canvas').getContext('webgl2')")
 
 // language=js
 private fun describeClearColor(gl: WebGLRenderingContext): String =

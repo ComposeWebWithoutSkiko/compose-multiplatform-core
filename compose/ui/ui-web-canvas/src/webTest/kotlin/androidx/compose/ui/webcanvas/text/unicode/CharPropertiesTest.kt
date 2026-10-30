@@ -24,16 +24,6 @@ import kotlin.test.assertTrue
 class CharPropertiesTest {
 
     @Test
-    fun whitespace() {
-        for (c in listOf(' ', '\t', '\n', '\u00A0', '\u2007', '\u3000', '\u2028', '\u0085')) {
-            assertTrue(isWhitespace(c.code), "U+${c.code.toString(16)}")
-        }
-        assertFalse(isWhitespace('a'.code))
-        assertFalse(isWhitespace(0x200B)) // ZERO WIDTH SPACE is not White_Space
-        assertFalse(isWhitespace(0xFEFF))
-    }
-
-    @Test
     fun emoji() {
         assertTrue(isEmojiPresentation(0x1F600))
         assertFalse(isEmojiPresentation(0x263A)) // WHITE SMILING FACE defaults to text
@@ -62,8 +52,5 @@ class CharPropertiesTest {
         assertEquals(0xD83D, codePointBefore(text, 2))
         assertEquals(2, charCount(0x1F600))
         assertEquals(1, charCount('a'.code))
-        assertTrue(isInsideSurrogatePair(text, 2))
-        assertFalse(isInsideSurrogatePair(text, 1))
-        assertFalse(isInsideSurrogatePair(text, 4))
     }
 }

@@ -31,6 +31,8 @@ import androidx.compose.ui.graphics.platform.PlatformColorFilter
 import androidx.compose.ui.graphics.platform.PlatformRenderEffect
 import androidx.compose.ui.graphics.platform.platformColorFilter
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.webcanvas.dom.toJsNumberArray
+import kotlin.js.JsAny
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -47,27 +49,51 @@ internal sealed class WebColorFilter : PlatformColorFilter() {
     /** A key identifying the filter, to cache filtered images. */
     abstract val key: Any
 
-    /** Whether the filter leaves fully transparent pixels transparent. */
-    open val preservesTransparency: Boolean get() = true
+    /**
+     * The color matrix of the filter ([colorMatrixOf]), made once: of a filter that no compositing
+     * operation applies.
+     */
+    val colorMatrix: FloatArray by lazy { colorMatrixOf(this) }
+
+    /**
+     * [colorMatrix] as a JS array, for the code that applies it in JS, made once: a copy, which JS
+     * needs on Wasm, where it can't read a Kotlin array.
+     */
+    val jsColorMatrix: JsAny by lazy { colorMatrix.toJsNumberArray() }
 
     /** Applies the filter to a tint. */
     class Tint(val color: Color, val blendMode: BlendMode) : WebColorFilter() {
-        private val tintArgb = color.toArgb()
+        /** [color] as an ARGB color. */
+        val tintArgb: Int = color.toArgb()
         override val key: Any = TintKey(tintArgb, blendMode)
-
-        override val preservesTransparency: Boolean
-            get() = when (blendMode) {
-                BlendMode.SrcIn, BlendMode.SrcAtop, BlendMode.DstIn, BlendMode.DstOut,
-                BlendMode.Modulate, BlendMode.Multiply, BlendMode.Clear, BlendMode.Dst,
-                BlendMode.DstAtop -> true
-                else -> (tintArgb ushr 24) == 0
-            }
 
         override fun filter(argb: Int): Int = blendColors(tintArgb, argb, blendMode)
 
         /**
+         * Whether Skia makes no filter for this tint (`SkColorFilters::Blend` returns none, and
+         * Compose's Skia backend applies a pass-through filter): Dst, a transparent color over,
+         * under, out of, atop, xor or darkening the colors, and an opaque color keeping them in.
+         * Decided on the 8 bit alpha, as Skia is. Drawing applies no filter for it (see
+         * [WebPaint.appliedColorFilter]).
+         */
+        val isNoOpBlend: Boolean =
+            blendMode == BlendMode.Dst ||
+                when (tintArgb ushr 24) {
+                    0 ->
+                        blendMode == BlendMode.SrcOver ||
+                            blendMode == BlendMode.DstOver ||
+                            blendMode == BlendMode.DstOut ||
+                            blendMode == BlendMode.SrcAtop ||
+                            blendMode == BlendMode.Xor ||
+                            blendMode == BlendMode.Darken
+                    255 -> blendMode == BlendMode.DstIn
+                    else -> false
+                }
+
+        /**
          * Whether the tint is a compositing operation of the Canvas 2D API: filling the pixels
-         * with [color] in that operation applies it. Modulate and Clear have no exact operation.
+         * with [color] in that operation applies it. Modulate and Clear have no exact operation;
+         * Dst has none, but is never applied ([isNoOpBlend]).
          */
         val appliesAsComposite: Boolean
             get() = blendMode != BlendMode.Modulate && blendMode != BlendMode.Clear
@@ -83,9 +109,6 @@ internal sealed class WebColorFilter : PlatformColorFilter() {
      */
     class Matrix(val values: FloatArray) : WebColorFilter() {
         override val key: Any = MatrixKey(values.copyOf())
-
-        override val preservesTransparency: Boolean
-            get() = values[19] <= 0f
 
         override fun filter(argb: Int): Int {
             val a = (argb ushr 24) and 0xFF
@@ -289,11 +312,23 @@ internal fun blendColors(src: Int, dst: Int, blendMode: BlendMode): Int {
             ra = sa * da; rr = sr * dr; rg = sg * dg; rb = sb * db
         }
         else -> {
-            // Separable blend modes: B(cs, cd) mixed with source-over alpha compositing.
+            // The other blend modes: the blend B of the non-premultiplied colors, mixed with
+            // source-over alpha compositing (W3C compositing).
+            val blended = Blended
+            blend(
+                if (sa > 0) sr / sa else 0f,
+                if (sa > 0) sg / sa else 0f,
+                if (sa > 0) sb / sa else 0f,
+                if (da > 0) dr / da else 0f,
+                if (da > 0) dg / da else 0f,
+                if (da > 0) db / da else 0f,
+                blendMode,
+                blended,
+            )
             ra = sa + da * (1 - sa)
-            rr = separable(sr, sa, dr, da, blendMode)
-            rg = separable(sg, sa, dg, da, blendMode)
-            rb = separable(sb, sa, db, da, blendMode)
+            rr = (1 - da) * sr + (1 - sa) * dr + sa * da * blended[0]
+            rg = (1 - da) * sg + (1 - sa) * dg + sa * da * blended[1]
+            rb = (1 - da) * sb + (1 - sa) * db + sa * da * blended[2]
         }
     }
     if (ra <= 0f) return 0
@@ -306,12 +341,91 @@ internal fun blendColors(src: Int, dst: Int, blendMode: BlendMode): Int {
     )
 }
 
-/** Composites one premultiplied channel with a separable blend mode (W3C compositing spec). */
-private fun separable(sc: Float, sa: Float, dc: Float, da: Float, blendMode: BlendMode): Float {
-    // Non-premultiplied colors for the blend function.
-    val cs = if (sa > 0) sc / sa else 0f
-    val cb = if (da > 0) dc / da else 0f
-    val blended = when (blendMode) {
+/** The blend of [blendColors] for the modes other than the Porter-Duff ones. */
+private val Blended = FloatArray(3)
+
+/**
+ * Sets [out] to the blend B(cs, cb) of the non-premultiplied source color ([sr], [sg], [sb]) and
+ * backdrop color ([br], [bg], [bb]) with [blendMode], a separable or non-separable blend mode of
+ * the W3C compositing spec.
+ */
+private fun blend(
+    sr: Float,
+    sg: Float,
+    sb: Float,
+    br: Float,
+    bg: Float,
+    bb: Float,
+    blendMode: BlendMode,
+    out: FloatArray,
+) {
+    when (blendMode) {
+        BlendMode.Hue -> {
+            setSaturation(sr, sg, sb, saturation(br, bg, bb), out)
+            setLuminosity(out[0], out[1], out[2], luminosity(br, bg, bb), out)
+        }
+        BlendMode.Saturation -> {
+            setSaturation(br, bg, bb, saturation(sr, sg, sb), out)
+            setLuminosity(out[0], out[1], out[2], luminosity(br, bg, bb), out)
+        }
+        BlendMode.Color -> setLuminosity(sr, sg, sb, luminosity(br, bg, bb), out)
+        BlendMode.Luminosity -> setLuminosity(br, bg, bb, luminosity(sr, sg, sb), out)
+        else -> {
+            out[0] = separable(sr, br, blendMode)
+            out[1] = separable(sg, bg, blendMode)
+            out[2] = separable(sb, bb, blendMode)
+        }
+    }
+}
+
+/** Lum(C) of the W3C compositing spec. */
+private fun luminosity(r: Float, g: Float, b: Float): Float = 0.3f * r + 0.59f * g + 0.11f * b
+
+/** Sat(C) of the W3C compositing spec. */
+private fun saturation(r: Float, g: Float, b: Float): Float = max(r, max(g, b)) - min(r, min(g, b))
+
+/**
+ * Sets [out] to SetLum(C, [l]) of the W3C compositing spec, ClipColor included, for C = ([r], [g],
+ * [b]).
+ */
+private fun setLuminosity(r: Float, g: Float, b: Float, l: Float, out: FloatArray) {
+    val d = l - luminosity(r, g, b)
+    var cr = r + d
+    var cg = g + d
+    var cb = b + d
+    val n = min(cr, min(cg, cb))
+    val x = max(cr, max(cg, cb))
+    if (n < 0f) {
+        val k = l / (l - n)
+        cr = l + (cr - l) * k
+        cg = l + (cg - l) * k
+        cb = l + (cb - l) * k
+    }
+    if (x > 1f) {
+        val k = (1 - l) / (x - l)
+        cr = l + (cr - l) * k
+        cg = l + (cg - l) * k
+        cb = l + (cb - l) * k
+    }
+    out[0] = cr
+    out[1] = cg
+    out[2] = cb
+}
+
+/** Sets [out] to SetSat(C, [s]) of the W3C compositing spec for C = ([r], [g], [b]). */
+private fun setSaturation(r: Float, g: Float, b: Float, s: Float, out: FloatArray) {
+    val n = min(r, min(g, b))
+    val x = max(r, max(g, b))
+    // The largest channel becomes s, the smallest 0 and the middle one keeps its place between.
+    val k = if (x > n) s / (x - n) else 0f
+    out[0] = (r - n) * k
+    out[1] = (g - n) * k
+    out[2] = (b - n) * k
+}
+
+/** The blend B(cs, cb) of one channel with a separable blend mode (W3C compositing spec). */
+private fun separable(cs: Float, cb: Float, blendMode: BlendMode): Float =
+    when (blendMode) {
         BlendMode.Multiply -> cs * cb
         BlendMode.Screen -> cs + cb - cs * cb
         BlendMode.Overlay -> hardLight(cb, cs)
@@ -336,11 +450,8 @@ private fun separable(sc: Float, sa: Float, dc: Float, da: Float, blendMode: Ble
         }
         BlendMode.Difference -> kotlin.math.abs(cs - cb)
         BlendMode.Exclusion -> cs + cb - 2 * cs * cb
-        // Non-separable modes (hue, saturation, color, luminosity) are approximated by the source.
-        else -> cs
+        else -> error("$blendMode is not a separable blend mode")
     }
-    return (1 - da) * sc + (1 - sa) * dc + sa * da * blended
-}
 
 private fun hardLight(cs: Float, cb: Float): Float =
     if (cs <= 0.5f) cb * 2 * cs else {

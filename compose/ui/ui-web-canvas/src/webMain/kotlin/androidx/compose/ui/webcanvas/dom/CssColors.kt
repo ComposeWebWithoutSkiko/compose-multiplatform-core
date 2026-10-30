@@ -14,11 +14,8 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalWasmJsInterop::class)
-
 package androidx.compose.ui.webcanvas.dom
 
-import kotlin.js.ExperimentalWasmJsInterop
 import kotlin.js.JsString
 import kotlin.js.toJsString
 

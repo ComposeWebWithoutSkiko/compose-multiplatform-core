@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-@file:OptIn(InternalComposeUiApi::class, ExperimentalTextApi::class, ExperimentalWasmJsInterop::class)
+@file:OptIn(InternalComposeUiApi::class, ExperimentalTextApi::class)
 
 package androidx.compose.ui.webcanvas.text
 
@@ -43,20 +43,22 @@ import androidx.compose.ui.text.intl.LocaleList
 import androidx.compose.ui.text.style.BaselineShift
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.text.style.TextGeometricTransform
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.isSpecified
 import androidx.compose.ui.unit.isUnspecified
 import androidx.compose.ui.unit.sp
-import kotlin.js.ExperimentalWasmJsInterop
 import kotlin.js.JsString
 import kotlin.js.toJsString
 
 /**
  * A font as the canvas uses it: a typeface at a size, with the requested (possibly synthesized)
- * weight and style, letter spacing and horizontal scale. Instances are shared, so that measurement
- * caches and JS strings are created once per font.
+ * weight and style, letter spacing and horizontal scale. The fonts used lately are shared, so that
+ * their measurements and JS strings are made once (see [TextMeasurement]).
+ *
+ * The browser gets the font at its size in CSS pixels, [pixelRatio] times smaller than [size], as
+ * for DOM text: a font may change with its size (the system font of macOS does), so the same text
+ * at twice the size isn't the text scaled twice. It's measured and drawn scaled by [pixelRatio].
  */
 internal class RunFont private constructor(
     val typeface: WebTypeface,
@@ -65,18 +67,23 @@ internal class RunFont private constructor(
     val isItalic: Boolean,
     val letterSpacing: Float,
     val scaleX: Float,
+    val pixelRatio: Float,
     val cssString: String,
+    /** Identifies the font among the shared ones. */
+    val key: String,
 ) {
     val css: JsString = cssString.toJsString()
 
     val letterSpacingCss: JsString? =
-        if (letterSpacing != 0f) "${cssNumber(letterSpacing)}px".toJsString() else null
+        if (letterSpacing != 0f) "${cssNumber(letterSpacing / pixelRatio)}px".toJsString() else null
 
-    /** Identifies the font in measurement caches. */
-    val key: String = "$cssString|$letterSpacing|$scaleX"
+    /** The metrics measured by [TextMeasurement.metrics], and the epoch they were measured in. */
+    var metrics: FontMetrics? = null
+    var metricsEpoch = 0
 
     companion object {
-        private val instances = HashMap<String, RunFont>()
+        /** The fonts used lately: animated sizes don't pile up. */
+        private val instances = RecentCache<String, RunFont>(capacity = 256) { it.key }
 
         fun of(
             typeface: WebTypeface,
@@ -85,12 +92,13 @@ internal class RunFont private constructor(
             isItalic: Boolean,
             letterSpacing: Float,
             scaleX: Float,
+            pixelRatio: Float,
         ): RunFont {
             val css = buildString {
                 if (isItalic) append("italic ")
                 append(weight.coerceIn(1, 1000))
                 append(' ')
-                append(cssNumber(size))
+                append(cssNumber(size / pixelRatio))
                 append("px ")
                 append(typeface.family)
                 if (!typeface.isGeneric) {
@@ -100,10 +108,10 @@ internal class RunFont private constructor(
                     append(GenericFamilies.SansSerif)
                 }
             }
-            val key = "$css|$letterSpacing|$scaleX"
-            return instances.getOrPut(key) {
-                RunFont(typeface, size, weight, isItalic, letterSpacing, scaleX, css)
-            }
+            val key = "$css|$letterSpacing|$scaleX|$pixelRatio"
+            return instances[key]
+                ?: RunFont(typeface, size, weight, isItalic, letterSpacing, scaleX, pixelRatio, css, key)
+                    .also { instances.put(it) }
         }
     }
 }
@@ -346,6 +354,7 @@ internal class StyleResolver(
             isItalic = cssItalic,
             letterSpacing = letterSpacing,
             scaleX = if (scaleX > 0f) scaleX else 1f,
+            pixelRatio = density.density,
         )
         val lineHeightPx = if (lineHeight.isSpecified) {
             if (lineHeight.isEm) {

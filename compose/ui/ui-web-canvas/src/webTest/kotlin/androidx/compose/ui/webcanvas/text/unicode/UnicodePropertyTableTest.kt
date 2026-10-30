@@ -17,11 +17,9 @@
 package androidx.compose.ui.webcanvas.text.unicode
 
 import kotlin.test.Test
-import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
-import kotlin.test.assertTrue
 
 class UnicodePropertyTableTest {
 
@@ -34,8 +32,6 @@ class UnicodePropertyTableTest {
         assertEquals(12345, reader.next())
         assertEquals(0x10FFFF, reader.next())
         assertFalse(reader.hasNext())
-        val signed = EncodedDataReader(encode(0, 1, 2, 3, 4))
-        assertContentEquals(intArrayOf(0, -1, 1, -2, 2), IntArray(5) { signed.nextSigned() })
     }
 
     @Test
@@ -87,11 +83,6 @@ class UnicodePropertyTableTest {
         assertEquals(2, map.indexOf(0x10000))
         assertEquals(-1, map.indexOf(4))
         assertEquals(-1, map.indexOf(0x10001))
-    }
-
-    @Test
-    fun generatedTablesHaveTheExpectedVersion() {
-        assertTrue(UNICODE_VERSION.isNotEmpty())
     }
 
     /** Encodes runs of (value, length) like generate_unicode_tables.py. */

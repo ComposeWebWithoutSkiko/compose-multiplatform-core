@@ -14,22 +14,21 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalWasmJsInterop::class)
-
 package androidx.compose.ui.webcanvas.text
 
-import androidx.compose.ui.webcanvas.dom.CanvasFeatures
 import androidx.compose.ui.webcanvas.dom.Context2D
 import androidx.compose.ui.webcanvas.dom.JsStrings
 import androidx.compose.ui.webcanvas.dom.createCanvas
+import androidx.compose.ui.webcanvas.dom.fontBoundingBoxAscentOf
+import androidx.compose.ui.webcanvas.dom.fontBoundingBoxDescentOf
 import androidx.compose.ui.webcanvas.dom.getContext2D
 import androidx.compose.ui.webcanvas.dom.setFontKerning
 import androidx.compose.ui.webcanvas.dom.setLetterSpacing
 import androidx.compose.ui.webcanvas.text.unicode.codePointAt
 import androidx.compose.ui.webcanvas.text.unicode.codePointBefore
-import kotlin.js.ExperimentalWasmJsInterop
 import kotlin.js.JsString
 import kotlin.js.toJsString
+import kotlin.math.round
 
 /** The vertical metrics of a font at a size, in pixels (ascent negative, like Skia). */
 internal class FontMetrics(
@@ -42,8 +41,8 @@ internal class FontMetrics(
 )
 
 /**
- * Measures text with the Canvas 2D API. Widths are cached per font, because the line breaker
- * measures every word of every paragraph and the same words appear again and again.
+ * Measures text with the Canvas 2D API. The widths measured lately are cached, because the line
+ * breaker measures every word of every paragraph and the same words appear again and again.
  */
 internal object TextMeasurement {
     private val ctx: Context2D by lazy {
@@ -59,24 +58,71 @@ internal object TextMeasurement {
     private var currentLetterSpacing: JsString? = null
     private var currentRtl = false
 
-    private class FontCache {
-        val widths = HashMap<String, Float>()
-        var metrics: FontMetrics? = null
+    /**
+     * A run measured (see [jsRunOf]) with its [width]: identified by its font, its text,
+     * `text[start, end)`, compared in place, its direction and whether it joins the letters around
+     * it. Runs are looked up with a key reused for every lookup, and a copy of it with its own text
+     * is kept.
+     */
+    private class MeasuredRun {
+        private var font: RunFont? = null
+        private var text = ""
+        private var start = 0
+        private var end = 0
+        private var flags = 0
+        private var hash = 0
+        var width = 0f
+            private set
+
+        fun set(font: RunFont, text: String, start: Int, end: Int, flags: Int): MeasuredRun {
+            this.font = font
+            this.text = text
+            this.start = start
+            this.end = end
+            this.flags = flags
+            var hash = 31 * font.hashCode() + flags
+            for (i in start until end) hash = 31 * hash + text[i].code
+            this.hash = hash
+            return this
+        }
+
+        /** A copy of this key with its own text, measured [width] wide. */
+        fun measured(width: Float): MeasuredRun = MeasuredRun().also {
+            it.font = font
+            it.text = text.substring(start, end)
+            it.end = end - start
+            it.flags = flags
+            it.hash = hash
+            it.width = width
+        }
+
+        override fun hashCode(): Int = hash
+
+        override fun equals(other: Any?): Boolean {
+            if (other !is MeasuredRun || other.hash != hash || other.flags != flags) return false
+            if (other.font !== font) return false
+            val length = end - start
+            if (other.end - other.start != length) return false
+            for (i in 0 until length) {
+                if (text[start + i] != other.text[other.start + i]) return false
+            }
+            return true
+        }
     }
 
-    private val caches = HashMap<String, FontCache>()
-    private var cachedEntries = 0
-    private const val MaxCachedEntries = 50_000
+    /** The key of every lookup. */
+    private val probe = MeasuredRun()
+
+    /** The runs measured lately: 50 000 at most. */
+    private val widths = RecentCache<MeasuredRun, MeasuredRun>(capacity = 25_000) { it }
+
+    /** Counts the [clearCaches], which the metrics of fonts were measured since. */
+    private var epoch = 0
 
     /** Drops all cached measurements, e.g. after a font finished loading. */
     fun clearCaches() {
-        caches.clear()
-        cachedEntries = 0
-    }
-
-    private fun cacheFor(font: RunFont): FontCache {
-        val key = font.key
-        return caches.getOrPut(key) { FontCache() }
+        widths.clear()
+        epoch++
     }
 
     private fun select(font: RunFont, rtl: Boolean) {
@@ -86,9 +132,7 @@ internal object TextMeasurement {
         }
         val spacing = font.letterSpacingCss
         if (spacing !== currentLetterSpacing) {
-            if (CanvasFeatures.letterSpacing) {
-                setLetterSpacing(ctx, spacing ?: ZeroPx)
-            }
+            setLetterSpacing(ctx, spacing ?: JsStrings.zeroPx)
             currentLetterSpacing = spacing
         }
         if (rtl != currentRtl) {
@@ -98,80 +142,96 @@ internal object TextMeasurement {
     }
 
     /** The advance width of [text] drawn with [font], as a single run of the given direction. */
-    fun width(font: RunFont, text: String, rtl: Boolean = false): Float {
-        if (text.isEmpty()) return 0f
-        val run = directionalRun(text, rtl)
-        val cache = cacheFor(font)
-        cache.widths[run]?.let { return it }
+    fun width(font: RunFont, text: String, rtl: Boolean = false): Float =
+        width(font, text, jsText = null, 0, text.length, rtl, joinsBefore = false, joinsAfter = false)
+
+    /**
+     * The width of [text] between [start] and [end], as laid out within the text (see [jsRunOf]):
+     * letters of cursive scripts keep the forms joining them to the letters around the range where
+     * it [joinsBefore] or [joinsAfter] them. [jsText] is [text] as a JS string, if the caller has it.
+     */
+    fun width(
+        font: RunFont,
+        text: String,
+        jsText: JsString?,
+        start: Int,
+        end: Int,
+        rtl: Boolean,
+        joinsBefore: Boolean,
+        joinsAfter: Boolean,
+    ): Float {
+        if (start >= end) return 0f
+        val flags = (if (rtl) 1 else 0) or (if (joinsBefore) 2 else 0) or (if (joinsAfter) 4 else 0)
+        val key = probe.set(font, text, start, end, flags)
+        widths[key]?.let { return it.width }
         select(font, rtl)
-        var width = ctx.measureText(run.toJsString()).width.toFloat()
-        if (font.letterSpacing != 0f && !CanvasFeatures.letterSpacing) {
-            // Emulated letter spacing: added after every character, like the CSS property.
-            width += font.letterSpacing * text.codePointCountForSpacing()
-        }
-        width *= font.scaleX
-        if (cachedEntries > MaxCachedEntries) clearCaches()
-        cacheFor(font).widths[run] = width
-        cachedEntries++
+        val run = jsRunOf(jsText ?: text.toJsString(), start, end, rtl, joinsBefore, joinsAfter)
+        val width = ctx.measureText(run).width.toFloat() * font.scaleX * font.pixelRatio
+        widths.put(key.measured(width))
         return width
     }
 
-    /**
-     * The width of [text] between [start] and [end], as laid out within the text: letters of
-     * cursive scripts keep the forms joining them to the letters around the range.
-     */
-    fun width(font: RunFont, text: String, start: Int, end: Int, rtl: Boolean = false): Float =
-        if (start >= end) 0f else width(font, contextualSubstring(text, start, end), rtl)
-
     fun metrics(font: RunFont): FontMetrics {
-        val cache = cacheFor(font)
-        cache.metrics?.let { return it }
+        if (font.metricsEpoch == epoch) font.metrics?.let { return it }
         select(font, false)
         val m = ctx.measureText(MetricsSample)
-        var ascent = m.fontBoundingBoxAscent.toFloat()
-        var descent = m.fontBoundingBoxDescent.toFloat()
+        // In whole pixels at any ratio: lines of a paragraph meet between pixels, with their backgrounds.
+        var ascent = round(fontBoundingBoxAscentOf(m).toFloat() * font.pixelRatio)
+        var descent = round(fontBoundingBoxDescentOf(m).toFloat() * font.pixelRatio)
         if (ascent.isNaN() || descent.isNaN() || (ascent == 0f && descent == 0f)) {
             // Browsers without font bounding boxes (old Firefox): approximate from the size.
             ascent = font.size * 0.9f
             descent = font.size * 0.25f
         }
         val x = ctx.measureText(XSample)
-        val xHeight = x.actualBoundingBoxAscent.toFloat().takeIf { it > 0f } ?: (font.size * 0.5f)
+        val xHeight = x.actualBoundingBoxAscent.toFloat().takeIf { it > 0f }?.times(font.pixelRatio)
+            ?: (font.size * 0.5f)
         val metrics = FontMetrics(-ascent, descent, xHeight / 2)
-        cache.metrics = metrics
+        font.metrics = metrics
+        font.metricsEpoch = epoch
         return metrics
     }
 
     private val MetricsSample = "Hg".toJsString()
     private val XSample = "x".toJsString()
-    private val ZeroPx = "0px".toJsString()
 }
 
 /**
- * [text] wrapped in a directional override: the paragraph already ran the bidi algorithm, and
- * the browser must lay out each run exactly in the resolved direction, not reorder it again (which
- * would ignore embeddings and overrides of the paragraph and misplace neutral characters).
+ * The run of [text] (a JS string) between [start] and [end] as the canvas measures and draws it,
+ * sliced from [text] in JS:
+ * - in a directional override: the paragraph already ran the bidi algorithm, and the browser must
+ *   lay out each run exactly in the resolved direction, not reorder it again (which would ignore
+ *   embeddings and overrides of the paragraph and misplace neutral characters);
+ * - with a zero width joiner at each end where the text continues with a letter joined to it
+ *   ([joinsBefore], [joinsAfter]): the Canvas 2D API only shapes the strings it's given, so a range
+ *   of Arabic text measured or drawn alone would otherwise get the isolated or final forms of its
+ *   end letters (with different widths and shapes than within the word).
  */
-internal fun directionalRun(text: String, isRtl: Boolean): String =
-    (if (isRtl) RightToLeftOverride else LeftToRightOverride) + text + PopDirectionalFormatting
+// language=js
+internal fun jsRunOf(
+    text: JsString,
+    start: Int,
+    end: Int,
+    isRtl: Boolean,
+    joinsBefore: Boolean,
+    joinsAfter: Boolean,
+): JsString = js(
+    "(isRtl ? '\\u202E' : '\\u202D') + (joinsBefore ? '\\u200D' : '') + text.substring(start, end) + (joinsAfter ? '\\u200D' : '') + '\\u202C'"
+)
 
-/**
- * `text[start, end)`, with a zero width joiner at each end where the text continues with a letter
- * joined to it. The Canvas 2D API only shapes the strings it's given, so a range of Arabic text
- * measured or drawn alone would otherwise get the isolated or final forms of its end letters
- * (with different widths and shapes than within the word).
- */
-internal fun contextualSubstring(text: String, start: Int, end: Int): String {
-    val substring = text.substring(start, end)
-    if (start >= end) return substring
-    val joinsBefore = start > 0 &&
+/** [text] in a directional override, as [jsRunOf] makes runs, for text that isn't in a paragraph. */
+internal fun directionalRun(text: String, isRtl: Boolean): JsString =
+    jsRunOf(text.toJsString(), 0, text.length, isRtl, joinsBefore = false, joinsAfter = false)
+
+/** Whether the letter of [text] at [start] is joined to the letter before it. */
+internal fun joinsBefore(text: CharSequence, start: Int): Boolean =
+    start > 0 && start < text.length &&
         isJoiningScript(codePointBefore(text, start)) && isJoiningScript(codePointAt(text, start))
-    val joinsAfter = end < text.length &&
+
+/** Whether the letter of [text] before [end] is joined to the letter at it. */
+internal fun joinsAfter(text: CharSequence, end: Int): Boolean =
+    end in 1 until text.length &&
         isJoiningScript(codePointBefore(text, end)) && isJoiningScript(codePointAt(text, end))
-    if (!joinsBefore && !joinsAfter) return substring
-    return (if (joinsBefore) ZeroWidthJoiner else "") + substring +
-        (if (joinsAfter) ZeroWidthJoiner else "")
-}
 
 /** Whether [codePoint] belongs to a cursive script, whose letters join their neighbors. */
 private fun isJoiningScript(codePoint: Int): Boolean = when {
@@ -187,22 +247,4 @@ private fun isJoiningScript(codePoint: Int): Boolean = when {
     codePoint in 0x10F30..0x10FDF -> true // Sogdian, Old Uyghur, Chorasmian
     codePoint in 0x1E900..0x1E95F -> true // Adlam
     else -> false
-}
-
-private const val ZeroWidthJoiner = "\u200D"
-
-private const val LeftToRightOverride = "\u202D"
-private const val RightToLeftOverride = "\u202E"
-private const val PopDirectionalFormatting = "\u202C"
-
-/** The number of characters CSS letter spacing applies to: one per code point. */
-private fun String.codePointCountForSpacing(): Int {
-    var count = 0
-    var i = 0
-    while (i < length) {
-        val c = this[i]
-        i += if (c.isHighSurrogate() && i + 1 < length && this[i + 1].isLowSurrogate()) 2 else 1
-        count++
-    }
-    return count
 }

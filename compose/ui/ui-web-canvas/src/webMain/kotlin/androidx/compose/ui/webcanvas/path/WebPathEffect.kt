@@ -23,7 +23,7 @@ import kotlin.math.sqrt
 
 /** Creates the web implementation of [PathEffect.dashPathEffect]. */
 internal fun createDashPathEffect(intervals: FloatArray, phase: Float): PathEffect =
-    WebPathEffect.Dash(intervals, phase)
+    WebPathEffect.Dash(intervals.copyOf(), phase)
 
 /** Creates the web implementation of [PathEffect.cornerPathEffect]. */
 internal fun createCornerPathEffect(radius: Float): PathEffect = WebPathEffect.Corner(radius)
@@ -44,7 +44,7 @@ internal fun createStampedPathEffect(
  * Mutable drawing style threaded through path effects (the subset of Skia's `SkStrokeRec` the
  * effects care about). A [WebPathEffect.Stamped] effect switches it to fill.
  */
-internal class PathEffectStrokeRec(var isStroke: Boolean, var strokeWidth: Float)
+internal class PathEffectStrokeRec(var isStroke: Boolean)
 
 /**
  * Path effects of the web canvas backend, ports of Skia's `SkDashPathEffect`, `SkCornerPathEffect`,
@@ -66,13 +66,37 @@ internal sealed class WebPathEffect : PathEffect {
      */
     abstract fun filterPath(src: PathData, rec: PathEffectStrokeRec): PathData?
 
+    // The last path the effect was applied to and its result (see apply).
+    private var lastSource: PathData? = null
+    private var lastIsStroke = false
+    private var lastResult: PathData? = null
+
     /**
-     * Applies the effect to [src] drawn with a stroke (if [isStroke]) of [strokeWidth] (0 for
-     * hairlines) or a fill. Returns [src] itself when the effect doesn't apply.
+     * Applies the effect to [src] drawn with a stroke (if [isStroke]) or a fill. Returns [src]
+     * itself when the effect doesn't apply.
+     *
+     * The result only depends on the geometry of [src] and [isStroke] (the effects don't change),
+     * so the last one is kept: a path drawn again, in every frame, or rebuilt the same (shapes are
+     * turned into new paths for their effects) gets it, with its `Path2D`, without applying the
+     * effect again. [src] is kept too: it must be a [snapshot][WebPath.snapshot].
      */
-    fun apply(src: PathData, isStroke: Boolean, strokeWidth: Float): PathData {
+    fun apply(src: PathData, isStroke: Boolean): PathData {
         if (isNoOp) return src
-        return filterPath(src, PathEffectStrokeRec(isStroke, strokeWidth)) ?: src
+        val source = lastSource
+        val result = lastResult
+        if (
+            source != null &&
+                result != null &&
+                isStroke == lastIsStroke &&
+                (source === src || source.hasSameGeometry(src))
+        ) {
+            return result
+        }
+        return (filterPath(src, PathEffectStrokeRec(isStroke)) ?: src).also {
+            lastSource = src
+            lastIsStroke = isStroke
+            lastResult = it
+        }
     }
 
     /**
@@ -88,9 +112,18 @@ internal sealed class WebPathEffect : PathEffect {
      * `setLineDash([intervals])`/`lineDashOffset = phase` when [isValid] instead of [apply]. Note
      * that, unlike Canvas2D, Skia joins the last dash of a closed contour with its first dash.
      */
-    class Dash(intervals: FloatArray, val phase: Float) : WebPathEffect() {
-        /** The on/off intervals (a copy of the array passed at creation). */
-        val intervals: FloatArray = intervals.copyOf()
+    class Dash(
+        /** The on/off intervals: an array this effect keeps. */
+        val intervals: FloatArray,
+        phase: Float,
+    ) : WebPathEffect() {
+        /** These dashes, [factor] times as long. */
+        fun scaled(factor: Float): Dash =
+            if (isValid) {
+                Dash(FloatArray(intervals.size) { intervals[it] * factor }, adjustedPhase * factor)
+            } else {
+                this
+            }
 
         /**
          * True if the intervals are usable: an even count >= 2, no negative entry, a positive and
@@ -99,9 +132,9 @@ internal sealed class WebPathEffect : PathEffect {
         val isValid: Boolean
 
         /** Sum of all [intervals]. */
-        val intervalLength: Float
+        private val intervalLength: Float
 
-        /** [phase] normalized into `[0, intervalLength)` like Skia (negative phases flipped). */
+        /** The phase normalized into `[0, intervalLength)` like Skia (negative phases flipped). */
         val adjustedPhase: Float
 
         private val initialDashLength: Float
@@ -216,7 +249,7 @@ internal sealed class WebPathEffect : PathEffect {
                 // Extend if we ended on a segment and we need to join up with the (skipped)
                 // initial segment.
                 if (isClosed && initialDashIndex % 2 == 0 && initialDashLength >= 0f) {
-                    measure!!.getSegment(0f, initialDashLength, dst, !addedSegment)
+                    measure.getSegment(0f, initialDashLength, dst, !addedSegment)
                 }
                 contour = iterator.next()
             } while (contour != null)
@@ -233,7 +266,7 @@ internal sealed class WebPathEffect : PathEffect {
      * Replaces the corners between consecutive line segments with quadratic curves of the given
      * [radius] (Skia's `SkCornerPathEffect`). Curves are kept as they are.
      */
-    class Corner(val radius: Float) : WebPathEffect() {
+    class Corner(private val radius: Float) : WebPathEffect() {
         override val isNoOp: Boolean
             get() = !(radius.isFinite() && radius > 0f)
 
@@ -241,7 +274,6 @@ internal sealed class WebPathEffect : PathEffect {
             if (isNoOp || src.isEmpty) return null
             val dst = WebPath()
             val iter = SkiaPathIter(src)
-            val pts = iter.pts
             val step = FloatArray(2)
             var prevVerb = SkiaPathIter.Done
             var moveToX = 0f
@@ -260,61 +292,72 @@ internal sealed class WebPathEffect : PathEffect {
                             dst.lineTo(lastCornerX, lastCornerY)
                         }
                         if (iter.isClosedContour()) {
-                            moveToX = pts[0]
-                            moveToY = pts[1]
+                            moveToX = iter.x(0)
+                            moveToY = iter.y(0)
                             prevIsValid = false
                         } else {
-                            dst.moveTo(pts[0], pts[1])
+                            dst.moveTo(iter.x(0), iter.y(0))
                             prevIsValid = true
                         }
                     }
                     PathVerb.Line.toInt() -> {
-                        val drawSegment = computeStep(pts[0], pts[1], pts[2], pts[3], radius, step)
+                        val x0 = iter.x(0)
+                        val y0 = iter.y(0)
+                        val x1 = iter.x(1)
+                        val y1 = iter.y(1)
+                        val drawSegment = computeStep(x0, y0, x1, y1, radius, step)
                         // Previous corner.
                         if (!prevIsValid) {
                             dst.moveTo(moveToX + step[0], moveToY + step[1])
                             prevIsValid = true
                         } else {
-                            dst.quadraticTo(pts[0], pts[1], pts[0] + step[0], pts[1] + step[1])
+                            dst.quadraticTo(x0, y0, x0 + step[0], y0 + step[1])
                         }
                         if (drawSegment) {
-                            dst.lineTo(pts[2] - step[0], pts[3] - step[1])
+                            dst.lineTo(x1 - step[0], y1 - step[1])
                         }
-                        lastCornerX = pts[2]
-                        lastCornerY = pts[3]
+                        lastCornerX = x1
+                        lastCornerY = y1
                         prevIsValid = true
                     }
                     PathVerb.Quad.toInt() -> {
                         // Just replicate the curve for now.
                         if (!prevIsValid) {
-                            dst.moveTo(pts[0], pts[1])
+                            dst.moveTo(iter.x(0), iter.y(0))
                             prevIsValid = true
                         }
-                        dst.quadraticTo(pts[2], pts[3], pts[4], pts[5])
-                        lastCornerX = pts[4]
-                        lastCornerY = pts[5]
+                        dst.quadraticTo(iter.x(1), iter.y(1), iter.x(2), iter.y(2))
+                        lastCornerX = iter.x(2)
+                        lastCornerY = iter.y(2)
                         firstStepX = 0f
                         firstStepY = 0f
                     }
                     PathVerb.Conic.toInt() -> {
                         if (!prevIsValid) {
-                            dst.moveTo(pts[0], pts[1])
+                            dst.moveTo(iter.x(0), iter.y(0))
                             prevIsValid = true
                         }
-                        dst.conicTo(pts[2], pts[3], pts[4], pts[5], iter.conicWeight)
-                        lastCornerX = pts[4]
-                        lastCornerY = pts[5]
+                        dst.conicTo(iter.x(1), iter.y(1), iter.x(2), iter.y(2), iter.conicWeight)
+                        lastCornerX = iter.x(2)
+                        lastCornerY = iter.y(2)
                         firstStepX = 0f
                         firstStepY = 0f
                     }
                     PathVerb.Cubic.toInt() -> {
                         if (!prevIsValid) {
-                            dst.moveTo(pts[0], pts[1])
+                            dst.moveTo(iter.x(0), iter.y(0))
                             prevIsValid = true
                         }
-                        dst.cubicTo(pts[2], pts[3], pts[4], pts[5], pts[6], pts[7])
-                        lastCornerX = pts[6]
-                        lastCornerY = pts[7]
+                        dst.cubicTo(
+                            iter.x(1),
+                            iter.y(1),
+                            iter.x(2),
+                            iter.y(2),
+                            iter.x(3),
+                            iter.y(3),
+                        )
+                        lastCornerX = iter.x(3)
+                        lastCornerY = iter.y(3)
                         firstStepX = 0f
                         firstStepY = 0f
                     }
@@ -373,7 +416,7 @@ internal sealed class WebPathEffect : PathEffect {
      * [WebPathEffect]s or that are no-ops are ignored, like null effects in
      * `SkPathEffect::MakeCompose`.
      */
-    class Chain(val outer: PathEffect, val inner: PathEffect) : WebPathEffect() {
+    class Chain(outer: PathEffect, inner: PathEffect) : WebPathEffect() {
         private val outerEffect: WebPathEffect? =
             (outer as? WebPathEffect)?.takeUnless { it.isNoOp }
         private val innerEffect: WebPathEffect? =
@@ -406,12 +449,12 @@ internal sealed class WebPathEffect : PathEffect {
      */
     class Stamped(
         shape: Path,
-        val advance: Float,
-        val phase: Float,
-        val style: StampedPathEffectStyle,
+        private val advance: Float,
+        phase: Float,
+        private val style: StampedPathEffectStyle,
     ) : WebPathEffect() {
         /** The stamped shape, captured at creation like Skia does. */
-        val shape: PathData = shape.asWebPath().snapshot()
+        private val shape: PathData = shape.asWebPath().snapshot()
 
         private val initialOffset: Float
 
@@ -493,38 +536,37 @@ internal sealed class WebPathEffect : PathEffect {
             tan: FloatArray,
         ) {
             val iter = SkiaPathIter(shape)
-            val src = iter.pts
             val out = FloatArray(6)
-            val tmp = FloatArray(6)
+            fun morph(k: Int, x: Float, y: Float): Boolean =
+                morphPoint(out, k, x, y, measure, distance, pos, tan)
+            // Morphs the [count] points that follow the start of the segment (the end of the last).
+            fun morphSegment(count: Int): Boolean {
+                for (i in 1..count) if (!morph(i - 1, iter.x(i), iter.y(i))) return false
+                return true
+            }
             while (true) {
                 when (iter.next()) {
                     PathVerb.Move.toInt() -> {
-                        if (morphPoints(out, src, 0, 1, measure, distance, pos, tan)) {
-                            dst.moveTo(out[0], out[1])
-                        }
+                        if (morph(0, iter.x(0), iter.y(0))) dst.moveTo(out[0], out[1])
                     }
                     PathVerb.Line.toInt() -> {
                         // Turn the line into a quad with its control point in the middle.
-                        tmp[0] = (src[0] + src[2]) * 0.5f
-                        tmp[1] = (src[1] + src[3]) * 0.5f
-                        tmp[2] = src[2]
-                        tmp[3] = src[3]
-                        if (morphPoints(out, tmp, 0, 2, measure, distance, pos, tan)) {
+                        val midX = (iter.x(0) + iter.x(1)) * 0.5f
+                        val midY = (iter.y(0) + iter.y(1)) * 0.5f
+                        if (morph(0, midX, midY) && morph(1, iter.x(1), iter.y(1))) {
                             dst.quadraticTo(out[0], out[1], out[2], out[3])
                         }
                     }
                     PathVerb.Quad.toInt() -> {
-                        if (morphPoints(out, src, 2, 2, measure, distance, pos, tan)) {
-                            dst.quadraticTo(out[0], out[1], out[2], out[3])
-                        }
+                        if (morphSegment(2)) dst.quadraticTo(out[0], out[1], out[2], out[3])
                     }
                     PathVerb.Conic.toInt() -> {
-                        if (morphPoints(out, src, 2, 2, measure, distance, pos, tan)) {
+                        if (morphSegment(2)) {
                             dst.conicTo(out[0], out[1], out[2], out[3], iter.conicWeight)
                         }
                     }
                     PathVerb.Cubic.toInt() -> {
-                        if (morphPoints(out, src, 2, 3, measure, distance, pos, tan)) {
+                        if (morphSegment(3)) {
                             dst.cubicTo(out[0], out[1], out[2], out[3], out[4], out[5])
                         }
                     }
@@ -535,27 +577,23 @@ internal sealed class WebPathEffect : PathEffect {
         }
 
         /**
-         * Maps [count] points of [src] starting at float index [srcOffset] onto the contour: x is a
-         * distance along the contour (relative to [distance]) and y an offset along the normal.
+         * Maps the point ([sx], [sy]) onto the contour, as point [k] of [dst]: x is a distance along
+         * the contour (relative to [distance]) and y an offset along the normal.
          */
-        private fun morphPoints(
+        private fun morphPoint(
             dst: FloatArray,
-            src: FloatArray,
-            srcOffset: Int,
-            count: Int,
+            k: Int,
+            sx: Float,
+            sy: Float,
             measure: ContourMeasure,
             distance: Float,
             pos: FloatArray,
             tan: FloatArray,
         ): Boolean {
-            for (i in 0 until count) {
-                val sx = src[srcOffset + 2 * i]
-                val sy = src[srcOffset + 2 * i + 1]
-                if (!measure.getPosTan(distance + sx, pos, tan)) return false
-                // Rotate (0, sy) by the tangent, then translate to the position.
-                dst[2 * i] = pos[0] - tan[1] * sy
-                dst[2 * i + 1] = pos[1] + tan[0] * sy
-            }
+            if (!measure.getPosTan(distance + sx, pos, tan)) return false
+            // Rotate (0, sy) by the tangent, then translate to the position.
+            dst[2 * k] = pos[0] - tan[1] * sy
+            dst[2 * k + 1] = pos[1] + tan[0] * sy
             return true
         }
 

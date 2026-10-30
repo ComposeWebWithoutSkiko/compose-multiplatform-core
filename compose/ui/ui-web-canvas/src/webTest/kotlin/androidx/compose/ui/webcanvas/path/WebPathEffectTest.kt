@@ -25,6 +25,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotSame
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
@@ -55,9 +56,7 @@ class WebPathEffectTest {
         val dash = createDashPathEffect(intervals, 3f) as WebPathEffect.Dash
         intervals[0] = 100f // The effect keeps its own copy.
         assertContentEquals(floatArrayOf(10f, 5f), dash.intervals)
-        assertEquals(3f, dash.phase)
         assertTrue(dash.isValid)
-        assertEquals(15f, dash.intervalLength)
         assertEquals(3f, dash.adjustedPhase)
 
         assertEquals(
@@ -73,7 +72,7 @@ class WebPathEffectTest {
     @Test
     fun dashOnALine() {
         val dash = WebPathEffect.Dash(floatArrayOf(10f, 5f), 0f)
-        val result = dash.apply(horizontalLine, isStroke = true, strokeWidth = 1f)
+        val result = dash.apply(horizontalLine, isStroke = true)
         // Dashes at [0, 10], [15, 25], ..., [90, 100].
         assertEquals(List(7) { listOf(M, L) }.flatten(), verbsOf(result))
         val points = pointsOf(result)
@@ -90,7 +89,7 @@ class WebPathEffectTest {
     fun dashWithPhase() {
         val dash = WebPathEffect.Dash(floatArrayOf(10f, 10f), 25f)
         // A phase of 25 wraps to 5: the line starts 5 units into the first dash.
-        val result = dash.apply(horizontalLine, isStroke = true, strokeWidth = 1f)
+        val result = dash.apply(horizontalLine, isStroke = true)
         val points = pointsOf(result)
         assertOffsetClose(Offset(0f, 0f), points[0])
         assertOffsetClose(Offset(5f, 0f), points[1])
@@ -101,14 +100,14 @@ class WebPathEffectTest {
     @Test
     fun dashIsIgnoredForFills() {
         val dash = WebPathEffect.Dash(floatArrayOf(10f, 5f), 0f)
-        assertSame(horizontalLine, dash.apply(horizontalLine, isStroke = false, strokeWidth = 0f))
+        assertSame(horizontalLine, dash.apply(horizontalLine, isStroke = false))
         assertFalse(dash.resultIsStroke(false))
     }
 
     @Test
     fun dashAppliesToHairlines() {
         val dash = WebPathEffect.Dash(floatArrayOf(10f, 5f), 0f)
-        assertEquals(14, dash.apply(horizontalLine, isStroke = true, strokeWidth = 0f).verbCount)
+        assertEquals(14, dash.apply(horizontalLine, isStroke = true).verbCount)
     }
 
     @Test
@@ -125,17 +124,25 @@ class WebPathEffectTest {
             assertTrue(dash.isNoOp)
             assertSame(
                 horizontalLine,
-                dash.apply(horizontalLine, isStroke = true, strokeWidth = 1f),
+                dash.apply(horizontalLine, isStroke = true),
             )
         }
         assertFalse(WebPathEffect.Dash(floatArrayOf(1f, 1f), Float.NaN).isValid)
     }
 
     @Test
+    fun aScaledDashKeepsItsProportionsAndStaysInvalidIfItWas() {
+        val scaled = WebPathEffect.Dash(floatArrayOf(10f, 5f), 3f).scaled(0.5f)
+        assertEquals(listOf(5f, 2.5f), scaled.intervals.toList())
+        assertEquals(1.5f, scaled.adjustedPhase)
+        assertFalse(WebPathEffect.Dash(floatArrayOf(1f, 1f), Float.NaN).scaled(0.5f).isValid)
+    }
+
+    @Test
     fun dashOnAClosedContourJoinsTheLastAndFirstDashes() {
         val rect = rectPath(0f, 0f, 10f, 10f, Path.Direction.Clockwise).snapshot()
         val dash = WebPathEffect.Dash(floatArrayOf(10f, 10f), 5f)
-        val result = dash.apply(rect, isStroke = true, strokeWidth = 1f)
+        val result = dash.apply(rect, isStroke = true)
         // First dash [15, 25], then [35, 40] continued by [0, 5] in the same subpath.
         assertEquals(listOf(M, L, L, M, L, L), verbsOf(result))
         assertPoints(result, 10f, 5f, 10f, 10f, 5f, 10f, 0f, 5f, 0f, 0f, 5f, 0f)
@@ -145,7 +152,7 @@ class WebPathEffectTest {
     fun dashOnCurves() {
         val circle = circlePath(50f, 50f, 50f).snapshot()
         val dash = WebPathEffect.Dash(floatArrayOf(20f, 20f), 0f)
-        val result = dash.apply(circle, isStroke = true, strokeWidth = 1f)
+        val result = dash.apply(circle, isStroke = true)
         assertTrue(verbsOf(result).all { it == M || it == K })
         // Every dash lies on the circle.
         for (p in onCurvePoints(result)) {
@@ -162,7 +169,7 @@ class WebPathEffectTest {
     fun cornerOnAClosedRect() {
         val rect = rectPath(0f, 0f, 100f, 100f, Path.Direction.Clockwise).snapshot()
         val corner = WebPathEffect.Corner(10f)
-        val result = corner.apply(rect, isStroke = true, strokeWidth = 1f)
+        val result = corner.apply(rect, isStroke = true)
         assertEquals(listOf(M, L, Q, L, Q, L, Q, L, Q, Z), verbsOf(result))
         assertPoints(
             result,
@@ -194,7 +201,7 @@ class WebPathEffectTest {
             0f,
         )
         // Corner effects apply to fills too.
-        assertEquals(10, corner.apply(rect, isStroke = false, strokeWidth = 0f).verbCount)
+        assertEquals(10, corner.apply(rect, isStroke = false).verbCount)
     }
 
     @Test
@@ -207,7 +214,7 @@ class WebPathEffectTest {
                     lineTo(100f, 100f)
                 }
                 .snapshot()
-        val result = WebPathEffect.Corner(10f).apply(polyline, isStroke = true, strokeWidth = 1f)
+        val result = WebPathEffect.Corner(10f).apply(polyline, isStroke = true)
         assertEquals(listOf(M, Q, L, Q, L, L), verbsOf(result))
         assertPoints(
             result,
@@ -234,7 +241,7 @@ class WebPathEffectTest {
     fun cornerWithShortSegments() {
         // Segments shorter than twice the radius are rounded at their middle.
         val triangle = polygonPath(0f, 0f, 10f, 0f, 10f, 10f).snapshot()
-        val result = WebPathEffect.Corner(20f).apply(triangle, isStroke = true, strokeWidth = 1f)
+        val result = WebPathEffect.Corner(20f).apply(triangle, isStroke = true)
         assertEquals(listOf(M, Q, Q, Q, Z), verbsOf(result))
         assertOffsetClose(Offset(5f, 0f), pointsOf(result)[0])
     }
@@ -242,15 +249,31 @@ class WebPathEffectTest {
     @Test
     fun cornerKeepsCurves() {
         val circle = circlePath(10f, 10f, 10f).snapshot()
-        val result = WebPathEffect.Corner(5f).apply(circle, isStroke = true, strokeWidth = 1f)
+        val result = WebPathEffect.Corner(5f).apply(circle, isStroke = true)
         assertEquals(listOf(M, K, K, K, K, Z), verbsOf(result))
+    }
+
+    @Test
+    fun cornerKeepsQuadraticsAndCubics() {
+        val curves =
+            WebPath()
+                .apply {
+                    moveTo(0f, 0f)
+                    quadraticTo(10f, 0f, 10f, 10f)
+                    cubicTo(10f, 20f, 20f, 20f, 30f, 20f)
+                }
+                .snapshot()
+        val result = WebPathEffect.Corner(5f).apply(curves, isStroke = true)
+        // An open contour ends with a line to its last corner, as in Skia.
+        assertEquals(listOf(M, Q, C, L), verbsOf(result))
+        assertPoints(result, 0f, 0f, 10f, 0f, 10f, 10f, 10f, 20f, 20f, 20f, 30f, 20f, 30f, 20f)
     }
 
     @Test
     fun invalidCornerIsNoOp() {
         val corner = WebPathEffect.Corner(0f)
         assertTrue(corner.isNoOp)
-        assertSame(horizontalLine, corner.apply(horizontalLine, isStroke = true, strokeWidth = 1f))
+        assertSame(horizontalLine, corner.apply(horizontalLine, isStroke = true))
         assertTrue(WebPathEffect.Corner(Float.NaN).isNoOp)
     }
 
@@ -258,7 +281,7 @@ class WebPathEffectTest {
     fun stampedTranslate() {
         val shape = rectPath(0f, 0f, 2f, 2f)
         val stamped = WebPathEffect.Stamped(shape, 25f, 0f, StampedPathEffectStyle.Translate)
-        val result = stamped.apply(horizontalLine, isStroke = true, strokeWidth = 1f)
+        val result = stamped.apply(horizontalLine, isStroke = true)
         // Stamps at 0, 25, 50 and 75.
         assertEquals(4, contourCount(result))
         val moves = pointsOf(result).filterIndexed { index, _ -> index % 4 == 0 }
@@ -274,7 +297,7 @@ class WebPathEffectTest {
     fun stampedPhase() {
         val shape = rectPath(0f, 0f, 2f, 2f)
         val stamped = WebPathEffect.Stamped(shape, 25f, 10f, StampedPathEffectStyle.Translate)
-        val result = stamped.apply(horizontalLine, isStroke = true, strokeWidth = 1f)
+        val result = stamped.apply(horizontalLine, isStroke = true)
         val moves = pointsOf(result).filterIndexed { index, _ -> index % 4 == 0 }
         assertEquals(4, moves.size)
         for ((i, x) in listOf(15f, 40f, 65f, 90f).withIndex()) {
@@ -293,7 +316,7 @@ class WebPathEffectTest {
                 .snapshot()
         val shape = rectPath(0f, 0f, 2f, 2f)
         val stamped = WebPathEffect.Stamped(shape, 50f, 0f, StampedPathEffectStyle.Rotate)
-        val result = stamped.apply(vertical, isStroke = true, strokeWidth = 1f)
+        val result = stamped.apply(vertical, isStroke = true)
         assertEquals(2, contourCount(result))
         val points = pointsOf(result)
         // The shape is rotated by 90 degrees: (x, y) -> (-y, x).
@@ -313,7 +336,7 @@ class WebPathEffectTest {
                 lineTo(10f, 5f)
             }
         val stamped = WebPathEffect.Stamped(shape, 50f, 0f, StampedPathEffectStyle.Morph)
-        val result = stamped.apply(horizontalLine, isStroke = true, strokeWidth = 1f)
+        val result = stamped.apply(horizontalLine, isStroke = true)
         // Lines become quads.
         assertEquals(listOf(M, Q, Q, M, Q, Q), verbsOf(result))
         // On a straight path, morphing is a translation.
@@ -344,11 +367,62 @@ class WebPathEffectTest {
         // On a circle, the stamps follow the curvature: y offsets are applied along the normal,
         // which points outwards for this circle.
         val circle = circlePath(0f, 0f, 100f).snapshot()
-        val bent = stamped.apply(circle, isStroke = true, strokeWidth = 1f)
+        val bent = stamped.apply(circle, isStroke = true)
         for (p in pointsOf(bent)) {
             val r = kotlin.math.sqrt(p.x * p.x + p.y * p.y)
             assertTrue(r in 99.9f..105.1f, "$p")
         }
+    }
+
+    @Test
+    fun stampedMorphKeepsCurves() {
+        val shape =
+            WebPath().apply {
+                moveTo(0f, 0f)
+                quadraticTo(5f, 2f, 10f, 0f)
+                conicTo(12f, 2f, 14f, 0f, 0.5f)
+                cubicTo(15f, 2f, 17f, 4f, 20f, 0f)
+            }
+        val stamped = WebPathEffect.Stamped(shape, 50f, 0f, StampedPathEffectStyle.Morph)
+        val result = stamped.apply(horizontalLine, isStroke = true)
+        assertEquals(listOf(M, Q, K, C, M, Q, K, C), verbsOf(result))
+        // On a straight path, morphing is a translation.
+        assertPoints(
+            result,
+            0f,
+            0f,
+            5f,
+            2f,
+            10f,
+            0f,
+            12f,
+            2f,
+            14f,
+            0f,
+            15f,
+            2f,
+            17f,
+            4f,
+            20f,
+            0f,
+            50f,
+            0f,
+            55f,
+            2f,
+            60f,
+            0f,
+            62f,
+            2f,
+            64f,
+            0f,
+            65f,
+            2f,
+            67f,
+            4f,
+            70f,
+            0f,
+        )
+        assertEquals(listOf(0.5f, 0.5f), weightsOf(result))
     }
 
     /** Move points and segment end points (control points excluded). */
@@ -376,7 +450,7 @@ class WebPathEffectTest {
             assertTrue(stamped.isNoOp)
             assertSame(
                 horizontalLine,
-                stamped.apply(horizontalLine, isStroke = true, strokeWidth = 1f),
+                stamped.apply(horizontalLine, isStroke = true),
             )
             assertTrue(stamped.resultIsStroke(true))
         }
@@ -389,7 +463,7 @@ class WebPathEffectTest {
         shape.addRect(Rect(0f, 0f, 50f, 50f))
         assertEquals(
             4 * 5,
-            stamped.apply(horizontalLine, isStroke = true, strokeWidth = 1f).verbCount,
+            stamped.apply(horizontalLine, isStroke = true).verbCount,
         )
     }
 
@@ -399,8 +473,8 @@ class WebPathEffectTest {
         val corner = WebPathEffect.Corner(10f)
         val dash = WebPathEffect.Dash(floatArrayOf(30f, 10f), 0f)
         val chain = WebPathEffect.Chain(outer = dash, inner = corner)
-        val expected = dash.apply(corner.apply(rect, true, 1f), true, 1f)
-        val result = chain.apply(rect, isStroke = true, strokeWidth = 1f)
+        val expected = dash.apply(corner.apply(rect, true), true)
+        val result = chain.apply(rect, isStroke = true)
         assertEquals(verbsOf(expected), verbsOf(result))
         assertEquals(pointsOf(expected), pointsOf(result))
         assertTrue(chain.resultIsStroke(true))
@@ -415,7 +489,7 @@ class WebPathEffectTest {
                 WebPathEffect.Dash(floatArrayOf(30f, 10f), 0f),
                 WebPathEffect.Corner(10f),
             )
-        assertSame(rect, chain.apply(rect, isStroke = false, strokeWidth = 0f))
+        assertSame(rect, chain.apply(rect, isStroke = false))
     }
 
     @Test
@@ -424,13 +498,29 @@ class WebPathEffectTest {
         val corner = WebPathEffect.Corner(10f)
         val chain = WebPathEffect.Chain(WebPathEffect.Dash(floatArrayOf(1f), 0f), corner)
         assertEquals(
-            pointsOf(corner.apply(rect, false, 0f)),
-            pointsOf(chain.apply(rect, false, 0f)),
+            pointsOf(corner.apply(rect, false)),
+            pointsOf(chain.apply(rect, false)),
         )
         assertTrue(WebPathEffect.Chain(WebPathEffect.Corner(0f), WebPathEffect.Corner(-1f)).isNoOp)
         // Effects of other backends are ignored.
         val foreign = object : PathEffect {}
-        assertSame(rect, WebPathEffect.Chain(foreign, foreign).apply(rect, true, 1f))
+        assertSame(rect, WebPathEffect.Chain(foreign, foreign).apply(rect, true))
+    }
+
+    @Test
+    fun effectsKeepTheirLastResult() {
+        val corner = WebPathEffect.Corner(10f)
+        val rect = rectPath(0f, 0f, 100f, 100f).snapshot()
+        val result = corner.apply(rect, isStroke = true)
+        assertSame(result, corner.apply(rect, isStroke = true))
+        // The same geometry in another path, as shapes are rebuilt for their effects.
+        assertSame(result, corner.apply(rectPath(0f, 0f, 100f, 100f).snapshot(), isStroke = true))
+        // Another geometry or style gets the effect applied anew.
+        val smaller = rectPath(0f, 0f, 50f, 50f).snapshot()
+        val smallerResult = corner.apply(smaller, isStroke = true)
+        assertNotSame(result, smallerResult)
+        assertEquals(Rect(0f, 0f, 50f, 50f), smallerResult.bounds)
+        assertNotSame(smallerResult, corner.apply(smaller, isStroke = false))
     }
 
     @Test
@@ -443,7 +533,7 @@ class WebPathEffectTest {
         // Stamps every 12 units (0, 12, 24) on the dashes [0, 30], [40, 70] and [80, 100].
         val result =
             WebPathEffect.Chain(outer = stamped, inner = dash)
-                .apply(horizontalLine, isStroke = true, strokeWidth = 1f)
+                .apply(horizontalLine, isStroke = true)
         assertEquals(3 + 3 + 2, contourCount(result))
     }
 }

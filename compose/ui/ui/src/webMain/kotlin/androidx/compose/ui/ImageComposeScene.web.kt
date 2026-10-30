@@ -24,10 +24,8 @@ import androidx.compose.runtime.mutableStateSetOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Canvas
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.pointer.PointerButton
 import androidx.compose.ui.input.pointer.PointerButtons
@@ -60,6 +58,10 @@ import kotlin.time.Duration
 import kotlin.time.DurationUnit.NANOSECONDS
 import kotlin.time.ExperimentalTime
 import kotlinx.coroutines.Dispatchers
+
+// The web counterpart of ImageComposeScene.skiko.kt (nonAndroidExcludingWebMain), which renders
+// into a Skia image: keep the two in sync. They differ only in the image rendered into and returned
+// (the public API of the Skia targets returns a Skia `Image`), and in the clock of input events.
 
 /**
  * Render Compose [content] into an [ImageBitmap]
@@ -153,21 +155,12 @@ class ImageComposeScene @ExperimentalComposeUiApi constructor(
         content
     )
 
-    // Lazy: the backend creating images is registered in `init` below.
-    private val image by lazy(LazyThreadSafetyMode.NONE) { ImageBitmap(width, height) }
-
     private val imageSize = IntSize(width, height)
 
     private val _windowInfo = WindowInfoImpl().apply {
         isWindowFocused = true
         containerSize = imageSize
         containerDpSize = imageSize.toSize().toDpSize(density)
-    }
-
-    private val canvas by lazy(LazyThreadSafetyMode.NONE) { Canvas(image) }
-
-    private val clearPaint by lazy(LazyThreadSafetyMode.NONE) {
-        Paint().apply { blendMode = BlendMode.Clear }
     }
 
     private val frameRecomposer = FrameRecomposer(coroutineContext)
@@ -298,11 +291,12 @@ class ImageComposeScene @ExperimentalComposeUiApi constructor(
      * animations in the content (or any other code, which uses [withFrameNanos]
      */
     fun render(nanoTime: Long = 0): ImageBitmap {
-        canvas.drawRect(0f, 0f, image.width.toFloat(), image.height.toFloat(), clearPaint)
         frameRecomposer.performFrame(nanoTime)
         scene.measureAndLayout()
-        scene.draw(canvas)
-        return image.snapshot()
+        // Every frame gets an image of its own, so that rendering the next one doesn't change it.
+        val image = ImageBitmap(imageSize.width, imageSize.height)
+        scene.draw(Canvas(image))
+        return image
     }
 
     /**
@@ -416,9 +410,3 @@ private fun Constraints.toIntSize() =
     } else {
         null
     }
-/** Copies this image, so that the next frame rendered into it doesn't change the returned one. */
-private fun ImageBitmap.snapshot(): ImageBitmap {
-    val copy = ImageBitmap(width, height)
-    Canvas(copy).drawImage(this, Offset.Zero, Paint())
-    return copy
-}

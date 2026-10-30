@@ -139,12 +139,17 @@ internal class WebParagraphIntrinsics(
         }
     }
 
+    private val styled = styleResolver.resolve(text, style, annotations, placeholders)
+
+    private val layoutText = layoutTextOf(text, styled.placeholders)
+
     val textDirection: ResolvedTextDirection =
-        resolveTextDirection(text, style.textDirection, style.localeList ?: defaultLocaleList)
+        resolveTextDirection(layoutText, style.textDirection, style.localeList ?: defaultLocaleList)
 
     val analysis = ParagraphAnalysis(
         text = text,
-        styled = styleResolver.resolve(text, style, annotations, placeholders),
+        layoutText = layoutText,
+        styled = styled,
         paragraphLevel = if (textDirection == ResolvedTextDirection.Rtl) 1 else 0,
     )
 
@@ -181,13 +186,14 @@ internal class WebParagraphIntrinsics(
         styleResolver.resolve(text, style, annotations, placeholders, drawStyle)
 }
 
+/** The direction of a paragraph of [layoutText] (see [layoutTextOf]) with the [textDirection]. */
 internal fun resolveTextDirection(
-    text: String,
+    layoutText: CharSequence,
     textDirection: TextDirection?,
     localeList: LocaleList?,
 ): ResolvedTextDirection {
     fun contentBased(fallback: () -> ResolvedTextDirection) =
-        when (TextUnicode.firstStrongDirection(text)) {
+        when (TextUnicode.firstStrongDirection(layoutText)) {
             TextUnicode.DirectionLtr -> ResolvedTextDirection.Ltr
             TextUnicode.DirectionRtl -> ResolvedTextDirection.Rtl
             else -> fallback()

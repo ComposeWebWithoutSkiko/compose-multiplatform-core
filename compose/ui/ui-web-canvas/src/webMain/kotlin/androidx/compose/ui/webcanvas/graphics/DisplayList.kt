@@ -31,7 +31,7 @@ import androidx.compose.ui.graphics.Vertices
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.webcanvas.path.PathData
-import androidx.compose.ui.webcanvas.path.WebPath
+import androidx.compose.ui.webcanvas.path.asWebPath
 import kotlin.math.max
 
 /**
@@ -46,27 +46,73 @@ internal class DisplayList internal constructor(
     private val opCount: Int,
     private val floats: FloatArray,
     private val objects: Array<Any?>,
-) {
+    /**
+     * Whether drawing the list with an alpha gives the same pixels as drawing it into an offscreen
+     * layer composited with that alpha: it draws at most one shape or image (no text, points,
+     * triangles or layers, which can cover themselves), with the source-over blend mode.
+     */
+    val canModulateAlpha: Boolean,
+) : JobContent {
     val isEmpty: Boolean get() = opCount == 0
 
     fun replay(canvas: WebCanvas) {
-        var o = 0
-        var f = 0
-        var j = 0
+        replay(canvas, 0, 0, 0, opCount)
+    }
+
+    /**
+     * Replays the content of a layer: the whole list for [WholeList], or else the content of the
+     * layer saved by the SaveLayer op at [contentOp], up to its matching Restore, without the
+     * layer itself.
+     */
+    override fun replayContent(canvas: WebCanvas, contentOp: Int) {
+        if (contentOp == WholeList) {
+            replay(canvas)
+            return
+        }
+        val layout = contentOp + 1
+        replay(
+            canvas,
+            startOp = layout + SaveLayerLayout.Size,
+            startFloat = ops[layout + SaveLayerLayout.ContentFloat],
+            startObject = ops[layout + SaveLayerLayout.ContentObject],
+            endOp = ops[layout + SaveLayerLayout.RestoreOp],
+        )
+    }
+
+    private fun replay(
+        canvas: WebCanvas,
+        startOp: Int,
+        startFloat: Int,
+        startObject: Int,
+        endOp: Int,
+    ) {
+        var o = startOp
+        var f = startFloat
+        var j = startObject
         val ops = ops
         val floats = floats
         val objects = objects
-        while (o < opCount) {
+        while (o < endOp) {
             when (ops[o++]) {
                 Op.Save -> canvas.save()
                 Op.Restore -> canvas.restore()
                 Op.SaveLayer -> {
-                    canvas.saveLayer(
+                    val layout = o
+                    o += SaveLayerLayout.Size
+                    val drawsContent = canvas.saveLayer(
                         floats[f], floats[f + 1], floats[f + 2], floats[f + 3],
-                        objects[j] as WebPaint?,
+                        objects[j] as WebPaint,
+                        content = this,
+                        contentOp = layout - 1,
                     )
                     f += 4
                     j++
+                    if (!drawsContent) {
+                        // Continue at the matching Restore.
+                        o = ops[layout + SaveLayerLayout.RestoreOp]
+                        f = ops[layout + SaveLayerLayout.RestoreFloat]
+                        j = ops[layout + SaveLayerLayout.RestoreObject]
+                    }
                 }
                 Op.Translate -> {
                     canvas.translate(floats[f], floats[f + 1])
@@ -85,8 +131,11 @@ internal class DisplayList internal constructor(
                     f += 2
                 }
                 Op.Concat -> {
-                    canvas.concat(objects[j] as Affine)
-                    j++
+                    canvas.concat(
+                        floats[f], floats[f + 1], floats[f + 2], floats[f + 3],
+                        floats[f + 4], floats[f + 5],
+                    )
+                    f += 6
                 }
                 Op.ClipRect -> {
                     val clipOp = if (ops[o++] == 0) ClipOp.Intersect else ClipOp.Difference
@@ -166,12 +215,14 @@ internal class DisplayList internal constructor(
                     j += 2
                 }
                 Op.DrawPoints -> {
-                    val mode = when (ops[o++]) {
-                        0 -> PointMode.Points
-                        1 -> PointMode.Lines
-                        else -> PointMode.Polygon
-                    }
-                    canvas.drawRawPoints(mode, objects[j] as FloatArray, objects[j + 1] as WebPaint)
+                    @Suppress("UNCHECKED_CAST")
+                    val points = objects[j] as List<Offset>
+                    canvas.drawPoints(pointModeOf(ops[o++]), points, objects[j + 1] as WebPaint)
+                    j += 2
+                }
+                Op.DrawRawPoints -> {
+                    val points = objects[j] as FloatArray
+                    canvas.drawRawPoints(pointModeOf(ops[o++]), points, objects[j + 1] as WebPaint)
                     j += 2
                 }
                 Op.DrawVertices -> {
@@ -195,9 +246,31 @@ internal class DisplayList internal constructor(
         }
     }
 
+    internal companion object {
+        /** The content of a layer that is a whole display list (see [replayContent]). */
+        const val WholeList = -1
+    }
+
+    /**
+     * The positions that follow a SaveLayer op in [ops]: the indices in [ops], [floats] and
+     * [objects] of its matching Restore (a list's saves and restores are balanced), so that its
+     * content can be skipped, and the indices in [floats] and [objects] where its content starts,
+     * so that the content can be replayed alone (see [replayContent]).
+     */
+    internal object SaveLayerLayout {
+        const val RestoreOp = 0
+        const val RestoreFloat = 1
+        const val RestoreObject = 2
+        const val ContentFloat = 3
+        const val ContentObject = 4
+        const val Size = 5
+    }
+
     internal object Op {
         const val Save = 0
         const val Restore = 1
+
+        /** Followed by its [SaveLayerLayout]. */
         const val SaveLayer = 2
         const val Translate = 3
         const val Scale = 4
@@ -218,14 +291,21 @@ internal class DisplayList internal constructor(
         const val DrawVertices = 19
         const val DrawLayer = 20
         const val DrawText = 21
+        const val DrawRawPoints = 22
     }
 }
 
 /**
- * The [Canvas] that records the drawing of a layer into a [DisplayList]. Paints are snapshotted
- * and paths copied (cheaply, they're copy-on-write), since Compose mutates and reuses them.
+ * The [Canvas] that records the drawing of a layer into a [DisplayList].
+ *
+ * Paints are shared snapshots, the same for equal paints (see [WebPaint.snapshot]), and paths are
+ * copy-on-write snapshots, since Compose mutates and reuses both. Other arguments are recorded by
+ * reference: an image, a layer or an array of points is drawn as it is when the list is replayed.
+ *
+ * @param reusesBuffers whether a recording reuses the buffers of the previous display list, which
+ *   must not be used anymore once the next recording begins (see [recycle])
  */
-internal class RecordingCanvas : Canvas {
+internal class RecordingCanvas(private val reusesBuffers: Boolean = false) : Canvas {
     private var ops = IntArray(64)
     private var opCount = 0
     private var floats = FloatArray(128)
@@ -233,24 +313,58 @@ internal class RecordingCanvas : Canvas {
     private var objects = arrayOfNulls<Any>(32)
     private var objectCount = 0
 
+    /** The shapes and images drawn so far, see [DisplayList.canModulateAlpha]. */
+    private var shapeCount = 0
+    private var canModulateAlpha = true
+
+    /**
+     * The saves not restored yet: for a SaveLayer, the index in [ops] of its
+     * [DisplayList.SaveLayerLayout]; [PlainSave] for a Save.
+     */
+    private var openSaves = IntArray(8)
+    private var openSaveCount = 0
+
     private var recording = false
 
     fun beginRecording() {
         check(!recording) { "Already recording" }
         recording = true
-        // A previous display list may still share the buffers: start new ones.
-        ops = IntArray(max(16, opCount))
-        floats = FloatArray(max(16, floatCount))
-        objects = arrayOfNulls(max(8, objectCount))
+        if (!reusesBuffers) {
+            // A previous display list may still share the buffers: start new ones.
+            ops = IntArray(max(16, opCount))
+            floats = FloatArray(max(16, floatCount))
+            objects = arrayOfNulls(max(8, objectCount))
+        }
         opCount = 0
         floatCount = 0
         objectCount = 0
+        shapeCount = 0
+        canModulateAlpha = true
+        openSaveCount = 0
     }
 
     fun endRecording(): DisplayList {
         check(recording) { "Not recording" }
         recording = false
-        return DisplayList(ops, opCount, floats, objects)
+        // Balanced like a Skia picture: what was saved is restored at the end.
+        while (openSaveCount > 0) restore()
+        return DisplayList(ops, opCount, floats, objects, canModulateAlpha)
+    }
+
+    /**
+     * Ends the recording, if one is in progress, and drops the references of the last display list
+     * to what it draws, which it then can't draw anymore. Only when [reusesBuffers].
+     */
+    fun recycle() {
+        check(reusesBuffers) { "The display list may still be used" }
+        recording = false
+        objects.fill(null, 0, objectCount)
+        objectCount = 0
+    }
+
+    private fun pushSave(layout: Int) {
+        if (openSaveCount == openSaves.size) openSaves = openSaves.copyOf(openSaveCount * 2)
+        openSaves[openSaveCount++] = layout
     }
 
     private fun op(code: Int) {
@@ -268,23 +382,53 @@ internal class RecordingCanvas : Canvas {
         objects[objectCount++] = value
     }
 
-    private fun Paint.snapshot(): WebPaint = asWebPaint().snapshot()
-
-    override fun save() = op(DisplayList.Op.Save)
-
-    override fun restore() = op(DisplayList.Op.Restore)
-
-    override fun saveLayer(bounds: Rect, paint: Paint) {
-        saveLayer(bounds.left, bounds.top, bounds.right, bounds.bottom, paint.snapshot())
+    private fun recordPaint(paint: Paint) {
+        obj(paint.asWebPaint().snapshot())
     }
 
-    internal fun saveLayer(left: Float, top: Float, right: Float, bottom: Float, paint: WebPaint?) {
+    /** Records the paint of a draw of a single shape or image, which covers nothing of itself. */
+    private fun recordShapePaint(paint: Paint) {
+        val snapshot = paint.asWebPaint().snapshot()
+        if (++shapeCount > 1 || snapshot.blendMode != BlendMode.SrcOver) canModulateAlpha = false
+        obj(snapshot)
+    }
+
+    /** Notes a draw that can cover itself: several glyphs, points or triangles, or a layer. */
+    private fun noteOverlappingDraw() {
+        canModulateAlpha = false
+    }
+
+    override fun save() {
+        op(DisplayList.Op.Save)
+        pushSave(PlainSave)
+    }
+
+    override fun restore() {
+        // A restore without a save does nothing, like on the canvas it's replayed into.
+        if (openSaveCount == 0) return
+        val layout = openSaves[--openSaveCount]
+        if (layout != PlainSave) {
+            ops[layout + DisplayList.SaveLayerLayout.RestoreOp] = opCount
+            ops[layout + DisplayList.SaveLayerLayout.RestoreFloat] = floatCount
+            ops[layout + DisplayList.SaveLayerLayout.RestoreObject] = objectCount
+        }
+        op(DisplayList.Op.Restore)
+    }
+
+    override fun saveLayer(bounds: Rect, paint: Paint) {
+        noteOverlappingDraw()
         op(DisplayList.Op.SaveLayer)
-        f(left)
-        f(top)
-        f(right)
-        f(bottom)
-        obj(paint?.snapshot())
+        // The positions of the content are set below, those of the restore when it's recorded.
+        val layout = opCount
+        repeat(DisplayList.SaveLayerLayout.Size) { op(0) }
+        pushSave(layout)
+        f(bounds.left)
+        f(bounds.top)
+        f(bounds.right)
+        f(bounds.bottom)
+        recordPaint(paint)
+        ops[layout + DisplayList.SaveLayerLayout.ContentFloat] = floatCount
+        ops[layout + DisplayList.SaveLayerLayout.ContentObject] = objectCount
     }
 
     override fun translate(dx: Float, dy: Float) {
@@ -313,14 +457,18 @@ internal class RecordingCanvas : Canvas {
         f(sy)
     }
 
-    override fun concat(matrix: Matrix) {
-        concat(matrix.toAffine())
-    }
+    private val concatenated = Affine()
 
-    internal fun concat(transform: Affine) {
+    override fun concat(matrix: Matrix) {
+        val transform = matrix.toAffine(concatenated)
         if (transform.isIdentity) return
         op(DisplayList.Op.Concat)
-        obj(transform.copy())
+        f(transform.a)
+        f(transform.b)
+        f(transform.c)
+        f(transform.d)
+        f(transform.e)
+        f(transform.f)
     }
 
     override fun clipRect(left: Float, top: Float, right: Float, bottom: Float, clipOp: ClipOp) {
@@ -348,7 +496,7 @@ internal class RecordingCanvas : Canvas {
         f(p1.y)
         f(p2.x)
         f(p2.y)
-        obj(paint.snapshot())
+        recordShapePaint(paint)
     }
 
     override fun drawRect(left: Float, top: Float, right: Float, bottom: Float, paint: Paint) {
@@ -357,7 +505,7 @@ internal class RecordingCanvas : Canvas {
         f(top)
         f(right)
         f(bottom)
-        obj(paint.snapshot())
+        recordShapePaint(paint)
     }
 
     override fun drawRoundRect(
@@ -376,7 +524,7 @@ internal class RecordingCanvas : Canvas {
         f(bottom)
         f(radiusX)
         f(radiusY)
-        obj(paint.snapshot())
+        recordShapePaint(paint)
     }
 
     override fun drawOval(left: Float, top: Float, right: Float, bottom: Float, paint: Paint) {
@@ -385,7 +533,7 @@ internal class RecordingCanvas : Canvas {
         f(top)
         f(right)
         f(bottom)
-        obj(paint.snapshot())
+        recordShapePaint(paint)
     }
 
     override fun drawCircle(center: Offset, radius: Float, paint: Paint) {
@@ -393,7 +541,7 @@ internal class RecordingCanvas : Canvas {
         f(center.x)
         f(center.y)
         f(radius)
-        obj(paint.snapshot())
+        recordShapePaint(paint)
     }
 
     override fun drawArc(
@@ -414,13 +562,13 @@ internal class RecordingCanvas : Canvas {
         f(bottom)
         f(startAngle)
         f(sweepAngle)
-        obj(paint.snapshot())
+        recordShapePaint(paint)
     }
 
     override fun drawPath(path: Path, paint: Paint) {
         op(DisplayList.Op.DrawPath)
         obj(path.toPathData())
-        obj(paint.snapshot())
+        recordShapePaint(paint)
     }
 
     override fun drawImage(image: ImageBitmap, topLeftOffset: Offset, paint: Paint) {
@@ -482,41 +630,32 @@ internal class RecordingCanvas : Canvas {
         f(dstTop)
         f(dstRight)
         f(dstBottom)
-        obj(paint.snapshot())
+        recordShapePaint(paint)
     }
 
     override fun drawPoints(pointMode: PointMode, points: List<Offset>, paint: Paint) {
-        val raw = FloatArray(points.size * 2)
-        for (i in points.indices) {
-            raw[i * 2] = points[i].x
-            raw[i * 2 + 1] = points[i].y
-        }
-        recordPoints(pointMode, raw, paint)
+        noteOverlappingDraw()
+        op(DisplayList.Op.DrawPoints)
+        op(pointMode.code)
+        obj(points)
+        recordPaint(paint)
     }
 
     override fun drawRawPoints(pointMode: PointMode, points: FloatArray, paint: Paint) {
         require(points.size % 2 == 0) { "points must have an even number of values" }
-        recordPoints(pointMode, points.copyOf(), paint)
-    }
-
-    private fun recordPoints(pointMode: PointMode, points: FloatArray, paint: Paint) {
-        op(DisplayList.Op.DrawPoints)
-        op(
-            when (pointMode) {
-                PointMode.Points -> 0
-                PointMode.Lines -> 1
-                else -> 2
-            }
-        )
+        noteOverlappingDraw()
+        op(DisplayList.Op.DrawRawPoints)
+        op(pointMode.code)
         obj(points)
-        obj(paint.snapshot())
+        recordPaint(paint)
     }
 
     override fun drawVertices(vertices: Vertices, blendMode: BlendMode, paint: Paint) {
+        noteOverlappingDraw()
         op(DisplayList.Op.DrawVertices)
         obj(vertices)
         obj(blendMode)
-        obj(paint.snapshot())
+        recordPaint(paint)
     }
 
     override fun enableZ() = Unit
@@ -524,17 +663,36 @@ internal class RecordingCanvas : Canvas {
     override fun disableZ() = Unit
 
     internal fun drawLayer(layer: WebGraphicsLayer) {
+        noteOverlappingDraw()
         op(DisplayList.Op.DrawLayer)
         obj(layer)
     }
 
     internal fun drawText(run: TextRunDrawing, x: Float, y: Float) {
+        noteOverlappingDraw()
         op(DisplayList.Op.DrawText)
         f(x)
         f(y)
         obj(run)
     }
 
-    private fun Path.toPathData(): PathData =
-        (this as? WebPath)?.snapshot() ?: WebPath().also { it.addPath(this) }.snapshot()
+    private fun Path.toPathData(): PathData = asWebPath().snapshot()
+
+    private companion object {
+        /** In [openSaves], a save that isn't a layer. */
+        const val PlainSave = -1
+    }
+}
+
+private val PointMode.code: Int
+    get() = when (this) {
+        PointMode.Points -> 0
+        PointMode.Lines -> 1
+        else -> 2
+    }
+
+private fun pointModeOf(code: Int): PointMode = when (code) {
+    0 -> PointMode.Points
+    1 -> PointMode.Lines
+    else -> PointMode.Polygon
 }

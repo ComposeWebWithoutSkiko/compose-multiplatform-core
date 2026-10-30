@@ -41,6 +41,7 @@ import androidx.compose.ui.graphics.platform.PlatformBlurFilter
 import androidx.compose.ui.graphics.platform.PlatformColorFilter
 import androidx.compose.ui.graphics.platform.PlatformGraphics
 import androidx.compose.ui.graphics.platform.PlatformRenderEffect
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.webcanvas.path.WebPath
 import androidx.compose.ui.webcanvas.path.WebPathIterator
 import androidx.compose.ui.webcanvas.path.WebPathMeasure
@@ -48,22 +49,11 @@ import androidx.compose.ui.webcanvas.path.createChainPathEffect as chainPathEffe
 import androidx.compose.ui.webcanvas.path.createCornerPathEffect as cornerPathEffect
 import androidx.compose.ui.webcanvas.path.createDashPathEffect as dashPathEffect
 import androidx.compose.ui.webcanvas.path.createStampedPathEffect as stampedPathEffect
+import kotlin.math.hypot
 
 /** The graphics primitives of the web backend, drawing through the Canvas 2D API. */
 internal object WebCanvasGraphics : PlatformGraphics {
-    override fun createCanvas(image: ImageBitmap): Canvas {
-        val canvasImage = image as? CanvasImageBitmap
-        require(canvasImage != null) { "Cannot draw on immutable ImageBitmap" }
-        val target = DrawTarget(
-            canvasImage.context,
-            originX = 0,
-            originY = 0,
-            width = canvasImage.width,
-            height = canvasImage.height,
-        )
-        target.onDraw = canvasImage::markChanged
-        return WebCanvas(target)
-    }
+    override fun createCanvas(image: ImageBitmap): Canvas = WebCanvas(image.asCanvasImage().drawTarget)
 
     override fun createPaint(): Paint = WebPaint()
 
@@ -102,10 +92,10 @@ internal object WebCanvasGraphics : PlatformGraphics {
         colors: List<Color>,
         colorStops: List<Float>?,
         tileMode: TileMode,
-    ): Shader {
-        validateColorStops(colors, colorStops)
-        return Shader(LinearGradientShader(from, to, GradientStops(colors, colorStops), tileMode))
-    }
+    ): Shader =
+        gradientShader(colors, colorStops, tileMode, size = hypot(to.x - from.x, to.y - from.y)) {
+            LinearGradientShader(from, to, it, tileMode)
+        }
 
     override fun createRadialGradientShader(
         center: Offset,
@@ -113,9 +103,31 @@ internal object WebCanvasGraphics : PlatformGraphics {
         colors: List<Color>,
         colorStops: List<Float>?,
         tileMode: TileMode,
+    ): Shader =
+        gradientShader(colors, colorStops, tileMode, size = radius) {
+            RadialGradientShader(center, radius, it, tileMode)
+        }
+
+    /**
+     * The shader of a gradient of [colors] at [colorStops], of length or radius [size], made by
+     * [geometric] from its stops unless, like Skia, it's drawn without its geometry: when it has one
+     * color, or no size (see [degenerateGradientShader]).
+     */
+    private inline fun gradientShader(
+        colors: List<Color>,
+        colorStops: List<Float>?,
+        tileMode: TileMode,
+        size: Float,
+        geometric: (GradientStops) -> WebShader,
     ): Shader {
         validateColorStops(colors, colorStops)
-        return Shader(RadialGradientShader(center, radius, GradientStops(colors, colorStops), tileMode))
+        return Shader(
+            when {
+                colors.size == 1 -> ColorShader(colors[0].toArgb())
+                size <= DegenerateGradientSize -> degenerateGradientShader(colors, colorStops, tileMode)
+                else -> geometric(GradientStops(colors, colorStops))
+            }
+        )
     }
 
     override fun createSweepGradientShader(
@@ -165,7 +177,7 @@ internal object WebCanvasGraphics : PlatformGraphics {
         require(blur == null || blur is WebBlurFilter) {
             "Expected WebBlurFilter, got ${blur?.let { it::class }}"
         }
-        (paint as WebPaint).blurFilter = blur as WebBlurFilter?
+        (paint as WebPaint).blurFilter = blur
     }
 
     override fun createTintColorFilter(color: Color, blendMode: BlendMode): PlatformColorFilter =

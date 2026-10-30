@@ -14,15 +14,12 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalWasmJsInterop::class)
-
 package androidx.compose.ui.webcanvas.graphics
 
 import androidx.compose.ui.graphics.ImageBitmapConfig
 import androidx.compose.ui.graphics.colorspace.ColorSpaces
 import androidx.compose.ui.webcanvas.dom.logWarning
-import androidx.compose.ui.webcanvas.dom.toUint8Array
-import kotlin.js.ExperimentalWasmJsInterop
+import androidx.compose.ui.webcanvas.dom.toBlob
 import kotlin.js.JsAny
 import kotlin.js.js
 
@@ -61,10 +58,6 @@ internal class DecodedImageBitmap internal constructor(
 /** Tracks the asynchronous image decoding and tells the windows when new pixels arrive. */
 internal object ImageDecoding {
     private val listeners = mutableListOf<() -> Unit>()
-    private var pendingCount = 0
-
-    /** Whether some images are still being decoded. */
-    val hasPendingDecodes: Boolean get() = pendingCount > 0
 
     /** Registers [listener] to be called whenever an image finishes decoding. */
     fun addListener(listener: () -> Unit) {
@@ -79,17 +72,13 @@ internal object ImageDecoding {
         val header = ImageHeader.parse(bytes)
             ?: throw IllegalArgumentException("Failed to decode image: unsupported format")
         val image = DecodedImageBitmap(header.width, header.height, header.hasAlpha)
-        pendingCount++
         startDecoding(
-            bytes.toUint8Array(),
-            header.mimeType,
+            bytes.toBlob(header.mimeType),
             onSuccess = { decoded ->
-                pendingCount--
                 image.onDecoded(decoded)
                 notifyListeners()
             },
             onError = { message ->
-                pendingCount--
                 image.onFailed()
                 logWarning("Failed to decode image: $message")
             },
@@ -105,13 +94,11 @@ internal object ImageDecoding {
 
 // language=js
 private fun startDecoding(
-    bytes: JsAny,
-    mimeType: String,
+    blob: JsAny,
     onSuccess: (JsAny) -> Unit,
     onError: (String) -> Unit,
 ): Unit = js(
     """{
-        const blob = new Blob([bytes], mimeType ? { type: mimeType } : {});
         createImageBitmap(blob, { premultiplyAlpha: 'default', colorSpaceConversion: 'default' })
             .then((image) => onSuccess(image))
             .catch((e) => onError(String(e)));

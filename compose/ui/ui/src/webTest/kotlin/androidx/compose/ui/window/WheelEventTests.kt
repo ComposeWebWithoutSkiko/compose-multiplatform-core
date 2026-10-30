@@ -100,11 +100,17 @@ class WheelEventTests : OnCanvasTests {
         // 100 * density(2f) = 200px.
         //
         // This trackpad/stepping-wheel disambiguation relies on the legacy wheelDelta* fields,
-        // which Firefox does not expose. There a pixel-mode event can't be recognized as
-        // high-resolution, so it falls back to the animated stepping-wheel path and only the
+        // which Firefox does not expose, and is turned off in Safari, which scales them like the
+        // accelerated delta (see JsScrollable.web.kt). There a pixel-mode event isn't recognized
+        // as high-resolution, so it falls back to the animated stepping-wheel path and only the
         // animation threshold (6.dp * density(2f) = 12px) is applied immediately.
-        val isFirefox = window.navigator.userAgent.contains("firefox", ignoreCase = true)
-        val expected = if (isFirefox) 12 else 200
+        val userAgent = window.navigator.userAgent
+        val isFirefox = userAgent.contains("firefox", ignoreCase = true)
+        val isSafari = userAgent.contains("safari", ignoreCase = true) &&
+            !userAgent.contains("chrome", ignoreCase = true) &&
+            !userAgent.contains("chromium", ignoreCase = true) &&
+            !userAgent.contains("android", ignoreCase = true)
+        val expected = if (isFirefox || isSafari) 12 else 200
         getCanvas().dispatchEvent(WheelEvent("wheel", WheelEventInit(deltaY = 100.0)))
 
         assertEquals(

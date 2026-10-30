@@ -24,9 +24,6 @@
 
 package androidx.compose.ui.webcanvas.text.unicode
 
-/** Version of the Unicode Character Database the tables were generated from. */
-internal const val UNICODE_VERSION: String = "18.0.0"
-
 /** Bidi_Class (BidiClass values). */
 internal const val BIDI_CLASS_DATA: String =
     """

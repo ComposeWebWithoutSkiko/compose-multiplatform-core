@@ -27,7 +27,7 @@ import androidx.compose.ui.webcanvas.graphics.WebGraphicsLayer
  * which share the light source of their elevation shadows.
  */
 @InternalComposeUiApi
-class WebCanvasGraphicsContext : PlatformGraphicsContext() {
+public class WebCanvasGraphicsContext : PlatformGraphicsContext() {
     private val lighting = LightingInfo()
 
     override fun setLightingInfo(

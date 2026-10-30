@@ -22,7 +22,6 @@ import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.graphics.Matrix
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathFillType
-import androidx.compose.ui.graphics.PathOperation
 import kotlin.math.PI
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -201,9 +200,8 @@ class WebPathTest {
                 relativeLineTo(5f, 0f)
                 relativeQuadraticTo(1f, 1f, 2f, 2f)
                 relativeCubicTo(1f, 0f, 2f, 0f, 3f, 0f)
-                relativeConicTo(1f, 1f, 2f, 0f, 0.5f)
             }
-        assertEquals(listOf(M, L, Q, C, K), verbsOf(path))
+        assertEquals(listOf(M, L, Q, C), verbsOf(path))
         assertPoints(
             path.snapshot(),
             10f,
@@ -219,10 +217,6 @@ class WebPathTest {
             19f,
             12f,
             20f,
-            12f,
-            21f,
-            13f,
-            22f,
             12f,
         )
     }
@@ -409,8 +403,15 @@ class WebPathTest {
                 bottomLeft = androidx.compose.ui.geometry.CornerRadius(4f, 8f),
             )
         val path = WebPath().apply { addRoundRect(roundRect) }
-        assertEquals(10, path.snapshot().verbCount)
-        assertEquals(roundRect, path.snapshot().asRoundRect())
+        assertEquals(listOf(M, L, K, L, K, L, K, L, K, Z), verbsOf(path))
+        // The ends of the corners, each corner its own radii (the top-right one square), and the
+        // corners of the rectangle as the control points of the conics.
+        val ends = setOf(
+            Offset(10f, 0f), Offset(100f, 0f), Offset(100f, 30f), Offset(80f, 50f),
+            Offset(4f, 50f), Offset(0f, 42f), Offset(0f, 5f),
+        )
+        val corners = setOf(Offset(0f, 0f), Offset(100f, 0f), Offset(100f, 50f), Offset(0f, 50f))
+        assertEquals(ends + corners, pointsOf(path).toSet())
     }
 
     @Test
@@ -664,34 +665,31 @@ class WebPathTest {
     }
 
     @Test
-    fun pathsCreatedFromTheSameSnapshotAreIndependent() {
-        val original =
+    fun rewritesOfASnapshotPathReplaceOnlyItsPoints() {
+        val path =
             WebPath().apply {
-                moveTo(0f, 0f)
-                lineTo(1f, 1f)
+                moveTo(1f, 2f)
+                conicTo(3f, 4f, 5f, 6f, 0.5f)
             }
-        val data = original.snapshot()
-        original.lineTo(2f, 2f)
-        val a = data.toWebPath()
-        val b = data.toWebPath()
-        a.lineTo(3f, 3f)
-        b.lineTo(4f, 4f)
-        original.lineTo(5f, 5f)
-        assertPoints(data, 0f, 0f, 1f, 1f)
-        assertPoints(original.snapshot(), 0f, 0f, 1f, 1f, 2f, 2f, 5f, 5f)
-        assertPoints(a.snapshot(), 0f, 0f, 1f, 1f, 3f, 3f)
-        assertPoints(b.snapshot(), 0f, 0f, 1f, 1f, 4f, 4f)
+        val snapshot = path.snapshot()
+        path.translate(Offset(10f, 10f))
+        val translated = path.snapshot()
+        assertSame(snapshot.verbs, translated.verbs)
+        assertSame(snapshot.conicWeights, translated.conicWeights)
+        assertNotSame(snapshot.points, translated.points)
+        assertPoints(snapshot, 1f, 2f, 3f, 4f, 5f, 6f)
+        assertPoints(translated, 11f, 12f, 13f, 14f, 15f, 16f)
+    }
 
-        // Same for the results of operations.
-        val union =
-            WebPath().apply {
-                op(rectPath(0f, 0f, 1f, 1f), rectPath(2f, 0f, 3f, 1f), PathOperation.Union)
-            }
-        val copy = union.snapshot().toWebPath()
-        union.lineTo(10f, 10f)
-        copy.lineTo(20f, 20f)
-        assertEquals(Offset(10f, 10f), pointsOf(union).last())
-        assertEquals(Offset(20f, 20f), pointsOf(copy).last())
+    @Test
+    fun readsLeaveThePointsToBeRewrittenInPlace() {
+        val path = rectPath(0f, 0f, 10f, 10f)
+        val points = path.currentData().points
+        path.getBounds()
+        path.isConvex
+        path.translate(Offset(1f, 1f))
+        assertSame(points, path.currentData().points)
+        assertEquals(Rect(1f, 1f, 11f, 11f), path.getBounds())
     }
 
     @Test
@@ -700,7 +698,7 @@ class WebPathTest {
         val b = rectPath(5f, 5f, 15f, 15f)
         val union = a + b
         assertTrue(union is WebPath)
-        assertClose(175.0, areaOf(union as WebPath), 1e-3)
+        assertClose(175.0, areaOf(union), 1e-3)
         assertClose(75.0, areaOf((a - b) as WebPath), 1e-3)
         assertClose(25.0, areaOf((a and b) as WebPath), 1e-3)
         assertClose(150.0, areaOf((a xor b) as WebPath), 1e-3)

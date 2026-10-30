@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalWasmJsInterop::class)
-
 package androidx.compose.ui.webcanvas
 
 import androidx.compose.ui.InternalComposeUiApi
@@ -24,9 +22,8 @@ import androidx.compose.ui.webcanvas.dom.CanvasElement
 import androidx.compose.ui.webcanvas.dom.Context2D
 import androidx.compose.ui.webcanvas.dom.getContext2D
 import androidx.compose.ui.webcanvas.graphics.DrawTarget
+import androidx.compose.ui.webcanvas.graphics.FrameRenderer
 import androidx.compose.ui.webcanvas.graphics.ImageDecoding
-import androidx.compose.ui.webcanvas.graphics.WebCanvas
-import kotlin.js.ExperimentalWasmJsInterop
 import kotlin.js.JsAny
 import kotlin.js.unsafeCast
 
@@ -36,19 +33,19 @@ import kotlin.js.unsafeCast
  * @param canvasElement the `HTMLCanvasElement` (or `OffscreenCanvas`) to render into
  */
 @InternalComposeUiApi
-class HtmlCanvasRenderer(canvasElement: JsAny) {
+public class HtmlCanvasRenderer(canvasElement: JsAny) {
     private val element: CanvasElement = canvasElement.unsafeCast<CanvasElement>()
     private val context: Context2D = getContext2D(canvasElement, willReadFrequently = false)
         ?: error("The browser doesn't support the Canvas 2D API")
     private val target = DrawTarget(context, 0, 0, element.width, element.height)
-    private val canvas = WebCanvas(target)
+    private val frameRenderer = FrameRenderer(target)
     private var isRendering = false
 
     /**
      * Clears the canvas and lets [block] draw a frame into it. The canvas is in the pixel
      * coordinates of the element's drawing buffer.
      */
-    fun render(block: (Canvas) -> Unit) {
+    public fun render(block: (Canvas) -> Unit) {
         check(!isRendering) { "render() can't be called recursively" }
         isRendering = true
         try {
@@ -62,13 +59,10 @@ class HtmlCanvasRenderer(canvasElement: JsAny) {
             target.invalidateState()
             context.setTransform(1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
             context.clearRect(0.0, 0.0, width.toDouble(), height.toDouble())
-            canvas.reset(target)
-            block(canvas)
+            frameRenderer.render(block)
         } finally {
-            // Reset the flag first: if the frame failed, finishing may fail too, and the renderer
-            // must stay usable for the next frames.
+            // The renderer stays usable for the next frames if this one failed.
             isRendering = false
-            canvas.finish()
         }
     }
 }
@@ -80,7 +74,7 @@ class HtmlCanvasRenderer(canvasElement: JsAny) {
  * @return a function that unregisters the listener
  */
 @InternalComposeUiApi
-fun addImageDecodedListener(listener: () -> Unit): () -> Unit {
+public fun addImageDecodedListener(listener: () -> Unit): () -> Unit {
     ImageDecoding.addListener(listener)
     return { ImageDecoding.removeListener(listener) }
 }

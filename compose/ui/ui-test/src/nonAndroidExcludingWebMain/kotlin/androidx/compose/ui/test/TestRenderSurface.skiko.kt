@@ -24,7 +24,6 @@ import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.platform.registerSkikoComposeImplementation
 import org.jetbrains.skia.Color
 import org.jetbrains.skia.Surface
-import org.jetbrains.skiko.currentNanoTime
 
 @OptIn(InternalComposeUiApi::class)
 private class SkiaTestRenderSurface(width: Int, height: Int) : TestRenderSurface {
@@ -52,5 +51,3 @@ internal actual fun createTestRenderSurface(width: Int, height: Int): TestRender
 internal actual fun registerTestComposeImplementation() {
     registerSkikoComposeImplementation()
 }
-
-internal actual fun testNanoTime(): Long = currentNanoTime()

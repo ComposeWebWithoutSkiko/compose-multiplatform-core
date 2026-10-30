@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalWasmJsInterop::class)
-
 package androidx.compose.ui.webcanvas.graphics
 
 import androidx.compose.ui.graphics.ImageBitmap
@@ -29,10 +27,8 @@ import androidx.compose.ui.webcanvas.dom.ImageData
 import androidx.compose.ui.webcanvas.dom.JsStrings
 import androidx.compose.ui.webcanvas.dom.createCanvas
 import androidx.compose.ui.webcanvas.dom.createElementCanvas
-import androidx.compose.ui.webcanvas.dom.createImageDataFromArgb
 import androidx.compose.ui.webcanvas.dom.getContext2D
 import androidx.compose.ui.webcanvas.dom.readImageDataArgb
-import kotlin.js.ExperimentalWasmJsInterop
 import kotlin.js.JsAny
 import kotlin.math.abs
 
@@ -49,7 +45,7 @@ internal abstract class WebImageBitmap(
 ) : ImageBitmap {
 
     /**
-     * Changes whenever the pixels change, so that derived data (e.g. a tinted copy) can be
+     * Increases whenever the pixels change, so that derived data (e.g. a tinted copy) can be
      * recomputed.
      */
     var version: Int = 0
@@ -131,7 +127,15 @@ internal abstract class WebImageBitmap(
     }
 }
 
-/** An image backed by a canvas, created with `ImageBitmap(width, height)`. Compose draws into it. */
+/** This image as one that can be drawn into: one created with `ImageBitmap(width, height)`. */
+internal fun ImageBitmap.asCanvasImage(): CanvasImageBitmap =
+    requireNotNull(this as? CanvasImageBitmap) { "Cannot draw on immutable ImageBitmap" }
+
+/**
+ * An image backed by a canvas, created with `ImageBitmap(width, height)`. Compose draws into it: a
+ * `<canvas>` element, whose context resolves the SVG filters of the draws (see
+ * [createElementCanvas]).
+ */
 internal class CanvasImageBitmap(
     width: Int,
     height: Int,
@@ -139,7 +143,7 @@ internal class CanvasImageBitmap(
     hasAlpha: Boolean = true,
     colorSpace: ColorSpace = ColorSpaces.Srgb,
 ) : WebImageBitmap(width, height, config, hasAlpha, colorSpace) {
-    val canvas: CanvasElement = createCanvas(width, height)
+    val canvas: CanvasElement = createElementCanvas(width, height)
     val context: Context2D =
         getContext2D(canvas, willReadFrequently = false) ?: error("Canvas 2D is not supported")
 
@@ -152,14 +156,14 @@ internal class CanvasImageBitmap(
         version++
     }
 
+    /** The target that every canvas drawing into this image draws through (see [DrawTarget]). */
+    val drawTarget: DrawTarget =
+        DrawTarget(context, originX = 0, originY = 0, width = width, height = height).also {
+            it.onDraw = ::markChanged
+        }
+
     override fun readImageData(x: Int, y: Int, width: Int, height: Int): ImageData =
         context.getImageData(x, y, width, height)
-
-    /** Replaces the pixels in the given rectangle with ARGB values. */
-    fun writePixels(pixels: IntArray, offset: Int, stride: Int, x: Int, y: Int, width: Int, height: Int) {
-        context.putImageData(createImageDataFromArgb(pixels, offset, stride, width, height), x, y)
-        markChanged()
-    }
 }
 
 /**
@@ -199,6 +203,7 @@ internal class FramebufferImageBitmap(
     /** Called when the framebuffer goes away: the image shows nothing from then on. */
     fun release() {
         isReleased = true
+        version++
         snapshot = null
         snapshotContext = null
         SharedWebGL.forget(this)
@@ -275,10 +280,12 @@ internal fun applyColorFilter(
         ctx.fillRect(0.0, 0.0, w, h)
         return canvas
     }
-    SvgColorFilters.filterValue(filter)?.let { filterValue ->
+    if (SvgColorFilters.appliesThroughSvg(filter)) {
         val canvas = createElementCanvas(width, height)
         val ctx = getContext2D(canvas, willReadFrequently = false) ?: return null
-        ctx.filter = filterValue
+        ctx.filter = checkNotNull(SvgColorFilters.filterValue(filter, ctx)) {
+            "A canvas element resolves SVG filters"
+        }
         ctx.drawImage(source, 0.0, 0.0, w, h, 0.0, 0.0, w, h)
         ctx.filter = JsStrings.none
         return canvas
@@ -286,11 +293,6 @@ internal fun applyColorFilter(
     val canvas = createCanvas(width, height)
     val ctx = getContext2D(canvas, willReadFrequently = true) ?: return null
     ctx.drawImage(source, 0.0, 0.0, w, h, 0.0, 0.0, w, h)
-    val pixels = IntArray(width * height)
-    readImageDataArgb(ctx.getImageData(0, 0, width, height), pixels, 0, width)
-    for (i in pixels.indices) {
-        pixels[i] = filter.filter(pixels[i])
-    }
-    ctx.putImageData(createImageDataFromArgb(pixels, 0, width, width, height), 0, 0)
+    applyColorFilterInPlace(ctx, 0, 0, width, height, filter)
     return canvas
 }

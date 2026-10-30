@@ -19,6 +19,7 @@ package androidx.compose.ui.webcanvas.path
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.graphics.PathHitTester
 import androidx.compose.ui.graphics.PathIterator
 import androidx.compose.ui.graphics.PathSegment
 import kotlin.test.Test
@@ -57,8 +58,15 @@ class WebPathIteratorTest {
         val iterator = path.iterator()
         assertTrue(iterator.hasNext())
 
-        val types = arrayOf(PathSegment.Type.Move, PathSegment.Type.Line, PathSegment.Type.Close)
-        val points = arrayOf(Offset(1.0f, 1.0f), Offset(2.0f, 2.0f))
+        // Like Skia's iterator, a line back to the start of the contour precedes the close.
+        val types =
+            arrayOf(
+                PathSegment.Type.Move,
+                PathSegment.Type.Line,
+                PathSegment.Type.Line,
+                PathSegment.Type.Close,
+            )
+        val points = arrayOf(Offset(1.0f, 1.0f), Offset(2.0f, 2.0f), Offset(1.0f, 1.0f))
 
         var count = 0
         for (segment in path) {
@@ -76,7 +84,7 @@ class WebPathIteratorTest {
             count++
         }
 
-        assertEquals(3, count)
+        assertEquals(4, count)
     }
 
     @Test
@@ -111,6 +119,17 @@ class WebPathIteratorTest {
                 assertEquals(type2, segment.type)
 
                 val p = segment.points
+                // The points of the segment, and nothing more.
+                val floats =
+                    when (type) {
+                        PathSegment.Type.Move -> 2
+                        PathSegment.Type.Line -> 4
+                        PathSegment.Type.Quadratic,
+                        PathSegment.Type.Conic -> 6
+                        PathSegment.Type.Cubic -> 8
+                        else -> 0
+                    }
+                assertEquals(floats, p.size, "points of $type")
                 for (i in p.indices) {
                     assertEquals(p[i], points[i])
                     assertEquals(p[i], points2[8 + i])
@@ -152,11 +171,54 @@ class WebPathIteratorTest {
         // Swallow the line
         iterator.next()
 
+        val closingLine = iterator.next()
+        assertEquals(PathSegment.Type.Line, closingLine.type)
+        assertEquals(Offset(10.0f, 12.0f), Offset(closingLine.points[0], closingLine.points[1]))
+        assertEquals(Offset.Zero, Offset(closingLine.points[2], closingLine.points[3]))
+
         val segment = iterator.next()
 
         assertEquals(PathSegment.Type.Close, segment.type)
         assertEquals(0, segment.points.size)
         assertEquals(0.0f, segment.weight)
+        assertFalse(iterator.hasNext())
+    }
+
+    @Test
+    fun aContourEndingAtItsStartGetsNoClosingLine() {
+        val path =
+            WebPath().apply {
+                moveTo(1f, 1f)
+                lineTo(5f, 1f)
+                lineTo(1f, 1f)
+                close()
+                moveTo(10f, 10f)
+                close()
+            }
+        val types = path.iterator().asSequence().map { it.type }.toList()
+        assertEquals(
+            listOf(
+                PathSegment.Type.Move,
+                PathSegment.Type.Line,
+                PathSegment.Type.Line,
+                PathSegment.Type.Close,
+                PathSegment.Type.Move,
+                PathSegment.Type.Close,
+            ),
+            types,
+        )
+        assertEquals(types.size, path.iterator().calculateSize())
+    }
+
+    @Test
+    fun pathHitTesterSeesTheClosingEdges() {
+        // The left edge of a rectangle exists only as its close.
+        val path = WebPath().apply { addRect(Rect(0f, 0f, 10f, 10f)) }
+        val hitTester = PathHitTester(path)
+        assertTrue(Offset(5f, 5f) in hitTester)
+        assertTrue(Offset(9f, 1f) in hitTester)
+        assertFalse(Offset(15f, 5f) in hitTester)
+        assertFalse(Offset(-5f, 5f) in hitTester)
     }
 
     @Test
@@ -275,38 +337,41 @@ class WebPathIteratorTest {
     @Test
     fun convertedQuadraticsFollowTheConic() {
         val path = WebPath().apply { addOval(Rect(0f, 0f, 200f, 200f)) }
-        val iterator = path.iterator(PathIterator.ConicEvaluation.AsQuadratics, 0.25f)
-        val points = FloatArray(8)
-        var lastX = Float.NaN
-        var lastY = Float.NaN
-        var quadratics = 0
-        while (iterator.hasNext()) {
-            when (iterator.next(points)) {
-                PathSegment.Type.Move -> {
-                    lastX = points[0]
-                    lastY = points[1]
-                }
-                PathSegment.Type.Quadratic -> {
-                    quadratics++
-                    // Segments are continuous.
-                    assertEquals(lastX, points[0])
-                    assertEquals(lastY, points[1])
-                    lastX = points[4]
-                    lastY = points[5]
-                    // End points lie on the circle.
-                    val dx = points[4] - 100f
-                    val dy = points[5] - 100f
-                    assertClose(100f, kotlin.math.sqrt(dx * dx + dy * dy), 1e-2f)
-                }
-                PathSegment.Type.Close -> {}
-                else -> fail("Unexpected segment")
-            }
-        }
         // Radius 100: the error is 6.07 for a single quadratic and is divided by 4 at each
-        // subdivision level, so 3 levels (8 quadratics per quarter) are needed to reach 0.25.
-        assertEquals(4 * 8, quadratics)
-        assertEquals(1 + 4 * 8 + 1, iterator.calculateSize())
-        assertEquals(6, iterator.calculateSize(includeConvertedConics = false))
+        // subdivision level, so 3 levels (8 quadratics per quarter) are needed to reach 0.25, and
+        // 0.001 takes all the 5 levels there are (32 quadratics per quarter).
+        for ((tolerance, perQuarter) in listOf(0.25f to 8, 0.001f to 32)) {
+            val iterator = path.iterator(PathIterator.ConicEvaluation.AsQuadratics, tolerance)
+            val points = FloatArray(8)
+            var lastX = Float.NaN
+            var lastY = Float.NaN
+            var quadratics = 0
+            while (iterator.hasNext()) {
+                when (iterator.next(points)) {
+                    PathSegment.Type.Move -> {
+                        lastX = points[0]
+                        lastY = points[1]
+                    }
+                    PathSegment.Type.Quadratic -> {
+                        quadratics++
+                        // Segments are continuous.
+                        assertEquals(lastX, points[0])
+                        assertEquals(lastY, points[1])
+                        lastX = points[4]
+                        lastY = points[5]
+                        // End points lie on the circle.
+                        val dx = points[4] - 100f
+                        val dy = points[5] - 100f
+                        assertClose(100f, kotlin.math.sqrt(dx * dx + dy * dy), 1e-2f)
+                    }
+                    PathSegment.Type.Close -> {}
+                    else -> fail("Unexpected segment")
+                }
+            }
+            assertEquals(4 * perQuarter, quadratics)
+            assertEquals(1 + 4 * perQuarter + 1, iterator.calculateSize())
+            assertEquals(6, iterator.calculateSize(includeConvertedConics = false))
+        }
     }
 
     @Test
@@ -329,6 +394,31 @@ class WebPathIteratorTest {
         assertEquals(10, iterator.calculateSize(false))
         // now get the size with converted conics
         assertEquals(14, iterator.calculateSize())
+    }
+
+    @Test
+    fun sizeCountsTheQuadraticsConicsAreIteratedAs() {
+        // A conic of an extreme weight needs the most subdivisions, but its first halves are a
+        // pair of lines: like Skia, the iterator turns it into 2 quadratics only.
+        val path =
+            WebPath().apply {
+                moveTo(0f, 0f)
+                conicTo(512f, 512f, 1f, 0f, (1L shl 40).toFloat())
+            }
+        val iterator = path.iterator(PathIterator.ConicEvaluation.AsQuadratics)
+        val points = FloatArray(8)
+        val segments = mutableListOf<PathSegment.Type>()
+        segments += iterator.next(points)
+        segments += iterator.next(points)
+        // Counting doesn't disturb an iteration in the middle of a conic.
+        val size = iterator.calculateSize()
+        val secondQuad = FloatArray(8)
+        segments += iterator.next(secondQuad)
+        while (iterator.hasNext()) segments += iterator.next(points)
+        val expected = PathSegment.Type.Quadratic
+        assertEquals(listOf(PathSegment.Type.Move, expected, expected), segments)
+        assertEquals(segments.size, size)
+        assertEquals(listOf(512f, 512f, 512f, 512f, 1f, 0f), secondQuad.take(6))
     }
 
     @Test

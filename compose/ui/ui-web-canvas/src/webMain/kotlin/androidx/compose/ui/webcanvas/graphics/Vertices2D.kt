@@ -19,6 +19,7 @@ package androidx.compose.ui.webcanvas.graphics
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.VertexMode
 import androidx.compose.ui.graphics.Vertices
+import kotlin.math.max
 
 /**
  * Draws triangle meshes. The Canvas 2D API can't interpolate colors over a triangle: the vertex
@@ -27,8 +28,10 @@ import androidx.compose.ui.graphics.Vertices
  */
 internal object Vertices2D {
     /**
-     * The [blendMode] combines vertex colors with the paint's shader; meshes drawn with a shader
-     * are filled with the paint color, so it's not used.
+     * Draws [vertices] with [paint], whose alpha and color filter apply to their colors, in its
+     * blend mode but Dst (which draws nothing, see `WebCanvas.drawVertices`). The [blendMode]
+     * combines vertex colors with the paint's shader; meshes drawn with a shader are filled with the
+     * paint color, so it's not used.
      */
     fun draw(canvas: WebCanvas, vertices: Vertices, @Suppress("UNUSED_PARAMETER") blendMode: BlendMode, paint: WebPaint) {
         // Interpolated vertex colors need WebGL; without it, each triangle gets its average color.
@@ -39,53 +42,56 @@ internal object Vertices2D {
         }
         val positions = vertices.positions
         val colors = vertices.colors
-        val indices = vertices.indices
-        val vertexCount = positions.size / 2
-        val indexCount = if (indices.isNotEmpty()) indices.size else vertexCount
-        fun vertex(i: Int): Int = if (indices.isNotEmpty()) indices[i].toInt() else i
 
         // Without a shader, the vertex colors are used as they are (the blend mode only applies
-        // between vertex colors and a shader).
+        // between vertex colors and a shader), with the paint alpha, which Skia multiplies them by.
         val useVertexColors = colors.isNotEmpty() && paint.shader == null
-        val fallbackColor = paint.argb
-        val drawBlendMode = paint.blendMode
+        val alpha = paint.color.alpha
 
-        fun triangle(i0: Int, i1: Int, i2: Int) {
-            if (i0 >= vertexCount || i1 >= vertexCount || i2 >= vertexCount) return
+        forEachTriangle(vertices) { i0, i1, i2 ->
             val color = if (useVertexColors) {
-                averageColor(colors[i0], colors[i1], colors[i2])
+                averageColor(colors[i0], colors[i1], colors[i2]).withAlphaMultiplied(alpha)
             } else {
-                fallbackColor
+                paint.argb
             }
             canvas.fillTriangle(
                 positions[i0 * 2], positions[i0 * 2 + 1],
                 positions[i1 * 2], positions[i1 * 2 + 1],
                 positions[i2 * 2], positions[i2 * 2 + 1],
                 color,
-                drawBlendMode,
+                paint,
             )
         }
+    }
 
-        when (vertices.vertexMode) {
-            VertexMode.Triangles -> {
-                var i = 0
-                while (i + 2 < indexCount) {
-                    triangle(vertex(i), vertex(i + 1), vertex(i + 2))
-                    i += 3
-                }
+    /** The number of triangles of [vertices]. */
+    fun triangleCount(vertices: Vertices): Int {
+        val count = if (vertices.indices.isNotEmpty()) vertices.indices.size else vertices.positions.size / 2
+        return if (vertices.vertexMode == VertexMode.Triangles) count / 3 else max(0, count - 2)
+    }
+
+    /**
+     * Calls [triangle] with the vertices of each triangle of [vertices], in order. The indices are
+     * unsigned 16-bit numbers, as Skia reads them: [Vertices] keeps them as shorts, which wrap past
+     * 32767.
+     */
+    inline fun forEachTriangle(vertices: Vertices, triangle: (Int, Int, Int) -> Unit) {
+        val mode = vertices.vertexMode
+        for (t in 0 until triangleCount(vertices)) {
+            // Where the vertices of the triangle are among the indices.
+            val first = when (mode) {
+                VertexMode.Triangles -> 3 * t
+                VertexMode.TriangleStrip -> t
+                else -> 0
             }
-            VertexMode.TriangleStrip -> {
-                for (i in 0 until indexCount - 2) {
-                    triangle(vertex(i), vertex(i + 1), vertex(i + 2))
-                }
-            }
-            VertexMode.TriangleFan -> {
-                for (i in 1 until indexCount - 1) {
-                    triangle(vertex(0), vertex(i), vertex(i + 1))
-                }
-            }
+            val second = if (mode == VertexMode.Triangles) 3 * t + 1 else t + 1
+            triangle(vertexAt(vertices, first), vertexAt(vertices, second), vertexAt(vertices, second + 1))
         }
     }
+
+    /** The vertex of the [i]th index of [vertices], or the [i]th vertex without indices. */
+    fun vertexAt(vertices: Vertices, i: Int): Int =
+        if (vertices.indices.isNotEmpty()) vertices.indices[i].toInt() and 0xFFFF else i
 
     private fun averageColor(c0: Int, c1: Int, c2: Int): Int {
         fun channel(shift: Int): Int =

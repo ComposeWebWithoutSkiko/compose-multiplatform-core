@@ -39,7 +39,7 @@ import androidx.compose.ui.text.font.FontWeight
  *
  * @see androidx.compose.ui.text.font.FontFamily
  */
-fun Font(
+public fun Font(
     identity: String,
     getData: () -> ByteArray,
     weight: FontWeight = FontWeight.Normal,
@@ -62,7 +62,7 @@ fun Font(
  *
  * @see androidx.compose.ui.text.font.FontFamily
  */
-fun Font(
+public fun Font(
     identity: String,
     getData: () -> ByteArray,
     weight: FontWeight = FontWeight.Normal,
@@ -82,7 +82,7 @@ fun Font(
  *
  * @see androidx.compose.ui.text.font.FontFamily
  */
-fun Font(
+public fun Font(
     identity: String,
     data: ByteArray,
     weight: FontWeight = FontWeight.Normal,
@@ -111,7 +111,7 @@ fun Font(
  *
  * @see androidx.compose.ui.text.font.FontFamily
  */
-fun Font(
+public fun Font(
     identity: String,
     data: ByteArray,
     weight: FontWeight = FontWeight.Normal,

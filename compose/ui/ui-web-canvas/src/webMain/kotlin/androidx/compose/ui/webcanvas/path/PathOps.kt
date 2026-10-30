@@ -18,6 +18,8 @@ package androidx.compose.ui.webcanvas.path
 
 import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.PathOperation
+import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.log2
 import kotlin.math.max
@@ -27,7 +29,8 @@ import kotlin.math.round
 
 /**
  * Computes the boolean [operation] of [a] and [b] (Skia's `Op`), honoring the fill type of both
- * operands. Returns null if the operation failed (non-finite input).
+ * operands. Returns null if the operation failed: non-finite input, or boundary edges that don't
+ * chain into contours (which the arrangement below rules out).
  *
  * Curves are flattened (maximum deviation 0.1 unit, less for small paths), so the result only
  * contains lines. Like Skia, the result consists of non-overlapping closed contours and uses the
@@ -37,8 +40,9 @@ import kotlin.math.round
  * The algorithm computes the planar arrangement of the edges of both polygons:
  * 1. Polygons are snapped onto an integer grid (2^24 units across the inputs), on which the
  *    orientation predicates are exact in double precision.
- * 2. Edges are split at all their intersections ("noding"); intersection points are rounded to the
- *    grid and the edges they perturb are re-checked until no crossing remains.
+ * 2. Edges are snap rounded (Hobby): the pixels (unit squares around grid points) holding a vertex
+ *    or a crossing are hot, and every edge is bent through the centers of the hot pixels it goes
+ *    through. The pieces then only meet at their ends or coincide: none crosses another.
  * 3. Coincident edges are merged, adding their winding contributions.
  * 4. A sweep line computes the winding numbers of both operands on both sides of every edge.
  * 5. Edges separating "inside" from "outside" (according to the fill rules and the operation) are
@@ -73,8 +77,11 @@ private const val OpReverseDifference = 4
 /** Half extent of the snapping grid. Keeps orientation predicates exact in doubles. */
 private const val GridHalfExtent = 16777216.0 // 2^24
 
-/** Maximum number of noding passes; each pass re-checks the edges perturbed by rounding. */
-private const val MaxNodingRounds = 8
+/**
+ * How far from a computed crossing the pixels that may hold it are made hot: the crossing is
+ * computed with an error of about 2^-26 grid units, so the pixel holding the exact one is hot.
+ */
+private const val CrossingError = 1.0 / (1 shl 20)
 
 private val EmptyResult: PathData
     get() = WebPath().apply { fillType = PathFillType.EvenOdd }.snapshot()
@@ -91,17 +98,16 @@ private class BooleanOperation(
     private var centerY = 0.0
     private var scale = 1.0
 
-    fun run(): PathData {
+    fun run(): PathData? {
         if (!reduceInputs()) return EmptyResult
         if (!computeGrid()) return EmptyResult
-        var edges = EdgeStore(polyA.pointCount + polyB.pointCount + 8)
+        val edges = EdgeStore(polyA.pointCount + polyB.pointCount + 8)
         addPolygonEdges(edges, polyA, owner = 0)
         addPolygonEdges(edges, polyB, owner = 1)
         if (edges.size == 0) return EmptyResult
-        edges = node(edges)
-        edges = mergeCoincidentEdges(edges)
-        if (edges.size == 0) return EmptyResult
-        val boundary = selectBoundaryEdges(edges)
+        val pieces = mergeCoincidentEdges(snapRound(edges))
+        if (pieces.size == 0) return EmptyResult
+        val boundary = selectBoundaryEdges(pieces)
         if (boundary.size == 0) return EmptyResult
         return buildResult(boundary)
     }
@@ -191,9 +197,9 @@ private class BooleanOperation(
                 val y = toGridY(xy[2 * i + 1])
                 if (x != prevX || y != prevY) {
                     if (owner == 0) {
-                        edges.add(prevX, prevY, x, y, 1, 0, false)
+                        edges.add(prevX, prevY, x, y, 1, 0)
                     } else {
-                        edges.add(prevX, prevY, x, y, 0, 1, false)
+                        edges.add(prevX, prevY, x, y, 0, 1)
                     }
                 }
                 prevX = x
@@ -203,31 +209,78 @@ private class BooleanOperation(
     }
 
     // ---------------------------------------------------------------------------------------
-    // Noding
+    // Snap rounding
     // ---------------------------------------------------------------------------------------
 
-    private fun node(input: EdgeStore): EdgeStore {
-        var edges = input
-        for (pass in 0 until MaxNodingRounds) {
-            val splits = SplitList()
-            findIntersections(edges, splits, onlyDirty = pass > 0)
-            if (splits.size == 0) break
-            edges = applySplits(edges, splits)
+    /**
+     * Snap rounding (Hobby): the pixels of the vertices and of the crossings of the edges are hot,
+     * and every edge becomes the polyline through the centers of the hot pixels it goes through,
+     * in order, keeping its winding contributions. Rounding each crossing on its own instead bends
+     * the edges into new crossings with the edges close to them, which nearly coincident edges
+     * never stop making; snap rounding bends those edges through the same centers, so that the
+     * pieces only meet at their ends or coincide.
+     *
+     * The edges going through the pixels of the vertices are found with the crossings, among the
+     * pairs of edges whose bounds overlap; the pixels of the crossings are then looked up for every
+     * edge. Most edges go through none of them but the pixels of their own ends.
+     */
+    private fun snapRound(edges: EdgeStore): EdgeStore {
+        val crossings = HotPixels(16)
+        val vertexHits = VertexHits()
+        findHotPixels(edges, crossings, vertexHits)
+        crossings.build()
+        val hitEdges = vertexHits.edge
+        val hitOrder = sortIndices(vertexHits.size) { p, q -> hitEdges[p].compareTo(hitEdges[q]) }
+        val result = EdgeStore(edges.size + crossings.size + vertexHits.size)
+        val through = Centers()
+        var hit = 0
+        for (e in 0 until edges.size) {
+            val x0 = edges.x0[e]
+            val y0 = edges.y0[e]
+            val x1 = edges.x1[e]
+            val y1 = edges.y1[e]
+            through.clear()
+            while (hit < hitOrder.size && hitEdges[hitOrder[hit]] == e) {
+                through.add(vertexHits.x[hitOrder[hit]], vertexHits.y[hitOrder[hit]])
+                hit++
+            }
+            crossings.collectThrough(x0, y0, x1, y1, through)
+            // The edge goes left to right (x0 <= x1) and towards larger or smaller y: monotone in x
+            // and y, it goes through the pixels column by column, rows in its direction.
+            val rowStep = if (y1 < y0) -1 else 1
+            val order =
+                sortIndices(through.size) { p, q ->
+                    val c = through.x[p].compareTo(through.x[q])
+                    if (c != 0) c else rowStep * through.y[p].compareTo(through.y[q])
+                }
+            var px = x0
+            var py = y0
+            for (k in order) {
+                val cx = through.x[k]
+                val cy = through.y[k]
+                // The pixels of the ends are the ends, and a pixel may hold a vertex and a crossing.
+                if ((cx == px && cy == py) || (cx == x1 && cy == y1)) continue
+                result.add(px, py, cx, cy, edges.wa[e], edges.wb[e])
+                px = cx
+                py = cy
+            }
+            result.add(px, py, x1, y1, edges.wa[e], edges.wb[e])
         }
-        return edges
+        return result
     }
 
     /**
-     * Records the points where edges must be split: proper crossings (rounded to the grid),
-     * endpoints lying inside other edges and the ends of collinear overlaps.
+     * Sweeps the pairs of edges whose bounds overlap, adding the pixels of their crossings to
+     * [crossings] and the edges going through the pixel of a vertex of the other one to
+     * [vertexHits]. These are all the edges going through the pixels of vertices: the ends of the
+     * edges are grid points, so an edge going through the pixel of a vertex has it in its bounds.
      */
-    private fun findIntersections(edges: EdgeStore, splits: SplitList, onlyDirty: Boolean) {
+    private fun findHotPixels(edges: EdgeStore, crossings: HotPixels, vertexHits: VertexHits) {
         val n = edges.size
         val x0 = edges.x0
         val y0 = edges.y0
         val x1 = edges.x1
         val y1 = edges.y1
-        val dirty = edges.dirty
         val order = sortIndices(n) { i, j -> x0[i].compareTo(x0[j]) }
         val active = IntArray(n)
         var activeCount = 0
@@ -245,15 +298,32 @@ private class BooleanOperation(
             val iMaxY = max(y0[i], y1[i])
             for (r in 0 until activeCount) {
                 val j = active[r]
-                if (onlyDirty && !dirty[i] && !dirty[j]) continue
                 if (max(y0[j], y1[j]) < iMinY || min(y0[j], y1[j]) > iMaxY) continue
-                intersect(edges, i, j, splits)
+                addCrossing(edges, i, j, crossings)
+                addVertexHit(edges, i, x0[j], y0[j], vertexHits)
+                addVertexHit(edges, i, x1[j], y1[j], vertexHits)
+                addVertexHit(edges, j, x0[i], y0[i], vertexHits)
+                addVertexHit(edges, j, x1[i], y1[i], vertexHits)
             }
             active[activeCount++] = i
         }
     }
 
-    private fun intersect(edges: EdgeStore, i: Int, j: Int, splits: SplitList) {
+    /** Records edge [e] going through the pixel of the vertex ([vx], [vy]), unless it's its end. */
+    private fun addVertexHit(edges: EdgeStore, e: Int, vx: Double, vy: Double, hits: VertexHits) {
+        val ax = edges.x0[e]
+        val ay = edges.y0[e]
+        val bx = edges.x1[e]
+        val by = edges.y1[e]
+        if ((vx == ax && vy == ay) || (vx == bx && vy == by)) return
+        if (goesThroughPixel(ax, ay, bx, by, vx, vy)) hits.add(e, vx, vy)
+    }
+
+    /**
+     * Makes the pixels of the point where edges [i] and [j] cross hot, if they cross in the inside
+     * of both: a vertex lying on the other edge is in a hot pixel already.
+     */
+    private fun addCrossing(edges: EdgeStore, i: Int, j: Int, hot: HotPixels) {
         val ax = edges.x0[i]
         val ay = edges.y0[i]
         val bx = edges.x1[i]
@@ -264,102 +334,12 @@ private class BooleanOperation(
         val dy = edges.y1[j]
         val d1 = orient(ax, ay, bx, by, cx, cy)
         val d2 = orient(ax, ay, bx, by, dx, dy)
-        if ((d1 > 0.0 && d2 > 0.0) || (d1 < 0.0 && d2 < 0.0)) return
+        if (!((d1 > 0.0 && d2 < 0.0) || (d1 < 0.0 && d2 > 0.0))) return
         val d3 = orient(cx, cy, dx, dy, ax, ay)
         val d4 = orient(cx, cy, dx, dy, bx, by)
-        if ((d3 > 0.0 && d4 > 0.0) || (d3 < 0.0 && d4 < 0.0)) return
-        if (d1 == 0.0 && d2 == 0.0) {
-            // Collinear: split each edge at the endpoints of the other one lying inside it.
-            if (strictlyInside(cx, cy, ax, ay, bx, by)) splits.add(i, cx, cy, false)
-            if (strictlyInside(dx, dy, ax, ay, bx, by)) splits.add(i, dx, dy, false)
-            if (strictlyInside(ax, ay, cx, cy, dx, dy)) splits.add(j, ax, ay, false)
-            if (strictlyInside(bx, by, cx, cy, dx, dy)) splits.add(j, bx, by, false)
-            return
-        }
-        when {
-            // An endpoint of one edge lies on the other edge (T-junction or shared endpoint).
-            d1 == 0.0 -> {
-                if (!isEndpoint(cx, cy, ax, ay, bx, by)) splits.add(i, cx, cy, false)
-            }
-            d2 == 0.0 -> {
-                if (!isEndpoint(dx, dy, ax, ay, bx, by)) splits.add(i, dx, dy, false)
-            }
-            d3 == 0.0 -> {
-                if (!isEndpoint(ax, ay, cx, cy, dx, dy)) splits.add(j, ax, ay, false)
-            }
-            d4 == 0.0 -> {
-                if (!isEndpoint(bx, by, cx, cy, dx, dy)) splits.add(j, bx, by, false)
-            }
-            else -> {
-                // Proper crossing.
-                val t = d3 / (d3 - d4)
-                val px = snapToGrid(ax + t * (bx - ax))
-                val py = snapToGrid(ay + t * (by - ay))
-                if (!isEndpoint(px, py, ax, ay, bx, by)) splits.add(i, px, py, true)
-                if (!isEndpoint(px, py, cx, cy, dx, dy)) splits.add(j, px, py, true)
-            }
-        }
-    }
-
-    private fun applySplits(edges: EdgeStore, splits: SplitList): EdgeStore {
-        val m = splits.size
-        val splitEdge = splits.edge
-        val splitX = splits.x
-        val splitY = splits.y
-        // Position of each split point along its edge.
-        val position = DoubleArray(m)
-        for (k in 0 until m) {
-            val e = splitEdge[k]
-            position[k] =
-                (splitX[k] - edges.x0[e]) * (edges.x1[e] - edges.x0[e]) +
-                    (splitY[k] - edges.y0[e]) * (edges.y1[e] - edges.y0[e])
-        }
-        val order =
-            sortIndices(m) { p, q ->
-                val c = splitEdge[p].compareTo(splitEdge[q])
-                if (c != 0) c else position[p].compareTo(position[q])
-            }
-        val result = EdgeStore(edges.size + m)
-        var k = 0
-        for (e in 0 until edges.size) {
-            val wa = edges.wa[e]
-            val wb = edges.wb[e]
-            if (k >= m || splitEdge[order[k]] != e) {
-                result.add(edges.x0[e], edges.y0[e], edges.x1[e], edges.y1[e], wa, wb, false)
-                continue
-            }
-            var px = edges.x0[e]
-            var py = edges.y0[e]
-            var prevRounded = false
-            val endX = edges.x1[e]
-            val endY = edges.y1[e]
-            while (k < m && splitEdge[order[k]] == e) {
-                // Merge the records of identical points.
-                val sx = splitX[order[k]]
-                val sy = splitY[order[k]]
-                var rounded = false
-                while (
-                    k < m &&
-                        splitEdge[order[k]] == e &&
-                        splitX[order[k]] == sx &&
-                        splitY[order[k]] == sy
-                ) {
-                    rounded = rounded || splits.rounded[order[k]]
-                    k++
-                }
-                if (sx == px && sy == py) {
-                    prevRounded = prevRounded || rounded
-                    continue
-                }
-                if (sx == endX && sy == endY) continue
-                result.add(px, py, sx, sy, wa, wb, prevRounded || rounded)
-                px = sx
-                py = sy
-                prevRounded = rounded
-            }
-            result.add(px, py, endX, endY, wa, wb, prevRounded)
-        }
-        return result
+        if (!((d3 > 0.0 && d4 < 0.0) || (d3 < 0.0 && d4 > 0.0))) return
+        val t = d3 / (d3 - d4)
+        hot.addAround(ax + t * (bx - ax), ay + t * (by - ay))
     }
 
     // ---------------------------------------------------------------------------------------
@@ -394,7 +374,7 @@ private class BooleanOperation(
                 next++
             }
             if ((wa != 0 || wb != 0) && (x0[e] != x1[e] || y0[e] != y1[e])) {
-                result.add(x0[e], y0[e], x1[e], y1[e], wa, wb, false)
+                result.add(x0[e], y0[e], x1[e], y1[e], wa, wb)
             }
             k = next
         }
@@ -503,7 +483,11 @@ private class BooleanOperation(
         return boundary
     }
 
-    /** Returns true if edge [e], inserted at its start point, lies above the active edge [f]. */
+    /**
+     * Returns true if edge [e], inserted at its start point, lies above the active edge [f]. Unless
+     * they start at the same point, the start of [e] isn't on [f]: after snap rounding, no vertex
+     * lies inside an edge.
+     */
     private fun isAbove(edges: EdgeStore, e: Int, f: Int): Boolean {
         val ex = edges.x0[e]
         val ey = edges.y0[e]
@@ -515,17 +499,19 @@ private class BooleanOperation(
             // Shared start point: compare the directions.
             return orient(ex, ey, fx1, fy1, edges.x1[e], edges.y1[e]) > 0.0
         }
-        val o = orient(fx0, fy0, fx1, fy1, ex, ey)
-        if (o != 0.0) return o > 0.0
-        // Only possible if noding left a T-junction: use the other end point.
-        return orient(fx0, fy0, fx1, fy1, edges.x1[e], edges.y1[e]) > 0.0
+        return orient(fx0, fy0, fx1, fy1, ex, ey) > 0.0
     }
 
     // ---------------------------------------------------------------------------------------
     // Output
     // ---------------------------------------------------------------------------------------
 
-    private fun buildResult(boundary: DirectedEdges): PathData {
+    /**
+     * Chains the boundary edges into contours. Returns null if they don't chain: the edges don't
+     * cross, so the boundary enters every vertex as many times as it leaves it, and a walk can only
+     * end where it started.
+     */
+    private fun buildResult(boundary: DirectedEdges): PathData? {
         val m = boundary.size
         val fx = boundary.fromX
         val fy = boundary.fromY
@@ -549,14 +535,15 @@ private class BooleanOperation(
             val startX = fx[first]
             val startY = fy[first]
             var current = first
-            var guard = 0
-            while (guard++ <= m) {
+            // Every edge is used once at most: a walk longer than all of them can't close.
+            var steps = 0
+            while (tx[current] != startX || ty[current] != startY) {
+                if (++steps > m) return null
                 val vx = tx[current]
                 val vy = ty[current]
-                if (vx == startX && vy == startY) break
                 contour.add(vx, vy)
                 val next = pickNextEdge(boundary, order, used, current, vx, vy)
-                if (next < 0) break // Unbalanced vertex (should not happen): close the contour.
+                if (next < 0) return null
                 used[next] = true
                 current = next
             }
@@ -781,20 +768,281 @@ private fun snapToGrid(value: Double): Double = round(value) + 0.0
 private fun orient(ax: Double, ay: Double, bx: Double, by: Double, cx: Double, cy: Double): Double =
     (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
 
-private fun isEndpoint(px: Double, py: Double, ax: Double, ay: Double, bx: Double, by: Double) =
-    (px == ax && py == ay) || (px == bx && py == by)
-
-/** For a point collinear with segment (a, b): true if it lies strictly between a and b. */
-private fun strictlyInside(
-    px: Double,
-    py: Double,
+/**
+ * Whether the segment from (ax, ay) to (bx, by), between grid points, goes through the pixel of
+ * the grid point (cx, cy): the half-open unit square [cx - 0.5, cx + 0.5) × [cy - 0.5, cy + 0.5).
+ * Exact: the values are integers.
+ */
+private fun goesThroughPixel(
     ax: Double,
     ay: Double,
     bx: Double,
     by: Double,
+    cx: Double,
+    cy: Double,
 ): Boolean {
-    if (isEndpoint(px, py, ax, ay, bx, by)) return false
-    return px >= min(ax, bx) && px <= max(ax, bx) && py >= min(ay, by) && py <= max(ay, by)
+    if (!meetsBox(ax, ay, bx, by, cx - 0.5, cy - 0.5, cx + 0.5, cy + 0.5)) return false
+    // The line goes through the inside, or only touches a corner (meetsBox's distances are equal):
+    // the pixel holds its (min x, min y) corner, which the line goes through if
+    // orient(a, b, corner) = orient(a, b, c) + ((by - ay) - (bx - ax)) / 2 = 0.
+    val dx = bx - ax
+    val dy = by - ay
+    val twiceDistance = 2 * orient(ax, ay, bx, by, cx, cy)
+    if (abs(twiceDistance) < abs(dx) + abs(dy)) return true
+    val cornerX = cx - 0.5
+    val cornerY = cy - 0.5
+    return twiceDistance == dx - dy &&
+        cornerX >= min(ax, bx) && cornerX <= max(ax, bx) &&
+        cornerY >= min(ay, by) && cornerY <= max(ay, by)
+}
+
+/**
+ * Whether the segment from (ax, ay) to (bx, by) meets the closed box (left, top, right, bottom)
+ * (separating axes: x, y and the normal of the segment). Exact for grid points and boxes with
+ * half-integer sides.
+ */
+private fun meetsBox(
+    ax: Double,
+    ay: Double,
+    bx: Double,
+    by: Double,
+    left: Double,
+    top: Double,
+    right: Double,
+    bottom: Double,
+): Boolean {
+    if (max(ax, bx) < left || min(ax, bx) > right || max(ay, by) < top || min(ay, by) > bottom) {
+        return false
+    }
+    // The distance of the center from the line, against the reach of the box along its normal.
+    val twiceDistance = 2 * orient(ax, ay, bx, by, (left + right) / 2, (top + bottom) / 2)
+    return abs(twiceDistance) <= abs(bx - ax) * (bottom - top) + abs(by - ay) * (right - left)
+}
+
+/**
+ * The hot pixels of the crossings of snap rounding (see [BooleanOperation.snapRound]), by their
+ * centers: grid points. Once [built][build], a 2D tree: the pixel splitting a range `[lo, hi)` is
+ * its middle one, the pixels before it have no larger x (or y, alternately with the depth), the
+ * ones after it no smaller.
+ */
+private class HotPixels(capacity: Int) {
+    var x = DoubleArray(max(capacity, 8))
+        private set
+
+    var y = DoubleArray(max(capacity, 8))
+        private set
+
+    var size = 0
+        private set
+
+    fun add(px: Double, py: Double) {
+        if (size == x.size) {
+            x = x.copyOf(2 * size)
+            y = y.copyOf(2 * size)
+        }
+        x[size] = px
+        y[size] = py
+        size++
+    }
+
+    // The bounds of the centers of the pixels, once built.
+    private var minX = 0.0
+    private var minY = 0.0
+    private var maxX = 0.0
+    private var maxY = 0.0
+
+    /** Adds the pixels whose squares are within [CrossingError] of the point ([px], [py]). */
+    fun addAround(px: Double, py: Double) {
+        val firstX = ceil(px - 0.5 - CrossingError).toInt()
+        val lastX = floor(px + 0.5 + CrossingError).toInt()
+        val firstY = ceil(py - 0.5 - CrossingError).toInt()
+        val lastY = floor(py + 0.5 + CrossingError).toInt()
+        for (gx in firstX..lastX) {
+            for (gy in firstY..lastY) add(gx.toDouble(), gy.toDouble())
+        }
+    }
+
+    /** Removes the duplicates and arranges the pixels as a 2D tree. */
+    fun build() {
+        if (size == 0) return
+        sort(0, size)
+        var unique = 0
+        for (i in 0 until size) {
+            if (unique > 0 && x[i] == x[unique - 1] && y[i] == y[unique - 1]) continue
+            x[unique] = x[i]
+            y[unique] = y[i]
+            unique++
+        }
+        size = unique
+        // Sorted by x: the first and last pixels are the leftmost and rightmost ones.
+        minX = x[0]
+        maxX = x[size - 1]
+        minY = y[0]
+        maxY = y[0]
+        for (i in 1 until size) {
+            minY = min(minY, y[i])
+            maxY = max(maxY, y[i])
+        }
+        arrange(0, size, byX = true)
+    }
+
+    /** Sorts `[lo, hi)` by x, then y (quicksort). */
+    private fun sort(lo: Int, hi: Int) {
+        var left = lo
+        var right = hi - 1
+        while (left < right) {
+            val mid = (left + right) ushr 1
+            val px = x[mid]
+            val py = y[mid]
+            var i = left
+            var j = right
+            while (i <= j) {
+                while (x[i] < px || (x[i] == px && y[i] < py)) i++
+                while (x[j] > px || (x[j] == px && y[j] > py)) j--
+                if (i <= j) {
+                    swap(i, j)
+                    i++
+                    j--
+                }
+            }
+            // The smaller part recursively, the larger one in the loop: a shallow stack.
+            if (j - left < right - i) {
+                sort(left, j + 1)
+                left = i
+            } else {
+                sort(i, right + 1)
+                right = j
+            }
+        }
+    }
+
+    private fun arrange(lo: Int, hi: Int, byX: Boolean) {
+        if (hi - lo <= 1) return
+        val mid = (lo + hi) ushr 1
+        select(lo, hi, mid, if (byX) x else y)
+        arrange(lo, mid, !byX)
+        arrange(mid + 1, hi, !byX)
+    }
+
+    /** Partitions `[lo, hi)` around its [k]-th smallest [key] (quickselect). */
+    private fun select(lo: Int, hi: Int, k: Int, key: DoubleArray) {
+        var left = lo
+        var right = hi - 1
+        while (left < right) {
+            val pivot = key[(left + right) ushr 1]
+            var i = left
+            var j = right
+            while (i <= j) {
+                while (key[i] < pivot) i++
+                while (key[j] > pivot) j--
+                if (i <= j) {
+                    swap(i, j)
+                    i++
+                    j--
+                }
+            }
+            if (k <= j) right = j else if (k >= i) left = i else return
+        }
+    }
+
+    private fun swap(i: Int, j: Int) {
+        val tx = x[i]
+        x[i] = x[j]
+        x[j] = tx
+        val ty = y[i]
+        y[i] = y[j]
+        y[j] = ty
+    }
+
+    /** Adds the centers of the pixels the segment from (ax, ay) to (bx, by) goes through to [out]. */
+    fun collectThrough(ax: Double, ay: Double, bx: Double, by: Double, out: Centers) {
+        collect(0, size, true, minX, minY, maxX, maxY, ax, ay, bx, by, out)
+    }
+
+    /**
+     * Collects the pixels of `[lo, hi)`, whose centers are within (left, top, right, bottom), that
+     * the segment goes through.
+     */
+    private fun collect(
+        lo: Int,
+        hi: Int,
+        byX: Boolean,
+        left: Double,
+        top: Double,
+        right: Double,
+        bottom: Double,
+        ax: Double,
+        ay: Double,
+        bx: Double,
+        by: Double,
+        out: Centers,
+    ) {
+        if (lo >= hi) return
+        // The pixels around the centers of the range.
+        if (!meetsBox(ax, ay, bx, by, left - 0.5, top - 0.5, right + 0.5, bottom + 0.5)) return
+        val mid = (lo + hi) ushr 1
+        if (goesThroughPixel(ax, ay, bx, by, x[mid], y[mid])) out.add(x[mid], y[mid])
+        if (byX) {
+            collect(lo, mid, false, left, top, x[mid], bottom, ax, ay, bx, by, out)
+            collect(mid + 1, hi, false, x[mid], top, right, bottom, ax, ay, bx, by, out)
+        } else {
+            collect(lo, mid, true, left, top, right, y[mid], ax, ay, bx, by, out)
+            collect(mid + 1, hi, true, left, y[mid], right, bottom, ax, ay, bx, by, out)
+        }
+    }
+}
+
+/** The centers of the hot pixels an edge goes through (see [BooleanOperation.snapRound]). */
+private class Centers {
+    var x = DoubleArray(16)
+        private set
+
+    var y = DoubleArray(16)
+        private set
+
+    var size = 0
+        private set
+
+    fun add(px: Double, py: Double) {
+        if (size == x.size) {
+            x = x.copyOf(2 * size)
+            y = y.copyOf(2 * size)
+        }
+        x[size] = px
+        y[size] = py
+        size++
+    }
+
+    fun clear() {
+        size = 0
+    }
+}
+
+/** Edges going through the pixels of vertices: the edge and the vertex of each. */
+private class VertexHits {
+    var edge = IntArray(8)
+        private set
+
+    var x = DoubleArray(8)
+        private set
+
+    var y = DoubleArray(8)
+        private set
+
+    var size = 0
+        private set
+
+    fun add(e: Int, vx: Double, vy: Double) {
+        if (size == edge.size) {
+            edge = edge.copyOf(2 * size)
+            x = x.copyOf(2 * size)
+            y = y.copyOf(2 * size)
+        }
+        edge[size] = e
+        x[size] = vx
+        y[size] = vy
+        size++
+    }
 }
 
 /**
@@ -809,9 +1057,6 @@ private class EdgeStore(capacity: Int) {
     var y1 = DoubleArray(max(capacity, 8))
     var wa = IntArray(max(capacity, 8))
     var wb = IntArray(max(capacity, 8))
-
-    /** True for edges adjacent to a rounded intersection point (re-checked by noding). */
-    var dirty = BooleanArray(max(capacity, 8))
     var size = 0
 
     fun add(
@@ -821,7 +1066,6 @@ private class EdgeStore(capacity: Int) {
         by: Double,
         windA: Int,
         windB: Int,
-        isDirty: Boolean,
     ) {
         if (size == x0.size) grow()
         if (ax < bx || (ax == bx && ay <= by)) {
@@ -839,7 +1083,6 @@ private class EdgeStore(capacity: Int) {
             wa[size] = -windA
             wb[size] = -windB
         }
-        dirty[size] = isDirty
         size++
     }
 
@@ -851,31 +1094,6 @@ private class EdgeStore(capacity: Int) {
         y1 = y1.copyOf(n)
         wa = wa.copyOf(n)
         wb = wb.copyOf(n)
-        dirty = dirty.copyOf(n)
-    }
-}
-
-/** Split points recorded during noding. */
-private class SplitList {
-    var edge = IntArray(16)
-    var x = DoubleArray(16)
-    var y = DoubleArray(16)
-    var rounded = BooleanArray(16)
-    var size = 0
-
-    fun add(edgeIndex: Int, px: Double, py: Double, isRounded: Boolean) {
-        if (size == edge.size) {
-            val n = size * 2
-            edge = edge.copyOf(n)
-            x = x.copyOf(n)
-            y = y.copyOf(n)
-            rounded = rounded.copyOf(n)
-        }
-        edge[size] = edgeIndex
-        x[size] = px
-        y[size] = py
-        rounded[size] = isRounded
-        size++
     }
 }
 
@@ -970,6 +1188,7 @@ private class GridPolygon {
 
 /** Returns the indices `0 until n` stably sorted with [compare] (bottom-up merge sort). */
 private inline fun sortIndices(n: Int, compare: (Int, Int) -> Int): IntArray {
+    if (n == 0) return NoIndices
     var src = IntArray(n) { it }
     if (n < 2) return src
     var dst = IntArray(n)
@@ -996,3 +1215,5 @@ private inline fun sortIndices(n: Int, compare: (Int, Int) -> Int): IntArray {
     }
     return src
 }
+
+private val NoIndices = IntArray(0)

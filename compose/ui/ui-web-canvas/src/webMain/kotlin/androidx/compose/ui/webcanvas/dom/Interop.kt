@@ -14,23 +14,40 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalWasmJsInterop::class)
-
 package androidx.compose.ui.webcanvas.dom
 
-import kotlin.js.ExperimentalWasmJsInterop
 import kotlin.js.JsAny
 import kotlin.js.js
 
-/** Copies the bytes into a new JS `Uint8Array`. */
-internal expect fun ByteArray.toUint8Array(): JsAny
+// Kotlin/JS arrays are JS typed arrays, which JS reads in place. Kotlin/Wasm arrays live in the
+// garbage-collected heap, which JS can't read: their data goes through the linear memory of the
+// module, in chunks, since the linear memory never shrinks (see Interop.wasm.kt).
 
-/** Copies the first [count] ints into a new JS `Int32Array`. */
-internal expect fun IntArray.toInt32Array(count: Int): JsAny
+/** A JS `Blob` of the bytes, of the MIME [type] (e.g. to decode an image from). */
+internal expect fun ByteArray.toBlob(type: String): JsAny
 
 /**
- * Reads the RGBA bytes of [imageData] in the given row range as non-premultiplied ARGB ints into
- * [buffer].
+ * A JS `Uint8Array` of the bytes that may be read later (e.g. by a `FontFace`): on Kotlin/JS a view
+ * of the array, which must then not change, on Kotlin/Wasm a copy.
+ */
+internal expect fun ByteArray.toUint8Array(): JsAny
+
+/**
+ * Calls [block] with a reader of the bytes of each of [floats], [ints] and [shorts], which JS calls
+ * to take them in chunks (e.g. into WebGL buffers) until [block] returns: `read(byteOffset)` returns
+ * a `Uint8Array` of the next bytes from `byteOffset` (some while any remain), valid until the next
+ * call of a reader.
+ */
+internal expect fun <R> withByteReaders(
+    floats: FloatArray,
+    ints: IntArray,
+    shorts: ShortArray,
+    block: (floats: (Int) -> JsAny, ints: (Int) -> JsAny, shorts: (Int) -> JsAny) -> R,
+): R
+
+/**
+ * Reads the RGBA bytes of [imageData] as non-premultiplied ARGB ints into [buffer], its rows from
+ * [bufferOffset], [stride] ints apart.
  */
 internal expect fun readImageDataArgb(
     imageData: ImageData,
@@ -38,15 +55,6 @@ internal expect fun readImageDataArgb(
     bufferOffset: Int,
     stride: Int,
 )
-
-/** Creates `ImageData` from ARGB ints. */
-internal expect fun createImageDataFromArgb(
-    pixels: IntArray,
-    offset: Int,
-    stride: Int,
-    width: Int,
-    height: Int,
-): ImageData
 
 // language=js
 internal fun performanceNow(): Double = js("performance.now()")

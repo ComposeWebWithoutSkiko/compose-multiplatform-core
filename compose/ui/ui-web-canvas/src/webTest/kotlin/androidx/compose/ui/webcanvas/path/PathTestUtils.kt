@@ -19,6 +19,7 @@ package androidx.compose.ui.webcanvas.path
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathFillType
 import kotlin.math.abs
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -163,5 +164,78 @@ internal fun isNearOutline(data: PathData, x: Float, y: Float, distance: Double)
     return false
 }
 
+/**
+ * True if ([x], [y]) is inside the (flattened) outline of [data] according to its fill type: a
+ * geometric oracle independent of the browser's `Path2D`, for points that aren't
+ * [near the outline][isNearOutline].
+ */
+internal fun isInsideFlattened(data: PathData, x: Float, y: Float): Boolean {
+    if (data.isEmpty) return false
+    val flat = data.flattened()
+    var winding = 0
+    for (c in 0 until flat.contourCount) {
+        val start = flat.start(c)
+        val end = flat.end(c)
+        var ax = flat.xy[2 * (end - 1)]
+        var ay = flat.xy[2 * (end - 1) + 1]
+        for (i in start until end) {
+            val bx = flat.xy[2 * i]
+            val by = flat.xy[2 * i + 1]
+            val cross = (bx - ax) * (y - ay) - (x - ax) * (by - ay)
+            if (ay <= y) {
+                if (by > y && cross > 0.0) winding++
+            } else {
+                if (by <= y && cross < 0.0) winding--
+            }
+            ax = bx
+            ay = by
+        }
+    }
+    return if (data.fillType == PathFillType.EvenOdd) (winding and 1) != 0 else winding != 0
+}
+
 /** Number of contours (move verbs). */
 internal fun contourCount(data: PathData): Int = verbsOf(data).count { it == PathVerb.Move }
+
+/** Calls [block] with every line segment of [data], made of lines only, closing lines included. */
+internal fun forEachLineSegment(
+    data: PathData,
+    block: (x0: Float, y0: Float, x1: Float, y1: Float) -> Unit,
+) {
+    val pts = data.points
+    var p = 0
+    var start = 0
+    for (i in 0 until data.verbCount) {
+        when (data.verbs[i]) {
+            PathVerb.Move -> start = p
+            PathVerb.Line -> block(pts[2 * p - 2], pts[2 * p - 1], pts[2 * p], pts[2 * p + 1])
+            PathVerb.Close -> block(pts[2 * p - 2], pts[2 * p - 1], pts[2 * start], pts[2 * start + 1])
+            else -> fail("Not a line: ${data.verbs[i]}")
+        }
+        p += PathVerb.pointCount(data.verbs[i])
+    }
+}
+
+/** Fails if two line segments of [data] cross (in the interiors of both). */
+internal fun assertNoCrossings(data: PathData) {
+    var i = 0
+    forEachLineSegment(data) { ax, ay, bx, by ->
+        var j = 0
+        forEachLineSegment(data) { cx, cy, dx, dy ->
+            if (j++ > i) {
+                val d1 = orientation(ax, ay, bx, by, cx, cy)
+                val d2 = orientation(ax, ay, bx, by, dx, dy)
+                val d3 = orientation(cx, cy, dx, dy, ax, ay)
+                val d4 = orientation(cx, cy, dx, dy, bx, by)
+                if (d1 * d2 < 0.0 && d3 * d4 < 0.0) {
+                    fail("($ax, $ay)-($bx, $by) crosses ($cx, $cy)-($dx, $dy)")
+                }
+            }
+        }
+        i++
+    }
+}
+
+// Exact for floats: the products of their differences fit in a double.
+private fun orientation(ax: Float, ay: Float, bx: Float, by: Float, cx: Float, cy: Float): Double =
+    (bx.toDouble() - ax) * (cy.toDouble() - ay) - (by.toDouble() - ay) * (cx.toDouble() - ax)

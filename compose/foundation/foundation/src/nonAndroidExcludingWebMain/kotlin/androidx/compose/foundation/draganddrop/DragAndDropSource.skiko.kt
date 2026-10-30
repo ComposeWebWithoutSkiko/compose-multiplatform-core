@@ -35,6 +35,9 @@ import kotlinx.coroutines.launch
 import org.jetbrains.skia.Picture
 import org.jetbrains.skia.PictureRecorder
 
+// The web targets have a copy of this file that caches the drag shadow in a graphics layer instead
+// (DragAndDropSource.web.kt in webMain): keep the two in sync.
+
 @Immutable
 internal actual object DragAndDropSourceDefaults {
     actual val DefaultStartDetector: DragAndDropStartDetector = {

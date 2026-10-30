@@ -57,13 +57,3 @@ internal fun codePointBefore(text: CharSequence, index: Int): Int {
 /** Combines a valid surrogate pair into a supplementary code point. */
 internal fun toCodePoint(high: Char, low: Char): Int =
     ((high.code - 0xD800) shl 10) + (low.code - 0xDC00) + MIN_SUPPLEMENTARY_CODE_POINT
-
-/**
- * Returns true if [index] is strictly inside a well-formed surrogate pair, i.e. between a high and
- * a low surrogate. Such an index is never a valid boundary for any of the segmentation algorithms.
- */
-internal fun isInsideSurrogatePair(text: CharSequence, index: Int): Boolean =
-    index > 0 &&
-        index < text.length &&
-        text[index].isLowSurrogate() &&
-        text[index - 1].isHighSurrogate()

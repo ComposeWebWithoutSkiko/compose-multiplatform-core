@@ -56,12 +56,21 @@ private fun wasmBuffer(memory: WebAssembly.Memory): ArrayBuffer = js("memory.buf
 
 internal fun jsInt8ArrayToKotlinByteArray(x: Int8Array): ByteArray {
     val size = x.length
-
+    val bytes = ByteArray(size)
+    // The bytes go through a chunk of the linear memory one part after the other: the memory never
+    // shrinks, so it must not grow to the size of the file.
     @OptIn(UnsafeWasmMemoryApi::class)
-    return withScopedMemoryAllocator { allocator ->
-        val memBuffer = allocator.allocate(size)
-        val dstAddress = memBuffer.address.toInt()
-        Int8Array(wasmBuffer(wasmMemory), dstAddress, size).set(x)
-        ByteArray(size) { i -> (memBuffer + i).loadByte() }
+    withScopedMemoryAllocator { allocator ->
+        val chunk = allocator.allocate(ChunkSize)
+        val view = Int8Array(wasmBuffer(wasmMemory), chunk.address.toInt(), ChunkSize)
+        for (offset in 0 until size step ChunkSize) {
+            val length = minOf(ChunkSize, size - offset)
+            view.set(x.subarray(offset, offset + length))
+            for (i in 0 until length) bytes[offset + i] = (chunk + i).loadByte()
+        }
     }
+    return bytes
 }
+
+/** The size of the chunk of linear memory the bytes go through. */
+private const val ChunkSize = 64 * 1024

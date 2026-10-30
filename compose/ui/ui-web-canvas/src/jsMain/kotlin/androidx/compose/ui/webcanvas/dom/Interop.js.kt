@@ -18,17 +18,27 @@ package androidx.compose.ui.webcanvas.dom
 
 import kotlin.js.JsAny
 
-// On Kotlin/JS a ByteArray is an Int8Array and an IntArray is an Int32Array, so the data can be
-// copied by JS code directly.
+// On Kotlin/JS a ByteArray is an Int8Array, a ShortArray an Int16Array, an IntArray an Int32Array
+// and a FloatArray a Float32Array, so JS code reads them directly.
 
-internal actual fun ByteArray.toUint8Array(): JsAny = copyBytes(this)
+internal actual fun ByteArray.toBlob(type: String): JsAny = blobOf(bytesFrom(this, 0), type)
 
-internal actual fun IntArray.toInt32Array(count: Int): JsAny = copyInts(this, count)
+internal actual fun ByteArray.toUint8Array(): JsAny = bytesFrom(this, 0)
 
-private fun copyInts(ints: IntArray, count: Int): JsAny = js("ints.slice(0, count)")
+internal actual fun <R> withByteReaders(
+    floats: FloatArray,
+    ints: IntArray,
+    shorts: ShortArray,
+    block: (floats: (Int) -> JsAny, ints: (Int) -> JsAny, shorts: (Int) -> JsAny) -> R,
+): R =
+    // Every read takes all the rest of the array.
+    block({ bytesFrom(floats, it) }, { bytesFrom(ints, it) }, { bytesFrom(shorts, it) })
 
-private fun copyBytes(bytes: ByteArray): JsAny =
-    js("new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.length).slice()")
+/** A `Uint8Array` view of the bytes of the typed [array] from [byteOffset] on. */
+private fun bytesFrom(array: Any, byteOffset: Int): JsAny =
+    js("new Uint8Array(array.buffer, array.byteOffset + byteOffset, array.byteLength - byteOffset)")
+
+private fun blobOf(bytes: JsAny, type: String): JsAny = js("new Blob([bytes], { type: type })")
 
 internal actual fun readImageDataArgb(
     imageData: ImageData,
@@ -52,32 +62,3 @@ private fun readArgb(imageData: ImageData, buffer: IntArray, offset: Int, stride
         """
     )
 }
-
-internal actual fun createImageDataFromArgb(
-    pixels: IntArray,
-    offset: Int,
-    stride: Int,
-    width: Int,
-    height: Int,
-): ImageData = createImageData(pixels, offset, stride, width, height)
-
-private fun createImageData(
-    pixels: IntArray,
-    offset: Int,
-    stride: Int,
-    width: Int,
-    height: Int,
-): ImageData = js(
-    """(function() {
-        var image = new ImageData(width, height), d = image.data;
-        for (var y = 0; y < height; y++) {
-            var o = offset + y * stride, i = y * width * 4;
-            for (var x = 0; x < width; x++, i += 4) {
-                var p = pixels[o + x];
-                d[i] = (p >> 16) & 255; d[i + 1] = (p >> 8) & 255; d[i + 2] = p & 255;
-                d[i + 3] = (p >>> 24) & 255;
-            }
-        }
-        return image;
-    })()"""
-)

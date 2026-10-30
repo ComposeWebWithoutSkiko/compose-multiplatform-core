@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-@file:OptIn(InternalComposeUiApi::class, ExperimentalWasmJsInterop::class)
+@file:OptIn(InternalComposeUiApi::class)
 
 package androidx.compose.ui.webcanvas.graphics
 
@@ -35,15 +35,16 @@ import androidx.compose.ui.webcanvas.dom.createCanvas
 import androidx.compose.ui.webcanvas.dom.createConicGradientOrNull
 import androidx.compose.ui.webcanvas.dom.getContext2D
 import androidx.compose.ui.webcanvas.dom.setPatternTransform
-import kotlin.js.ExperimentalWasmJsInterop
 import kotlin.js.JsAny
-import kotlin.math.PI
 import kotlin.math.abs
-import kotlin.math.atan2
+import kotlin.math.asinh
 import kotlin.math.ceil
 import kotlin.math.hypot
+import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
+import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 /**
@@ -56,30 +57,35 @@ import kotlin.math.sqrt
  */
 internal sealed class WebShader : PlatformShader {
     private var style: JsAny? = null
-    private var styleCreated = false
+    private var styleVersion = -1
+
+    /**
+     * Increases whenever what the shader draws changes (the pixels of its image), so that what's
+     * derived from it is made again: its fill style, and its [raster]. Gradients never change.
+     */
+    open val version: Int get() = 0
 
     /**
      * The transformation from the shader's space to the space it is drawn in, when the fill style
      * can't absorb it (e.g. a non-uniformly scaled radial gradient). The canvas then has to draw
-     * through this transformation.
+     * through this transformation. Text doesn't: drawn with such a shader, it ignores it, a known
+     * limitation (the more visibly at a density above 1, where the shader is in the units of the font).
      */
     open val styleTransform: Affine? get() = null
 
-    /** Whether every pixel produced by this shader is opaque. */
-    open val isOpaque: Boolean get() = false
-
     /** The `fillStyle`/`strokeStyle` value drawing this shader, or `null` if there is none. */
     fun canvasStyle(): JsAny? {
-        if (!styleCreated) {
+        val version = version
+        if (styleVersion != version) {
             style = createStyle(ScratchContext.ctx)
-            styleCreated = true
+            styleVersion = version
         }
         return style
     }
 
     protected abstract fun createStyle(ctx: Context2D): JsAny?
 
-    /** Returns this shader drawn through [matrix], applied to the shader's local coordinates. */
+    /** Returns this shader drawn through [matrix], applied after what the shader already has. */
     abstract fun transformed(matrix: Affine): WebShader
 
     /**
@@ -187,6 +193,8 @@ internal class ShaderRaster(
     val width: Int,
     val height: Int,
     val colorFilterKey: Any?,
+    /** The [WebShader.version] of the shader the image shows. */
+    val version: Int,
     val pattern: JsAny,
 ) {
     fun matches(
@@ -196,9 +204,11 @@ internal class ShaderRaster(
         width: Int,
         height: Int,
         colorFilterKey: Any?,
+        version: Int,
     ): Boolean =
         this.left == left && this.top == top && this.width == width && this.height == height &&
-            this.colorFilterKey == colorFilterKey && this.transform.contentEquals(transform)
+            this.colorFilterKey == colorFilterKey && this.version == version &&
+            this.transform.contentEquals(transform)
 }
 
 /** Extracts the backend shader of a Compose [Shader]. */
@@ -207,16 +217,31 @@ internal val Shader.webShader: WebShader
         "Expected a shader created by the web canvas implementation, but got $platformShader"
     )
 
-/** Color stops of a gradient, already validated and converted to ARGB. */
+/**
+ * The color stops of a gradient, validated and converted to ARGB, as a canvas gradient takes them.
+ * Compose's gradients interpolate premultiplied colors, like Skia's, and canvas gradients the colors
+ * as they are: the canvas stops follow the premultiplied interpolation (see [canvasStops]), so that,
+ * for example, a gradient to transparent black doesn't darken.
+ */
 internal class GradientStops(colors: List<Color>, stops: List<Float>?) {
-    val colors: IntArray = IntArray(colors.size) { colors[it].toArgb() }
-    val positions: FloatArray = if (stops != null) {
-        FloatArray(stops.size) { stops[it] }
-    } else {
-        FloatArray(colors.size) { if (colors.size == 1) 0f else it.toFloat() / (colors.size - 1) }
-    }
+    /** The colors of the canvas stops, at [positions]: in order, within 0..1. */
+    val colors: IntArray
+    val positions: FloatArray
 
-    val isOpaque: Boolean = this.colors.all { (it ushr 24) == 0xFF }
+    init {
+        val argb = IntArray(colors.size) { colors[it].toArgb() }
+        // Clamped into 0..1 and after the previous one, as canvas gradients need them, before the
+        // stops in between are computed from them.
+        var previous = 0f
+        val clamped = FloatArray(colors.size) { i ->
+            val position = stops?.get(i) ?: if (colors.size == 1) 0f else i.toFloat() / (colors.size - 1)
+            position.coerceIn(previous, 1f).also { previous = it }
+        }
+        val count = canvasStops(argb, clamped, outColors = null, outPositions = null)
+        this.colors = IntArray(count)
+        this.positions = FloatArray(count)
+        canvasStops(argb, clamped, this.colors, this.positions)
+    }
 
     /** Adds the stops to [gradient], mapped into the [start]..[end] fraction of the gradient line. */
     fun addTo(gradient: CanvasGradient, start: Double = 0.0, end: Double = 1.0, reverse: Boolean = false) {
@@ -225,15 +250,89 @@ internal class GradientStops(colors: List<Color>, stops: List<Float>?) {
         for (i in colors.indices) {
             val index = if (reverse) colors.lastIndex - i else i
             val t = if (reverse) 1.0 - positions[index] else positions[index].toDouble()
-            // Canvas gradients reject offsets out of order or outside 0..1.
-            val offset = (start + t.coerceIn(0.0, 1.0) * span).coerceIn(previous, 1.0)
+            // Canvas gradients reject offsets out of order or outside 0..1, which the rounding of
+            // the mapping may make.
+            val offset = (start + t * span).coerceIn(previous, 1.0)
             gradient.addColorStop(offset, CssColors.of(colors[index]))
             previous = offset
         }
     }
 
     val firstColor: Int get() = colors[0]
-    val lastColor: Int get() = colors[colors.lastIndex]
+}
+
+/**
+ * Writes the canvas stops of the stops [argb] at [positions] (clamped) into [outColors] and
+ * [outPositions], if given, and returns how many there are. Between stops of different alphas and
+ * colors, they're on the premultiplied line, at alphas in geometric progression, which spreads
+ * the error of the canvas interpolation evenly (see [premultipliedSteps]). A transparent stop,
+ * whose color doesn't matter premultiplied, takes the color of the stop on each side: two stops at
+ * its position, if they differ.
+ */
+private fun canvasStops(argb: IntArray, positions: FloatArray, outColors: IntArray?, outPositions: FloatArray?): Int {
+    var count = 0
+    fun add(color: Int, position: Float) {
+        if (outColors != null && outPositions != null) {
+            outColors[count] = color
+            outPositions[count] = position
+        }
+        count++
+    }
+    val last = argb.lastIndex
+    val first = argb[0]
+    add(if (last > 0 && first ushr 24 == 0) argb[1] and 0xFFFFFF else first, positions[0])
+    for (i in 0 until last) {
+        val c0 = argb[i]
+        val c1 = argb[i + 1]
+        val p0 = positions[i]
+        val p1 = positions[i + 1]
+        val a0 = (c0 ushr 24) / 255f
+        val a1 = (c1 ushr 24) / 255f
+        if (p1 > p0 && a0 > 0f && a1 > 0f && a0 != a1 && (c0 and 0xFFFFFF) != (c1 and 0xFFFFFF)) {
+            val steps = premultipliedSteps(c0, a0, c1, a1)
+            val ratio = a1 / a0
+            for (k in 1 until steps) {
+                val alpha = a0 * ratio.pow(k.toFloat() / steps)
+                val t = (alpha - a0) / (a1 - a0)
+                add(premultipliedMix(c0, a0, c1, a1, t, alpha), p0 + t * (p1 - p0))
+            }
+        }
+        val end = if (a1 == 0f) c0 and 0xFFFFFF else c1
+        add(end, p1)
+        if (i + 1 < last) {
+            val next = if (a1 == 0f) argb[i + 2] and 0xFFFFFF else c1
+            if (next != end) add(next, p1)
+        }
+    }
+    return count
+}
+
+/** The largest error of the premultiplied color between two canvas stops. */
+private const val PremultipliedTolerance = 0.5f / 255f
+
+/**
+ * The number of steps from [c0] (of alpha [a0]) to [c1] (of alpha [a1]) on the premultiplied line,
+ * at alphas in geometric progression, for an error within [PremultipliedTolerance]: canvas
+ * gradients interpolate the color and the alpha linearly between stops, which leaves an error of
+ * Δc · a0 · a1 / |a1 - a0| · sinh²(L / 2N) on each of the N steps, L = |ln(a1 / a0)|, Δc the
+ * largest difference of the color channels. It's at most 10.
+ */
+private fun premultipliedSteps(c0: Int, a0: Float, c1: Int, a1: Float): Int {
+    var difference = 0
+    for (shift in 0..16 step 8) {
+        difference = max(difference, abs(((c0 ushr shift) and 0xFF) - ((c1 ushr shift) and 0xFF)))
+    }
+    val x = sqrt(PremultipliedTolerance * abs(a1 - a0) / (difference / 255f * a0 * a1))
+    return ceil(abs(ln(a1 / a0)) / (2 * asinh(x))).toInt()
+}
+
+/** The color at [t] from [c0] (of alpha [a0]) to [c1] (of alpha [a1]) interpolated premultiplied. */
+private fun premultipliedMix(c0: Int, a0: Float, c1: Int, a1: Float, t: Float, alpha: Float): Int {
+    fun channel(shift: Int): Int {
+        val mixed = a0 * ((c0 ushr shift) and 0xFF) * (1 - t) + a1 * ((c1 ushr shift) and 0xFF) * t
+        return (mixed / alpha).roundToInt().coerceIn(0, 255)
+    }
+    return argbOf((alpha * 255).roundToInt(), channel(16), channel(8), channel(0))
 }
 
 /**
@@ -255,9 +354,6 @@ internal class LinearGradientShader(
     val stops: GradientStops,
     val tileMode: TileMode,
 ) : WebShader() {
-    override val isOpaque: Boolean
-        get() = stops.isOpaque && tileMode != TileMode.Decal
-
     override fun createStyle(ctx: Context2D): JsAny {
         val dx = to.x - from.x
         val dy = to.y - from.y
@@ -353,9 +449,6 @@ internal class RadialGradientShader(
     val tileMode: TileMode,
     override val styleTransform: Affine? = null,
 ) : WebShader() {
-    override val isOpaque: Boolean
-        get() = stops.isOpaque && tileMode != TileMode.Decal
-
     override fun createStyle(ctx: Context2D): JsAny {
         val cx = center.x.toDouble()
         val cy = center.y.toDouble()
@@ -407,7 +500,7 @@ internal class RadialGradientShader(
     }
 
     override fun transformed(matrix: Affine): WebShader {
-        val combined = styleTransform?.copy()?.also { it.preConcat(matrix) } ?: matrix.copy()
+        val combined = styleTransform.followedBy(matrix)
         if (styleTransform == null && combined.isSimilarity) {
             // Circles stay circles: transform the center and scale the radius.
             return RadialGradientShader(
@@ -426,9 +519,6 @@ internal class SweepGradientShader(
     val stops: GradientStops,
     override val styleTransform: Affine? = null,
 ) : WebShader() {
-    override val isOpaque: Boolean
-        get() = stops.isOpaque
-
     override fun createStyle(ctx: Context2D): JsAny {
         val gradient = createConicGradientOrNull(
             ctx,
@@ -462,7 +552,12 @@ internal class SweepGradientShader(
     }
 
     override fun transformed(matrix: Affine): WebShader {
-        val combined = styleTransform?.copy()?.also { it.preConcat(matrix) } ?: matrix.copy()
+        val combined = styleTransform.followedBy(matrix)
+        if (combined.isAxisAligned && combined.a == combined.d && combined.a > 0f) {
+            // Angles survive a translation and a uniform scale: only the center moves.
+            val mapped = Offset(combined.mapX(center.x, center.y), combined.mapY(center.x, center.y))
+            return SweepGradientShader(mapped, stops)
+        }
         return SweepGradientShader(center, stops, combined)
     }
 }
@@ -473,6 +568,9 @@ internal class ImageShader(
     val tileModeY: TileMode,
     private val patternTransform: Affine? = null,
 ) : WebShader() {
+    // A pattern shows its image as it was when it was created.
+    override val version: Int get() = image.version
+
     override fun createStyle(ctx: Context2D): JsAny? {
         val source = image.drawableSource() ?: return null
         var tile: JsAny = source
@@ -527,10 +625,8 @@ internal class ImageShader(
         return pattern
     }
 
-    override fun transformed(matrix: Affine): WebShader {
-        val combined = patternTransform?.copy()?.also { it.preConcat(matrix) } ?: matrix.copy()
-        return ImageShader(image, tileModeX, tileModeY, combined)
-    }
+    override fun transformed(matrix: Affine): WebShader =
+        ImageShader(image, tileModeX, tileModeY, patternTransform.followedBy(matrix))
 
     // Canvas patterns can't extend the edge pixels of an image (TileMode.Clamp): when the drawn
     // area extends past the image, the image and its stretched edges are drawn instead.
@@ -626,6 +722,9 @@ internal class CompositeShader(
     // There is no fill style for it: it is always drawn as an image.
     override fun createStyle(ctx: Context2D): JsAny? = null
 
+    // Changes with either of the shaders, as their versions only increase.
+    override val version: Int get() = destination.version + source.version
+
     override val mayNeedRasterization: Boolean get() = true
 
     override fun transformed(matrix: Affine): WebShader =
@@ -660,6 +759,72 @@ internal class CompositeShader(
     }
 }
 
+/** A shader of one color, [argb]: what Skia makes of a gradient of one color, or of no size. */
+internal class ColorShader(private val argb: Int) : WebShader() {
+    override fun createStyle(ctx: Context2D): JsAny = CssColors.of(argb)
+
+    override fun transformed(matrix: Affine): WebShader = this
+}
+
+/**
+ * A shader without content, whose draws draw nothing, not even the paint color: what Skia makes of
+ * a decal gradient of no size. It's never drawn as an image (see `WebCanvas.applyPaint`), so it
+ * keeps no image of its own.
+ */
+internal object EmptyShader : WebShader() {
+    override fun createStyle(ctx: Context2D): JsAny? = null
+
+    override fun transformed(matrix: Affine): WebShader = this
+}
+
+/**
+ * The largest length or radius of a gradient, in its own space, that Skia takes as none: the
+ * gradient is then drawn as [degenerateGradientShader] makes it.
+ */
+internal const val DegenerateGradientSize = 1f / 32768
+
+/**
+ * The shader that Skia draws a gradient of no size with, of [colors] (at least two) at [stops]: the
+ * last color when clamped, the average of the colors when repeated or mirrored (into which the
+ * periods blend), and nothing outside of the gradient (decal).
+ */
+internal fun degenerateGradientShader(colors: List<Color>, stops: List<Float>?, tileMode: TileMode): WebShader =
+    when (tileMode) {
+        TileMode.Clamp -> ColorShader(colors.last().toArgb())
+        TileMode.Repeated, TileMode.Mirror -> ColorShader(averageGradientColor(colors, stops))
+        else -> EmptyShader
+    }
+
+/**
+ * The average color of a gradient over its line, as Skia computes it: each interval between stops
+ * averages its two colors, the first and the last colors extend to the ends, and each interval is
+ * pinned into 0..1 on its own.
+ */
+private fun averageGradientColor(colors: List<Color>, stops: List<Float>?): Int {
+    val sums = FloatArray(4)
+    fun add(argb: Int, weight: Float) {
+        for (channel in 0 until 4) sums[channel] += weight * ((argb ushr (24 - 8 * channel)) and 0xFF)
+    }
+    val last = colors.lastIndex
+    for (i in 0 until last) {
+        val c0 = colors[i].toArgb()
+        val c1 = colors[i + 1].toArgb()
+        val weight = if (stops == null) {
+            1f / last
+        } else {
+            val p0 = stops[i].coerceIn(0f, 1f)
+            val p1 = stops[i + 1].coerceIn(p0, 1f)
+            if (i == 0) add(c0, p0)
+            if (i == last - 1) add(c1, 1 - p1)
+            p1 - p0
+        }
+        add(c0, weight / 2)
+        add(c1, weight / 2)
+    }
+    fun channel(index: Int) = sums[index].roundToInt().coerceIn(0, 255)
+    return argbOf(channel(0), channel(1), channel(2), channel(3))
+}
+
 private fun addDecalStops(gradient: CanvasGradient, stops: GradientStops, start: Double, end: Double) {
     gradient.addColorStop(0.0, JsStrings.transparent)
     gradient.addColorStop(max(0.0, start - DecalEpsilon), JsStrings.transparent)
@@ -667,6 +832,10 @@ private fun addDecalStops(gradient: CanvasGradient, stops: GradientStops, start:
     gradient.addColorStop(min(1.0, end + DecalEpsilon), JsStrings.transparent)
     gradient.addColorStop(1.0, JsStrings.transparent)
 }
+
+/** A new transformation applying [matrix] after this one, if any. */
+private fun Affine?.followedBy(matrix: Affine): Affine =
+    matrix.copy().also { combined -> this?.let(combined::preConcat) }
 
 /** A 1x1 context used to create gradients and patterns, which aren't bound to their context. */
 internal object ScratchContext {
@@ -686,14 +855,3 @@ internal fun validateColorStops(colors: List<Color>, colorStops: List<Float>?) {
         }
     }
 }
-
-/** The angle of the vector ([x], [y]) in radians, in 0 until 2π, clockwise from the x axis. */
-internal fun angleOf(x: Float, y: Float): Float {
-    val angle = atan2(y, x)
-    return if (angle < 0) angle + 2 * PI.toFloat() else angle
-}
-
-/** The Euclidean length of the vector ([x], [y]). */
-internal fun lengthOf(x: Float, y: Float): Float = sqrt(x * x + y * y)
-
-internal fun Float.nearlyZero(): Boolean = abs(this) < 1e-6f

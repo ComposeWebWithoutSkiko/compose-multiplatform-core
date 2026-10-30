@@ -20,25 +20,26 @@ import androidx.compose.ui.InternalComposeUiApi
 
 /**
  * Unicode text segmentation for the libraries built on top of the web implementation (e.g. the
- * text editing of foundation), which uses ICU through Skia on the other targets.
+ * text editing of foundation), which uses ICU through Skia on the other targets: the same as the
+ * text of ui gets (see [WebCanvasText]).
  */
 @InternalComposeUiApi
-object TextSegmentation {
+public object TextSegmentation {
     /**
      * Returns the grapheme cluster boundary before [index], or -1 if there is none (like ICU's
      * `BreakIterator.preceding`).
      */
-    fun precedingGraphemeBreak(text: String, index: Int): Int =
-        if (index <= 0) -1 else TextUnicode.previousGraphemeBoundary(text, index.coerceAtMost(text.length))
+    public fun precedingGraphemeBreak(text: String, index: Int): Int =
+        WebCanvasText.findPrecedingBreak(text, index)
 
     /**
      * Returns the grapheme cluster boundary after [index], or -1 if there is none (like ICU's
      * `BreakIterator.following`).
      */
-    fun followingGraphemeBreak(text: String, index: Int): Int =
-        if (index >= text.length) -1 else TextUnicode.nextGraphemeBoundary(text, index.coerceAtLeast(0))
+    public fun followingGraphemeBreak(text: String, index: Int): Int =
+        WebCanvasText.findFollowingBreak(text, index)
 
     /** Whether [codePoint] has the Emoji_Presentation or Extended_Pictographic property. */
-    fun isEmojiPresentationOrExtendedPictographic(codePoint: Int): Boolean =
+    public fun isEmojiPresentationOrExtendedPictographic(codePoint: Int): Boolean =
         TextUnicode.isEmojiPresentationOrExtendedPictographic(codePoint)
 }

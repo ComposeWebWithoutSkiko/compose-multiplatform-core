@@ -21,118 +21,87 @@ package androidx.compose.ui.webcanvas.path
  * it. Unlike the raw verb walk it emits an explicit closing line before a close verb when the
  * contour does not end at its start point, and it does not report a trailing moveTo.
  *
- * [next] returns a [PathVerb] or [Done] and fills [pts] with the points of the segment, the start
- * point included (`pts[0..1]`).
+ * [next] returns a [PathVerb] or [Done]; the points of the segment, its start point first, are read
+ * with [x] and [y] where they are in the path.
  */
-internal class SkiaPathIter(private val data: PathData, private val forceClose: Boolean = false) {
+internal class SkiaPathIter(private val data: PathData) {
     private var verbIndex = 0
     private var pointIndex = 0
     private var weightIndex = 0
-    private var moveX = 0f
-    private var moveY = 0f
-    private var lastX = 0f
-    private var lastY = 0f
-    private var needClose = false
 
-    /** Points of the last segment returned by [next], start point first. */
-    val pts = FloatArray(8)
+    /** The index of the first point of the contour. */
+    private var moveIndex = 0
+
+    /** The index of the point the contour has reached. */
+    private var lastIndex = 0
+
+    // The last segment: the points from [segmentStart] on, or the line closing the contour, from
+    // [segmentStart] to [moveIndex]. The points of a verb follow the point it starts from, as a
+    // moveTo follows every close ([WebPath] injects one).
+    private var segmentStart = 0
+    private var isClosingLine = false
 
     /** Weight of the last conic returned by [next]. */
     var conicWeight = 0f
         private set
 
+    /** The x coordinate of point [i] of the last segment returned by [next], its start point 0. */
+    fun x(i: Int): Float = data.points[2 * pointOf(i)]
+
+    /** The y coordinate of point [i] of the last segment returned by [next], its start point 0. */
+    fun y(i: Int): Float = data.points[2 * pointOf(i) + 1]
+
+    private fun pointOf(i: Int): Int = if (isClosingLine && i == 1) moveIndex else segmentStart + i
+
     fun next(): Int {
         val verbs = data.verbs
-        if (verbIndex == data.verbCount) {
-            // Close the curve if requested and if there is some curve to close.
-            if (needClose) {
-                if (autoClose() == PathVerb.Line.toInt()) return PathVerb.Line.toInt()
-                needClose = false
-                return PathVerb.Close.toInt()
-            }
-            return Done
-        }
-        val src = data.points
+        if (verbIndex == data.verbCount) return Done
         val verb = verbs[verbIndex++]
+        isClosingLine = false
         when (verb) {
             PathVerb.Move -> {
-                if (needClose) {
-                    verbIndex-- // Move back one verb.
-                    val v = autoClose()
-                    if (v == PathVerb.Close.toInt()) needClose = false
-                    return v
-                }
                 if (verbIndex == data.verbCount) {
                     // Might be a trailing moveTo.
                     return Done
                 }
-                moveX = src[2 * pointIndex]
-                moveY = src[2 * pointIndex + 1]
-                pts[0] = moveX
-                pts[1] = moveY
+                moveIndex = pointIndex
+                lastIndex = pointIndex
+                segmentStart = pointIndex
                 pointIndex += 1
-                lastX = moveX
-                lastY = moveY
-                needClose = forceClose
-            }
-            PathVerb.Line -> {
-                pts[0] = lastX
-                pts[1] = lastY
-                pts[2] = src[2 * pointIndex]
-                pts[3] = src[2 * pointIndex + 1]
-                lastX = pts[2]
-                lastY = pts[3]
-                pointIndex += 1
-            }
-            PathVerb.Quad,
-            PathVerb.Conic -> {
-                if (verb == PathVerb.Conic) conicWeight = data.conicWeights[weightIndex++]
-                pts[0] = lastX
-                pts[1] = lastY
-                src.copyInto(pts, 2, 2 * pointIndex, 2 * pointIndex + 4)
-                lastX = pts[4]
-                lastY = pts[5]
-                pointIndex += 2
-            }
-            PathVerb.Cubic -> {
-                pts[0] = lastX
-                pts[1] = lastY
-                src.copyInto(pts, 2, 2 * pointIndex, 2 * pointIndex + 6)
-                lastX = pts[6]
-                lastY = pts[7]
-                pointIndex += 3
             }
             PathVerb.Close -> {
                 val v = autoClose()
-                if (v == PathVerb.Line.toInt()) {
-                    verbIndex-- // Move back one verb.
-                } else {
-                    needClose = false
-                }
-                lastX = moveX
-                lastY = moveY
+                if (v == PathVerb.Line.toInt()) verbIndex-- // Move back one verb.
+                lastIndex = moveIndex
                 return v
+            }
+            else -> {
+                if (verb == PathVerb.Conic) conicWeight = data.conicWeights[weightIndex++]
+                segmentStart = lastIndex
+                pointIndex += PathVerb.pointCount(verb)
+                lastIndex = pointIndex - 1
             }
         }
         return verb.toInt()
     }
 
     private fun autoClose(): Int {
+        val pts = data.points
+        val lastX = pts[2 * lastIndex]
+        val lastY = pts[2 * lastIndex + 1]
+        val moveX = pts[2 * moveIndex]
+        val moveY = pts[2 * moveIndex + 1]
         if (lastX != moveX || lastY != moveY) {
             // A special case: if both points are NaN, they are treated as the same.
             if (lastX.isNaN() || lastY.isNaN() || moveX.isNaN() || moveY.isNaN()) {
+                segmentStart = moveIndex
                 return PathVerb.Close.toInt()
             }
-            pts[0] = lastX
-            pts[1] = lastY
-            pts[2] = moveX
-            pts[3] = moveY
-            lastX = moveX
-            lastY = moveY
+            segmentStart = lastIndex
+            isClosingLine = true
             return PathVerb.Line.toInt()
         }
-        pts[0] = moveX
-        pts[1] = moveY
+        segmentStart = moveIndex
         return PathVerb.Close.toInt()
     }
 
@@ -142,7 +111,6 @@ internal class SkiaPathIter(private val data: PathData, private val forceClose: 
      */
     fun isClosedContour(): Boolean {
         if (verbIndex >= data.verbCount) return false
-        if (forceClose) return true
         val verbs = data.verbs
         var v = verbIndex
         if (verbs[v] == PathVerb.Move) v++ // Skip the initial moveTo.

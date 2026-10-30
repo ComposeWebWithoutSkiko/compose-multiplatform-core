@@ -31,8 +31,8 @@ import androidx.compose.ui.input.pointer.PointerInputScope
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 
-// The web counterpart of DragAndDropSource.skiko.kt: the drag shadow is cached in a graphics
-// layer instead of a Skia picture.
+// The web counterpart of DragAndDropSource.skiko.kt (nonAndroidExcludingWebMain), which caches the
+// drag shadow in a Skia picture rather than a graphics layer: keep the two in sync.
 
 @Immutable
 internal actual object DragAndDropSourceDefaults {

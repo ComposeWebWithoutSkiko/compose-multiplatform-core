@@ -16,7 +16,6 @@
 
 package androidx.compose.ui.platform
 
-import androidx.annotation.VisibleForTesting
 import androidx.compose.ui.InternalComposeUiApi
 import androidx.compose.ui.graphics.platform.PlatformGraphicsRegistry
 import androidx.compose.ui.text.platform.PlatformTextRegistry
@@ -28,18 +27,7 @@ import androidx.compose.ui.webcanvas.text.WebCanvasText
  * through the browser's Canvas 2D API.
  */
 @InternalComposeUiApi
-fun registerWebCanvasComposeImplementation() {
+public fun registerWebCanvasComposeImplementation() {
     PlatformGraphicsRegistry.register(WebCanvasGraphics)
     PlatformTextRegistry.register(WebCanvasText)
-}
-
-/**
- * Unregisters the web implementation. Intended for tests to avoid leaking the registered
- * implementation as global state across test cases.
- */
-@VisibleForTesting
-@InternalComposeUiApi
-fun clearWebCanvasComposeImplementation() {
-    PlatformGraphicsRegistry.clear()
-    PlatformTextRegistry.clear()
 }

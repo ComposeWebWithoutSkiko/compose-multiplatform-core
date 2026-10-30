@@ -16,8 +16,6 @@
 
 package androidx.compose.ui.webcanvas.path
 
-import androidx.compose.ui.graphics.PathFillType
-
 /**
  * Polygonal approximation of a path: every contour becomes a closed polygon (open contours are
  * implicitly closed, as for filling). Contour `c` uses the points `[start(c), start(c + 1))`.
@@ -26,7 +24,7 @@ internal class FlattenedPath(
     /** Interleaved x/y coordinates of all polygons. */
     val xy: DoubleArray,
     /** Point index where each polygon starts, followed by the total point count. */
-    val contourStarts: IntArray,
+    private val contourStarts: IntArray,
     /** Number of polygons. */
     val contourCount: Int,
 ) {
@@ -40,23 +38,20 @@ internal class FlattenedPath(
 }
 
 /** Growable storage used to build [FlattenedPath]s. */
-internal class PolygonBuilder(initialPoints: Int = 64) {
+internal class PolygonBuilder(initialPoints: Int) {
     private var xy = DoubleArray(2 * initialPoints)
     private var starts = IntArray(8)
     private var contours = 0
     private var points = 0
     private var contourStart = 0
 
-    val pointCount: Int
-        get() = points
-
     /** Number of points in the contour being built. */
-    val currentContourSize: Int
+    private val currentContourSize: Int
         get() = points - contourStart
 
-    fun lastX(): Double = xy[2 * points - 2]
+    private fun lastX(): Double = xy[2 * points - 2]
 
-    fun lastY(): Double = xy[2 * points - 1]
+    private fun lastY(): Double = xy[2 * points - 1]
 
     fun add(x: Double, y: Double) {
         if (2 * points + 2 > xy.size) xy = xy.copyOf(xy.size * 2)
@@ -119,14 +114,10 @@ internal fun PathData.flattened(): FlattenedPath {
 }
 
 /** Flattening tolerance for a path of the given [extent]. */
-internal fun flatteningTolerance(extent: Double): Double = (extent * 0.001).coerceIn(1e-4, 0.1)
+private fun flatteningTolerance(extent: Double): Double = (extent * 0.001).coerceIn(1e-4, 0.1)
 
 /** Flattens [data] into polygons with a maximum deviation of [tolerance]. */
-internal fun flatten(
-    data: PathData,
-    tolerance: Double,
-    minPointsPerContour: Int = 2,
-): FlattenedPath {
+internal fun flatten(data: PathData, tolerance: Double): FlattenedPath {
     val builder = PolygonBuilder(maxOf(16, data.pointCount * 2))
     val pts = data.points
     var p = 0
@@ -136,7 +127,7 @@ internal fun flatten(
     for (i in 0 until data.verbCount) {
         when (data.verbs[i]) {
             PathVerb.Move -> {
-                if (inContour) builder.endContour(minPointsPerContour)
+                if (inContour) builder.endContour()
                 builder.add(pts[2 * p].toDouble(), pts[2 * p + 1].toDouble())
                 inContour = true
                 p += 1
@@ -160,15 +151,8 @@ internal fun flatten(
             }
             PathVerb.Conic -> {
                 val weight = data.conicWeights[w++]
-                val x0 = pts[2 * p - 2]
-                val y0 = pts[2 * p - 1]
-                val x1 = pts[2 * p]
-                val y1 = pts[2 * p + 1]
-                val x2 = pts[2 * p + 2]
-                val y2 = pts[2 * p + 3]
-                val pow2 = computeConicQuadPow2(x0, y0, x1, y1, x2, y2, weight, tolerance.toFloat())
-                val buffer = quads ?: FloatArray(2 * MaxConicQuadPoints).also { quads = it }
-                val count = chopConicIntoQuadsPow2(x0, y0, x1, y1, x2, y2, weight, pow2, buffer, 0)
+                val buffer = quads ?: conicQuadBuffer().also { quads = it }
+                val count = chopConicIntoQuads(pts, p, weight, tolerance.toFloat(), buffer)
                 for (q in 0 until count) {
                     val o = 4 * q
                     flattenQuad(
@@ -183,7 +167,7 @@ internal fun flatten(
                     )
                 }
                 // Make sure the contour ends exactly on the conic end point.
-                builder.addIfDistinct(x2.toDouble(), y2.toDouble())
+                builder.addIfDistinct(pts[2 * p + 2].toDouble(), pts[2 * p + 3].toDouble())
                 p += 2
             }
             PathVerb.Cubic -> {
@@ -202,12 +186,12 @@ internal fun flatten(
                 p += 3
             }
             PathVerb.Close -> {
-                if (inContour) builder.endContour(minPointsPerContour)
+                if (inContour) builder.endContour()
                 inContour = false
             }
         }
     }
-    if (inContour) builder.endContour(minPointsPerContour)
+    if (inContour) builder.endContour()
     return builder.build()
 }
 
@@ -256,49 +240,4 @@ private fun flattenCubic(
         builder.addIfDistinct(a * x0 + b * x1 + c * x2 + d * x3, a * y0 + b * y1 + c * y2 + d * y3)
     }
     builder.addIfDistinct(x3, y3)
-}
-
-/**
- * Returns true if the point ([x], [y]) is inside this path according to its fill type. Points on
- * the outline are considered inside, like Skia's `SkPath::contains`. Curves are evaluated on a
- * cached polygonal approximation (maximum error 0.1 unit, less for small paths).
- */
-internal fun PathData.contains(x: Float, y: Float): Boolean {
-    if (isEmpty || !isFinite) return false
-    if (x < left || x > right || y < top || y > bottom) return false
-    if (x.isNaN() || y.isNaN()) return false
-    return flattened().contains(x.toDouble(), y.toDouble(), fillType)
-}
-
-/** Point-in-polygon test with the given fill rule; points on an edge count as inside. */
-internal fun FlattenedPath.contains(px: Double, py: Double, fillType: PathFillType): Boolean {
-    var winding = 0
-    for (c in 0 until contourCount) {
-        val start = start(c)
-        val end = end(c)
-        var ax = xy[2 * (end - 1)]
-        var ay = xy[2 * (end - 1) + 1]
-        for (i in start until end) {
-            val bx = xy[2 * i]
-            val by = xy[2 * i + 1]
-            val cross = (bx - ax) * (py - ay) - (px - ax) * (by - ay)
-            if (
-                cross == 0.0 &&
-                    px >= minOf(ax, bx) &&
-                    px <= maxOf(ax, bx) &&
-                    py >= minOf(ay, by) &&
-                    py <= maxOf(ay, by)
-            ) {
-                return true // On the edge.
-            }
-            if (ay <= py) {
-                if (by > py && cross > 0.0) winding++
-            } else {
-                if (by <= py && cross < 0.0) winding--
-            }
-            ax = bx
-            ay = by
-        }
-    }
-    return if (fillType == PathFillType.EvenOdd) (winding and 1) != 0 else winding != 0
 }
