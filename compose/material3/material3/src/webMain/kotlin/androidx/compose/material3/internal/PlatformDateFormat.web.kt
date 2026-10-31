@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalTime::class)
-
 package androidx.compose.material3.internal
 
 import androidx.compose.material3.CalendarLocale
@@ -24,17 +22,6 @@ import androidx.compose.ui.util.fastFlatMap
 import androidx.compose.ui.util.fastMap
 import kotlin.js.definedExternally
 import kotlin.js.js
-import kotlin.time.ExperimentalTime
-import kotlin.time.Instant
-import kotlinx.datetime.LocalDate
-import kotlinx.datetime.LocalDateTime
-import kotlinx.datetime.TimeZone
-import kotlinx.datetime.atTime
-import kotlinx.datetime.format
-import kotlinx.datetime.format.FormatStringsInDatetimeFormats
-import kotlinx.datetime.format.byUnicodePattern
-import kotlinx.datetime.toInstant
-import kotlinx.datetime.toLocalDateTime
 
 internal actual class PlatformDateFormat actual constructor(private val locale: CalendarLocale) {
     actual val firstDayOfWeek: Int
@@ -56,44 +43,20 @@ internal actual class PlatformDateFormat actual constructor(private val locale: 
         listOf("AE", "AG", "AL", "AS", "AU", "BB", "BD", "BH", "BM", "BN", "BS", "BT", "CA", "CN", "CO", "CY", "DJ", "DM", "DO", "DZ", "EG", "EH", "ER", "ET", "FJ", "FM", "GD", "GH", "GM", "GR", "GU", "GY", "HK", "IN", "IQ", "JM", "JO", "KH", "KI", "KN", "KP", "KR", "KW", "KY", "LB", "LC", "LR", "LS", "LY", "MH", "MO", "MP", "MR", "MW", "MY", "NA", "NZ", "OM", "PA", "PG", "PH", "PK", "PR", "PS", "PW", "QA", "SA", "SB", "SD", "SG", "SL", "SO", "SS", "SY", "SZ", "TC", "TD", "TN", "TO", "TT", "TW", "UM", "US", "VC", "VE", "VG", "VI", "VU", "WS", "YE", "ZM")
     }
 
-    //TODO: replace manual locale-aware formatting with kotlinx-datetime when supported
-    @OptIn(FormatStringsInDatetimeFormats::class)
     actual fun formatWithPattern(
         utcTimeMillis: Long,
         pattern: String,
         cache: MutableMap<String, Any>
     ): String {
-
-        val date = Instant
-            .fromEpochMilliseconds(utcTimeMillis)
-            .toLocalDateTime(TimeZone.UTC)
-
-        val jsDate = Date(utcTimeMillis.toDouble())
-
-        val (monthShort, monthLong) = listOf(SHORT, LONG).fastMap {
-            jsDate.toLocaleDateString(
-                locales = locale.toLanguageTag(),
-                options = dateLocaleOptions {
-                    month = it
-                }
-            )
+        val date = Date(utcTimeMillis.toDouble())
+        return runsOf(pattern).joinToString("") { run ->
+            when (run[0]) {
+                'y' -> date.getUTCFullYear().toString().padStart(run.length, '0')
+                'M' -> (date.getUTCMonth() + 1).toString().padStart(run.length, '0')
+                'd' -> date.getUTCDate().toString().padStart(run.length, '0')
+                else -> run
+            }
         }
-
-        val (wdShort, wdLong) = listOf(SHORT, LONG).fastMap {
-            jsDate.toLocaleDateString(
-                locales = locale.toLanguageTag(),
-                options = dateLocaleOptions {
-                    weekday = it
-                }
-            )
-        }
-
-        return date
-            .format(LocalDateTime.Format { byUnicodePattern(pattern) })
-            .replace("MMMM", monthLong)
-            .replace("MMM", monthShort)
-            .replace("EEEE", wdLong)
-            .replace("EEE", wdShort)
     }
 
     actual fun formatWithSkeleton(
@@ -148,7 +111,6 @@ internal actual class PlatformDateFormat actual constructor(private val locale: 
         )
     }
 
-    @OptIn(FormatStringsInDatetimeFormats::class)
     actual fun parse(
         date: String,
         pattern: String,
@@ -156,18 +118,35 @@ internal actual class PlatformDateFormat actual constructor(private val locale: 
         cache: MutableMap<String, Any>
     ): CalendarDate? {
         // TODO https://youtrack.jetbrains.com/issue/CMP-7146/Properly-use-locale-in-CalendarModel.parse-implementations
-        return try {
-            LocalDate.parse(
-                input = date,
-                format = LocalDate.Format {
-                    byUnicodePattern(pattern)
+        var year: Int? = null
+        var month: Int? = null
+        var day: Int? = null
+        var position = 0
+        for (run in runsOf(pattern)) {
+            when (val letter = run[0]) {
+                'y', 'M', 'd' -> {
+                    val end =
+                        if (run.length > 1) position + run.length else endOfDigits(date, position)
+                    if (end > date.length) return null
+                    val value = numberOf(date, position, end) ?: return null
+                    when (letter) {
+                        'y' -> year = value
+                        'M' -> month = value
+                        else -> day = value
+                    }
+                    position = end
                 }
-            ).atTime(Midnight)
-                .toInstant(TimeZone.UTC)
-                .toCalendarDate(TimeZone.UTC)
-        } catch (e: Throwable) {
-            null
+                else -> {
+                    if (!date.startsWith(run, position)) return null
+                    position += run.length
+                }
+            }
         }
+        if (position != date.length || year == null || month == null || day == null) return null
+        // A month or a day out of range carries over, which gives another date.
+        val parsed = utcDate(year, month, day)
+        if (parsed.getUTCMonth() + 1 != month || parsed.getUTCDate() != day) return null
+        return CalendarDate(year, month, day, parsed.getTime().toLong())
     }
 
     actual fun getDateInputFormat(): DateInputFormat {
@@ -242,8 +221,23 @@ internal actual class PlatformDateFormat actual constructor(private val locale: 
     }
 }
 
-private fun Int.toStringWithLeadingZero(): String{
-    return if (this >= 10) toString() else "0$this"
+/** The runs of equal characters of a date pattern: `dd/MM/yyyy` is `dd`, `/`, `MM`, `/`, `yyyy`. */
+private fun runsOf(pattern: String): Sequence<String> =
+    Regex("(.)\\1*").findAll(pattern).map { it.value }
+
+private fun isAsciiDigit(char: Char): Boolean = char in '0'..'9'
+
+/** Where the digits of [text] that start at [start] end. */
+private fun endOfDigits(text: String, start: Int): Int {
+    var end = start
+    while (end < text.length && isAsciiDigit(text[end])) end++
+    return end
+}
+
+/** The number in [text] from [start] to [end], or `null` if it isn't made of ASCII digits only. */
+private fun numberOf(text: String, start: Int, end: Int): Int? {
+    if (start == end || endOfDigits(text, start) < end) return null
+    return text.substring(start, end).toIntOrNull()
 }
 
 @Suppress("UnsafeCastFromDynamic")
@@ -284,10 +278,19 @@ internal fun getIs24HourFormat(localeTag: String): Int =
  *
  * It contains only required methods.
  */
-private external class Date() {
+internal external class Date() {
     constructor(milliseconds: Double)
     constructor(year: Int, month: Int, day: Int)
     fun getDay(): Int
+    fun getDate(): Int
+    fun getMonth(): Int
+    fun getFullYear(): Int
+    fun getTime(): Double
+    fun getUTCDay(): Int
+    fun getUTCDate(): Int
+    fun getUTCMonth(): Int
+    fun getUTCFullYear(): Int
+    fun setUTCFullYear(year: Int, month: Int, day: Int): Double
     fun toLocaleDateString(locales: String, options: LocaleOptions = definedExternally): String
 
     companion object {

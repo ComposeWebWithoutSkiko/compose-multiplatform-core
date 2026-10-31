@@ -33,12 +33,12 @@ expect fun setTimeZone(id : String)
 
 // Tests were copied from Android CalendarModelTest and adopted to multiplatform
 @OptIn(ExperimentalMaterial3Api::class)
-internal class KotlinxDatetimeCalendarModelTest {
+internal class CalendarModelTest {
 
     @Test
     fun dateCreation() {
         val locale = calendarLocale("en","US")
-        val model = KotlinxDatetimeCalendarModel(locale)
+        val model = createCalendarModel(locale)
         val date = model.getCanonicalDate(January2022Millis) // 1/1/2022
         assertThat(date.year).isEqualTo(2022)
         assertThat(date.month).isEqualTo(1)
@@ -49,7 +49,7 @@ internal class KotlinxDatetimeCalendarModelTest {
     @Test
     fun dateCreation_differentTZ() {
         val locale = calendarLocale("en","US")
-        val model = KotlinxDatetimeCalendarModel(locale)
+        val model = createCalendarModel(locale)
         val defaultTz = getTimeZone()
 
         setTimeZone("GMT-5")
@@ -74,7 +74,7 @@ internal class KotlinxDatetimeCalendarModelTest {
     @Test
     fun dateCreation_withRounding() {
         val locale = calendarLocale("en","US")
-        val model = KotlinxDatetimeCalendarModel(locale)
+        val model = createCalendarModel(locale)
         val date = model.getCanonicalDate(January2022Millis + 30000) // 1/1/2022 + 30000 millis
         assertThat(date.year).isEqualTo(2022)
         assertThat(date.month).isEqualTo(1)
@@ -86,7 +86,7 @@ internal class KotlinxDatetimeCalendarModelTest {
     @Test
     fun dateCreation_withRounding_differentTz() {
         val locale = calendarLocale("en","US")
-        val model = KotlinxDatetimeCalendarModel(locale)
+        val model = createCalendarModel(locale)
         val defaultTz = getTimeZone()
 
         setTimeZone("GMT-5")
@@ -113,7 +113,7 @@ internal class KotlinxDatetimeCalendarModelTest {
     @Test
     fun dateRestore() {
         val locale = calendarLocale("en","US")
-        val model = KotlinxDatetimeCalendarModel(locale)
+        val model = createCalendarModel(locale)
         val date =
             CalendarDate(
                 year = 2022,
@@ -127,7 +127,7 @@ internal class KotlinxDatetimeCalendarModelTest {
     @Test
     fun monthCreation() {
         val locale = calendarLocale("en","US")
-        val model = KotlinxDatetimeCalendarModel(locale)
+        val model = createCalendarModel(locale)
         val date =
             CalendarDate(
                 year = 2022,
@@ -145,7 +145,7 @@ internal class KotlinxDatetimeCalendarModelTest {
     @Test
     fun monthCreation_differentTz() {
         val locale = calendarLocale("en","US")
-        val model = KotlinxDatetimeCalendarModel(locale)
+        val model = createCalendarModel(locale)
         val defaultTz = getTimeZone()
 
         setTimeZone("GMT-5")
@@ -178,7 +178,7 @@ internal class KotlinxDatetimeCalendarModelTest {
     @Test
     fun monthCreation_withRounding() {
         val locale = calendarLocale("en","US")
-        val model = KotlinxDatetimeCalendarModel(locale)
+        val model = createCalendarModel(locale)
         val date =
             CalendarDate(
                 year = 2022,
@@ -194,7 +194,7 @@ internal class KotlinxDatetimeCalendarModelTest {
     @Test
     fun monthCreation_withRounding_differentTZ() {
         val locale = calendarLocale("en","US")
-        val model = KotlinxDatetimeCalendarModel(locale)
+        val model = createCalendarModel(locale)
         val defaultTz = getTimeZone()
 
         val date =
@@ -225,7 +225,7 @@ internal class KotlinxDatetimeCalendarModelTest {
     @Test
     fun monthRestore() {
         val locale = calendarLocale("en","US")
-        val model = KotlinxDatetimeCalendarModel(locale)
+        val model = createCalendarModel(locale)
         val month = model.getMonth(year = 1999, month = 12)
         assertThat(model.getMonth(month.startUtcTimeMillis)).isEqualTo(month)
     }
@@ -233,7 +233,7 @@ internal class KotlinxDatetimeCalendarModelTest {
     @Test
     fun plusMinusMonth() {
         val locale = calendarLocale("en","US")
-        val model = KotlinxDatetimeCalendarModel(locale)
+        val model = createCalendarModel(locale)
         val month = model.getMonth(January2022Millis) // 1/1/2022
         val expectedNextMonth = model.getMonth(month.endUtcTimeMillis + 1) // 2/1/2022
         val plusMonth = model.plusMonths(from = month, addedMonthsCount = 1)
@@ -244,7 +244,7 @@ internal class KotlinxDatetimeCalendarModelTest {
     @Test
     fun parseDate() {
         val locale = calendarLocale("en","US")
-        val model = KotlinxDatetimeCalendarModel(locale)
+        val model = createCalendarModel(locale)
         val expectedDate =
             CalendarDate(
                 year = 2022,
@@ -263,7 +263,7 @@ internal class KotlinxDatetimeCalendarModelTest {
             return
 
         val locale = calendarLocale("en","US")
-        val model = KotlinxDatetimeCalendarModel(locale)
+        val model = createCalendarModel(locale)
 
         val date =
             CalendarDate(
@@ -290,7 +290,7 @@ internal class KotlinxDatetimeCalendarModelTest {
         val defaultTz = getTimeZone()
 
         val locale = calendarLocale("en","US")
-        val model = KotlinxDatetimeCalendarModel(locale)
+        val model = createCalendarModel(locale)
 
         val date =
             CalendarDate(
@@ -328,7 +328,7 @@ internal class KotlinxDatetimeCalendarModelTest {
             return
 
         val locale = calendarLocale("en", "US")
-        val model = KotlinxDatetimeCalendarModel(locale)
+        val model = createCalendarModel(locale)
         val month = model.getMonth(year = 2022, month = 3)
         assertThat(model.formatWithSkeleton(month, "yMMMM")).isEqualTo("March 2022")
         assertThat(model.formatWithSkeleton(month, "MMMMy")).isEqualTo("March 2022")
@@ -346,7 +346,7 @@ internal class KotlinxDatetimeCalendarModelTest {
 
 
         val locale = calendarLocale("en", "US")
-        val model = KotlinxDatetimeCalendarModel(locale)
+        val model = createCalendarModel(locale)
         val month = model.getMonth(year = 2022, month = 3)
 
         val test = {
@@ -372,7 +372,7 @@ internal class KotlinxDatetimeCalendarModelTest {
     fun weekdayNames() {
         // Ensure we are running on a US locale for this test.
         val locale = calendarLocale("en","US")
-        val model = KotlinxDatetimeCalendarModel(locale)
+        val model = createCalendarModel(locale)
         val weekDays = model.weekdayNames
         assertThat(weekDays.size).isEqualTo(DaysInWeek)
 
@@ -389,31 +389,31 @@ internal class KotlinxDatetimeCalendarModelTest {
     fun dateInputFormat() {
 
         var locale = calendarLocale("en","US")
-        var model = KotlinxDatetimeCalendarModel(locale)
+        var model = createCalendarModel(locale)
         assertThat(model.getDateInputFormat(locale).patternWithDelimiters,).isEqualTo("MM/dd/yyyy")
         assertThat(model.getDateInputFormat(locale).patternWithoutDelimiters).isEqualTo("MMddyyyy")
         assertThat(model.getDateInputFormat(locale).delimiter).isEqualTo('/')
 
         locale = calendarLocale("zh","CN")
-        model = KotlinxDatetimeCalendarModel(locale)
+        model = createCalendarModel(locale)
         assertThat(model.getDateInputFormat(locale).patternWithDelimiters).isEqualTo("yyyy/MM/dd")
         assertThat(model.getDateInputFormat(locale).patternWithoutDelimiters).isEqualTo("yyyyMMdd")
         assertThat(model.getDateInputFormat(locale).delimiter).isEqualTo('/')
 
         locale = calendarLocale("en","GB")
-        model = KotlinxDatetimeCalendarModel(locale)
+        model = createCalendarModel(locale)
         assertThat(model.getDateInputFormat(locale).patternWithDelimiters).isEqualTo("dd/MM/yyyy")
         assertThat(model.getDateInputFormat(locale).patternWithoutDelimiters).isEqualTo("ddMMyyyy")
         assertThat(model.getDateInputFormat(locale).delimiter).isEqualTo('/')
 
         locale = calendarLocale("ko","KR")
-        model = KotlinxDatetimeCalendarModel(locale)
+        model = createCalendarModel(locale)
         assertThat(model.getDateInputFormat(locale).patternWithDelimiters).isEqualTo("yyyy.MM.dd")
         assertThat(model.getDateInputFormat(locale).patternWithoutDelimiters).isEqualTo("yyyyMMdd")
         assertThat(model.getDateInputFormat(locale).delimiter).isEqualTo('.')
 
         locale = calendarLocale("es","CL")
-        model = KotlinxDatetimeCalendarModel(locale)
+        model = createCalendarModel(locale)
         assertThat(model.getDateInputFormat(locale).patternWithDelimiters).isEqualTo("dd-MM-yyyy")
         assertThat(model.getDateInputFormat(locale).patternWithoutDelimiters).isEqualTo("ddMMyyyy")
         assertThat(model.getDateInputFormat(locale).delimiter).isEqualTo('-')
@@ -422,7 +422,7 @@ internal class KotlinxDatetimeCalendarModelTest {
     @Test
     fun illegalDateParsingDoesNotThrowException(){
         val locale = calendarLocale("en","US")
-        val model = KotlinxDatetimeCalendarModel(locale)
+        val model = createCalendarModel(locale)
 
 
         assertThat(model.parse("50-50-2000","MM-dd-yyyy", locale)).isEqualTo(null)

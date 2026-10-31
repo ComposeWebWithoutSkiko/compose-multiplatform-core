@@ -21,10 +21,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 
 
 @ExperimentalMaterial3Api
-internal actual fun createCalendarModel(locale: CalendarLocale): CalendarModel =
-    KotlinxDatetimeCalendarModel(locale)
-
-@ExperimentalMaterial3Api
 internal actual fun formatWithSkeleton(
     utcTimeMillis: Long,
     skeleton: String,

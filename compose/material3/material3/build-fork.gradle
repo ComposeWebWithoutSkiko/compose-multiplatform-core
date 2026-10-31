@@ -75,9 +75,17 @@ androidXMultiplatform {
         skikoMain {
             dependsOn(commonMain)
             dependencies {
-                implementation(libs.datetime)
                 implementation(libs.atomicFu)
                 implementation(project(":compose:ui:ui-backhandler"))
+            }
+        }
+
+        // Desktop and native. On the web, the dates are computed by the browser: kotlinx-datetime
+        // would bring @js-joda/core into every app.
+        nonAndroidExcludingWebMain {
+            dependsOn(skikoMain)
+            dependencies {
+                implementation(libs.datetime)
             }
         }
 
@@ -102,6 +110,7 @@ androidXMultiplatform {
 
         desktopMain {
             dependsOn(skikoMain)
+            dependsOn(nonAndroidExcludingWebMain)
         }
 
         desktopTest {
@@ -127,6 +136,7 @@ androidXMultiplatform {
 
         nativeMain {
             dependsOn(nonJvmMain)
+            dependsOn(nonAndroidExcludingWebMain)
         }
 
         nativeTest {
