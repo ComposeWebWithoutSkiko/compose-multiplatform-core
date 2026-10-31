@@ -1,0 +1,44 @@
+name: Publish web-canvas
+
+on:
+  push:
+    tags:
+      - '*-webcanvas.*'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v5
+
+      - name: Setup Prerequisites
+        uses: ./.github/actions/setup-prerequisites
+
+      - name: Build the web artifacts
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: >
+          ./gradlew :mpp:publishComposeJb
+          -Pcompose.platforms=web
+          -Pjetbrains.publication.libraries=COMPOSE,COMPOSE_MATERIAL3
+          -Pjetbrains.publication.version.COMPOSE="$VERSION"
+          -Pjetbrains.publication.version.COMPOSE_MATERIAL3="$VERSION"
+          --no-daemon --stacktrace
+
+      - name: Upload them
+        working-directory: out/repository
+        env:
+          COMPOSE_REPO_URL: https://repo.redlance.org/public
+          COMPOSE_REPO_USERNAME: ${{ secrets.REDLANCE_MAVEN_USERNAME }}
+          COMPOSE_REPO_KEY: ${{ secrets.REDLANCE_MAVEN_TOKEN }}
+        run: >
+          find . -type f ! -name 'maven-metadata*' -print0
+          | xargs -0 -P 8 -I {} curl --fail --silent --show-error --retry 3 --retry-all-errors
+          --user "$COMPOSE_REPO_USERNAME:$COMPOSE_REPO_KEY"
+          --upload-file {} "$COMPOSE_REPO_URL/{}"
