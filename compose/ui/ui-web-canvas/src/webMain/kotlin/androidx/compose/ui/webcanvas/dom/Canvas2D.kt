@@ -28,6 +28,7 @@ import kotlin.js.toJsString
 
 /** A `CanvasRenderingContext2D` or an `OffscreenCanvasRenderingContext2D`. */
 internal external interface Context2D : JsAny {
+    val canvas: CanvasElement
     var globalAlpha: Double
     var globalCompositeOperation: JsString
     var fillStyle: JsAny

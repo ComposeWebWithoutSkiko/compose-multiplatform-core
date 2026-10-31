@@ -29,6 +29,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.ImageShader
 import androidx.compose.ui.graphics.LinearGradientShader
 import androidx.compose.ui.graphics.OffsetEffect
 import androidx.compose.ui.graphics.Paint
@@ -37,6 +38,9 @@ import androidx.compose.ui.graphics.Shader
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.layer.CompositingStrategy
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
@@ -48,6 +52,8 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.webcanvas.WebCanvasGraphicsContext
+import androidx.compose.ui.webcanvas.blendRenderEffect
+import androidx.compose.ui.webcanvas.colorFilterRenderEffect
 import androidx.compose.ui.webcanvas.dom.CanvasElement
 import androidx.compose.ui.webcanvas.dom.CanvasFeatures
 import androidx.compose.ui.webcanvas.dom.Context2D
@@ -58,6 +64,7 @@ import androidx.compose.ui.webcanvas.dom.createCanvas
 import androidx.compose.ui.webcanvas.dom.createElementCanvas
 import androidx.compose.ui.webcanvas.dom.getContext2D
 import androidx.compose.ui.webcanvas.dom.requireContext2D
+import androidx.compose.ui.webcanvas.shaderRenderEffect
 import kotlin.js.js
 import kotlin.math.abs
 import kotlin.test.BeforeTest
@@ -365,6 +372,7 @@ class LayerEffectsTest {
         topLeft: IntOffset,
         effect: RenderEffect? = null,
         setUp: GraphicsLayer.() -> Unit = {},
+        around: DrawScope.(drawTheLayer: DrawScope.() -> Unit) -> Unit = { it() },
         content: DrawScope.() -> Unit,
     ): ImageBitmap {
         val context = WebCanvasGraphicsContext()
@@ -380,11 +388,421 @@ class LayerEffectsTest {
                 this,
                 Size(width.toFloat(), height.toFloat()),
             ) {
-                drawLayer(layer)
+                around { drawLayer(layer) }
             }
         }
         context.releaseGraphicsLayer(layer)
         return image
+    }
+
+    /** Red on the left half of a line of [length] from the origin, and blue on the other. */
+    private fun halves(length: Float): Shader = LinearGradientShader(
+        from = Offset.Zero,
+        to = Offset(length, 0f),
+        colors = listOf(Color.Red, Color.Red, Color.Blue, Color.Blue),
+        colorStops = listOf(0f, 0.5f, 0.5f, 1f),
+    )
+
+    /** Opaque on the left half of a line of [length] from the origin, and transparent on the other. */
+    private fun halfMask(length: Float): Shader = LinearGradientShader(
+        from = Offset.Zero,
+        to = Offset(length, 0f),
+        colors = listOf(Color.Black, Color.Black, Color.Transparent, Color.Transparent),
+        colorStops = listOf(0f, 0.5f, 0.5f, 1f),
+    )
+
+    @Test
+    fun aShaderEffectFillsTheLayerInTheSpaceOfItsContent() {
+        val image = drawLayerImage(
+            width = 60,
+            height = 20,
+            layerSize = IntSize(40, 20),
+            topLeft = IntOffset(10, 0),
+            effect = shaderRenderEffect(halves(40f)),
+        ) {
+            drawRect(Color.Green, size = Size(10f, 10f))
+        }
+        assertColor(Color.Transparent, image.pixel(5, 10))
+        assertColor(Color.Red, image.pixel(15, 10))
+        assertColor(Color.Red, image.pixel(28, 10))
+        assertColor(Color.Blue, image.pixel(32, 10))
+        assertColor(Color.Blue, image.pixel(45, 10))
+        assertColor(Color.Transparent, image.pixel(55, 10))
+    }
+
+    @Test
+    fun aShaderEffectStaysInPlaceWhenAClipCutsTheLayer() {
+        val image = drawLayerImage(
+            width = 60,
+            height = 20,
+            layerSize = IntSize(40, 20),
+            topLeft = IntOffset(10, 0),
+            effect = shaderRenderEffect(halves(40f)),
+            around = { drawTheLayer -> clipRect(left = 25f) { drawTheLayer() } },
+        ) {
+            drawRect(Color.Green, size = Size(10f, 10f))
+        }
+        assertColor(Color.Transparent, image.pixel(20, 10))
+        assertColor(Color.Red, image.pixel(28, 10))
+        assertColor(Color.Blue, image.pixel(32, 10))
+    }
+
+    @Test
+    fun aShaderEffectFollowsTheScaleOfTheCanvas() {
+        val image = drawLayerImage(
+            width = 80,
+            height = 40,
+            layerSize = IntSize(40, 20),
+            topLeft = IntOffset.Zero,
+            effect = shaderRenderEffect(halves(40f)),
+            around = { drawTheLayer -> scale(2f, pivot = Offset.Zero) { drawTheLayer() } },
+        ) {
+            drawRect(Color.Green, size = Size(10f, 10f))
+        }
+        assertColor(Color.Red, image.pixel(36, 20))
+        assertColor(Color.Blue, image.pixel(44, 20))
+    }
+
+    @Test
+    fun aTintEffectAppliesToTheLayer() {
+        val image = drawLayerImage(
+            width = 20,
+            height = 20,
+            layerSize = IntSize(20, 20),
+            topLeft = IntOffset.Zero,
+            effect = colorFilterRenderEffect(ColorFilter.tint(Color.Green, BlendMode.SrcIn), null),
+        ) {
+            drawRect(Color.Red, size = Size(10f, 20f))
+        }
+        assertColor(Color.Green, image.pixel(5, 10))
+        assertColor(Color.Transparent, image.pixel(15, 10))
+    }
+
+    @Test
+    fun aColorMatrixEffectAppliesToTheResultOfItsInput() {
+        val halfAlpha = ColorMatrix().apply { this[3, 3] = 0.5f }
+        val image = drawLayerImage(
+            width = 20,
+            height = 20,
+            layerSize = IntSize(20, 20),
+            topLeft = IntOffset.Zero,
+            effect = colorFilterRenderEffect(
+                ColorFilter.colorMatrix(halfAlpha),
+                OffsetEffect(10f, 0f),
+            ),
+        ) {
+            drawRect(Color.Red, size = Size(10f, 20f))
+        }
+        assertColor(Color.Transparent, image.pixel(5, 10))
+        assertColor(Color.Red.copy(alpha = 0.5f), image.pixel(15, 10))
+    }
+
+    @Test
+    fun aBlendEffectDrawsTheLayerOverItsBackground() {
+        val image = drawLayerImage(
+            width = 40,
+            height = 20,
+            layerSize = IntSize(40, 20),
+            topLeft = IntOffset.Zero,
+            effect = blendRenderEffect(BlendMode.SrcOver, shaderRenderEffect(halves(40f)), null),
+        ) {
+            drawRect(Color.Green, size = Size(10f, 20f))
+        }
+        assertColor(Color.Green, image.pixel(5, 10))
+        assertColor(Color.Red, image.pixel(15, 10))
+        assertColor(Color.Blue, image.pixel(30, 10))
+    }
+
+    @Test
+    fun aBlendEffectMasksTheLayerWithAShader() {
+        val image = drawLayerImage(
+            width = 40,
+            height = 20,
+            layerSize = IntSize(40, 20),
+            topLeft = IntOffset.Zero,
+            effect = blendRenderEffect(BlendMode.DstIn, null, shaderRenderEffect(halfMask(40f))),
+        ) {
+            drawRect(Color.Green, size = Size(40f, 20f))
+        }
+        assertColor(Color.Green, image.pixel(10, 10))
+        assertColor(Color.Transparent, image.pixel(30, 10))
+    }
+
+    @Test
+    fun aMovedMaskCoversAllOfTheLayer() {
+        // A shader has no edges, so nothing of the layer stays unmasked where it moves away from.
+        val transparentToTheLeft = LinearGradientShader(
+            from = Offset.Zero,
+            to = Offset(20f, 0f),
+            colors = listOf(Color.Transparent, Color.Transparent, Color.Black, Color.Black),
+            colorStops = listOf(0f, 0.5f, 0.5f, 1f),
+        )
+        val image = drawLayerImage(
+            width = 40,
+            height = 20,
+            layerSize = IntSize(40, 20),
+            topLeft = IntOffset.Zero,
+            effect = blendRenderEffect(
+                BlendMode.DstIn,
+                null,
+                OffsetEffect(shaderRenderEffect(transparentToTheLeft), Offset(10f, 0f)),
+            ),
+        ) {
+            drawRect(Color.Green, size = Size(40f, 20f))
+        }
+        assertColor(Color.Transparent, image.pixel(5, 10))
+        assertColor(Color.Transparent, image.pixel(15, 10))
+        assertColor(Color.Green, image.pixel(25, 10))
+    }
+
+    @Test
+    fun softLightWithMiddleGrayLeavesTheBackgroundAsItIs() {
+        val gray = LinearGradientShader(
+            from = Offset.Zero,
+            to = Offset(1f, 0f),
+            colors = listOf(Color(0xFF808080), Color(0xFF808080)),
+        )
+        val image = drawLayerImage(
+            width = 20,
+            height = 20,
+            layerSize = IntSize(20, 20),
+            topLeft = IntOffset.Zero,
+            effect = blendRenderEffect(BlendMode.Softlight, null, shaderRenderEffect(gray)),
+        ) {
+            drawRect(Color(0xFF336699), size = Size(20f, 20f))
+        }
+        assertColor(Color(0xFF336699), image.pixel(10, 10))
+    }
+
+    @Test
+    fun aBlurOfABlendBlursItsResult() {
+        val image = drawLayerImage(
+            width = 40,
+            height = 20,
+            layerSize = IntSize(40, 20),
+            topLeft = IntOffset.Zero,
+            effect = BlurEffect(
+                blendRenderEffect(
+                    BlendMode.SrcOver,
+                    shaderRenderEffect(halves(40f)),
+                    OffsetEffect(0f, 0f),
+                ),
+                4f,
+                4f,
+                TileMode.Clamp,
+            ),
+        ) {}
+        val middle = image.pixel(20, 10)
+        assertTrue(middle.red > 0.2f && middle.blue > 0.2f, "not blurred: $middle")
+        assertColor(Color.Red, image.pixel(2, 10), tolerance = 0.05f)
+        assertColor(Color.Blue, image.pixel(37, 10), tolerance = 0.05f)
+    }
+
+    @Test
+    fun aTintThatSkiaMakesNoFilterForLeavesTheLayerAsItIs() {
+        val image = drawLayerImage(
+            width = 20,
+            height = 20,
+            layerSize = IntSize(20, 20),
+            topLeft = IntOffset.Zero,
+            effect = colorFilterRenderEffect(ColorFilter.tint(Color.Green, BlendMode.Dst), null),
+        ) {
+            drawRect(Color.Red, size = Size(10f, 20f))
+        }
+        assertColor(Color.Red, image.pixel(5, 10))
+        assertColor(Color.Transparent, image.pixel(15, 10))
+    }
+
+    @Test
+    fun aBlendInDstKeepsTheBackground() {
+        val image = drawLayerImage(
+            width = 40,
+            height = 20,
+            layerSize = IntSize(40, 20),
+            topLeft = IntOffset.Zero,
+            effect = blendRenderEffect(BlendMode.Dst, shaderRenderEffect(halves(40f)), null),
+        ) {
+            drawRect(Color.Green, size = Size(10f, 20f))
+        }
+        assertColor(Color.Red, image.pixel(5, 10))
+        assertColor(Color.Blue, image.pixel(30, 10))
+    }
+
+    @Test
+    fun aBlendInClearLeavesNothing() {
+        val image = drawLayerImage(
+            width = 40,
+            height = 20,
+            layerSize = IntSize(40, 20),
+            topLeft = IntOffset.Zero,
+            effect = blendRenderEffect(BlendMode.Clear, shaderRenderEffect(halves(40f)), null),
+        ) {
+            drawRect(Color.Green, size = Size(10f, 20f))
+        }
+        assertColor(Color.Transparent, image.pixel(5, 10))
+        assertColor(Color.Transparent, image.pixel(30, 10))
+    }
+
+    @Test
+    fun aMaskDrawnInSeveralPartsMasksTheLayerAsOneImage() {
+        // Clamped past the image, which takes a draw per edge: each would mask the ones before it.
+        val mask = ImageShader(
+            image(10, 20) { drawRect(Rect(0f, 0f, 10f, 20f), Paint()) },
+            TileMode.Clamp,
+            TileMode.Clamp,
+        )
+        val image = drawLayerImage(
+            width = 40,
+            height = 20,
+            layerSize = IntSize(40, 20),
+            topLeft = IntOffset.Zero,
+            effect = blendRenderEffect(BlendMode.DstIn, null, shaderRenderEffect(mask)),
+        ) {
+            drawRect(Color.Green, size = Size(40f, 20f))
+        }
+        assertColor(Color.Green, image.pixel(5, 10))
+        assertColor(Color.Green, image.pixel(30, 10))
+    }
+
+    @Test
+    fun aMaskThatCoversTheLayerMasksItInOneDraw() {
+        // Past the image, past the canvas the mask is drawn into: the clamped edges a single fill
+        // style has no need for would mask what the image masked.
+        val mask = ImageShader(
+            image(60, 20) { drawRect(Rect(0f, 0f, 30f, 20f), Paint()) },
+            TileMode.Clamp,
+            TileMode.Clamp,
+        )
+        val image = drawLayerImage(
+            width = 80,
+            height = 20,
+            layerSize = IntSize(40, 20),
+            topLeft = IntOffset.Zero,
+            effect = blendRenderEffect(BlendMode.DstIn, null, shaderRenderEffect(mask)),
+        ) {
+            drawRect(Color.Green, size = Size(40f, 20f))
+        }
+        assertColor(Color.Green, image.pixel(10, 10))
+        assertColor(Color.Transparent, image.pixel(35, 10))
+    }
+
+    @Test
+    fun anOffsetOfAShaderTurnsWithTheCanvas() {
+        // Turned by 90 degrees, the x axis of the content goes down: the halves meet at y = 20, and
+        // 10 further along it.
+        val image = drawLayerImage(
+            width = 40,
+            height = 40,
+            layerSize = IntSize(40, 40),
+            topLeft = IntOffset.Zero,
+            effect = OffsetEffect(shaderRenderEffect(halves(40f)), Offset(10f, 0f)),
+            around = { drawTheLayer -> rotate(90f, pivot = Offset(20f, 20f)) { drawTheLayer() } },
+        ) {}
+        assertColor(Color.Red, image.pixel(20, 25))
+        assertColor(Color.Blue, image.pixel(20, 35))
+    }
+
+    @Test
+    fun aShaderMovedBackStillCoversTheLayer() {
+        val image = drawLayerImage(
+            width = 80,
+            height = 20,
+            layerSize = IntSize(40, 20),
+            topLeft = IntOffset(30, 0),
+            effect = OffsetEffect(shaderRenderEffect(halves(4f)), Offset(-10f, 0f)),
+        ) {}
+        assertColor(Color.Blue, image.pixel(35, 10))
+        assertColor(Color.Blue, image.pixel(68, 10))
+        assertColor(Color.Transparent, image.pixel(72, 10))
+    }
+
+    @Test
+    fun thePartsOfAnEffectShareTheImageTheyWorkIn() {
+        val noise = colorFilterRenderEffect(
+            ColorFilter.tint(Color.Black.copy(alpha = 0.5f), BlendMode.DstIn),
+            shaderRenderEffect(halves(40f)),
+        )
+        val effect = colorFilterRenderEffect(
+            ColorFilter.tint(Color.White.copy(alpha = 0.3f), BlendMode.SrcOver),
+            blendRenderEffect(
+                BlendMode.Softlight,
+                BlurEffect(3f, 3f, TileMode.Decal),
+                noise,
+            ),
+        )
+        val draws = contextCallsDuring(listOf("drawImage")) {
+            drawLayerImage(
+                width = 40,
+                height = 20,
+                layerSize = IntSize(40, 20),
+                topLeft = IntOffset.Zero,
+                effect = effect,
+            ) {
+                drawRect(Color.Green, size = Size(40f, 20f))
+            }
+        }.names
+        // The layer blurred into the image, which all the other parts apply to, and the image drawn
+        // where the layer goes. Without `ctx.filter`, the blur takes a draw of its own.
+        assertEquals(if (CanvasFeatures.filter) 2 else 3, draws.size, "$draws")
+    }
+
+    @Test
+    fun aTintThatSkiaMakesNoFilterForAsTheBackgroundOfABlend() {
+        val image = drawLayerImage(
+            width = 40,
+            height = 20,
+            layerSize = IntSize(40, 20),
+            topLeft = IntOffset.Zero,
+            effect = blendRenderEffect(
+                BlendMode.SrcOver,
+                colorFilterRenderEffect(ColorFilter.tint(Color.Green, BlendMode.Dst), null),
+                shaderRenderEffect(halfMask(40f)),
+            ),
+        ) {
+            drawRect(Color.Red, size = Size(40f, 20f))
+        }
+        assertColor(Color.Black, image.pixel(5, 10))
+        assertColor(Color.Red, image.pixel(30, 10))
+    }
+
+    @Test
+    fun aMovedFilterThatFillsTheLayerStaysAnImageOfIt() {
+        // Transparent pixels turn opaque, within the image of the layer.
+        val opaque = ColorMatrix().apply { this[3, 4] = 255f }
+        val image = drawLayerImage(
+            width = 40,
+            height = 20,
+            layerSize = IntSize(40, 20),
+            topLeft = IntOffset.Zero,
+            effect = OffsetEffect(
+                colorFilterRenderEffect(
+                    ColorFilter.colorMatrix(opaque),
+                    shaderRenderEffect(halves(40f)),
+                ),
+                Offset(10f, 0f),
+            ),
+        ) {}
+        assertColor(Color.Transparent, image.pixel(5, 10))
+        assertColor(Color.Red, image.pixel(15, 10))
+    }
+
+    @Test
+    fun theAlphaOfAnEffectAppliesAfterTheFilterOfItsInput() {
+        val opaque = ColorMatrix().apply { this[3, 4] = 255f }
+        val image = drawLayerImage(
+            width = 40,
+            height = 20,
+            layerSize = IntSize(40, 20),
+            topLeft = IntOffset.Zero,
+            effect = colorFilterRenderEffect(
+                ColorFilter.tint(Color.Black.copy(alpha = 0.5f), BlendMode.DstIn),
+                colorFilterRenderEffect(ColorFilter.colorMatrix(opaque), null),
+            ),
+        ) {
+            drawRect(Color.Red, size = Size(10f, 20f))
+        }
+        assertColor(Color.Red.copy(alpha = 0.5f), image.pixel(5, 10))
+        assertColor(Color.Black.copy(alpha = 0.5f), image.pixel(30, 10))
     }
 
     @Test

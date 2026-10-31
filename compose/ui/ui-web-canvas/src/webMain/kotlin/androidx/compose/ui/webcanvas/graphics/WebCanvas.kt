@@ -169,11 +169,9 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
         val top: Int,
         val width: Int,
         val height: Int,
-        /** The scale of the layer content in device pixels, to scale effect parameters. */
-        val scale: Float,
         /**
-         * The job of the layer, if it was drawn ahead, with the blur of its effect prepared ahead,
-         * if it has one (see [FramePlan.Job.blur]).
+         * The job of the layer, if it was drawn ahead, with what its effect prepared ahead, if it
+         * has one (see [Effects.plan]).
          */
         val job: FramePlan.Job?,
     ) {
@@ -369,9 +367,9 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
         if (plan != null) {
             if (content != null) {
                 val job = plan.openJob(content, contentOp, layerLeft, layerTop, width, height, matrix, paint)
-                // A layer composited from a copy with its color filter is blurred from the copy.
+                // The effect of a layer composited from a copy with its color filter reads the copy.
                 if (svgColorFilterOf(paint) == null) {
-                    Effects.planBlur(paint.renderEffect, matrix.averageScale, width, height, job.blur)
+                    Effects.plan(paint.renderEffect, matrix.averageScale, width, height, job)
                 }
                 entry.job = job
             }
@@ -419,7 +417,6 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
         top = layerTop,
         width = layerRight - layerLeft,
         height = layerBottom - layerTop,
-        scale = matrix.averageScale,
         job = job,
     )
 
@@ -539,12 +536,10 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
         ctx.rect(dx, dy, w, h)
         ctx.clip(JsStrings.nonzero)
         t.setCompositeOperation(operation)
-        val blur = layer.job?.blur
-        if (effect is WebRenderEffect.Blur && blur?.page != null && source === layer.source) {
-            Effects.drawBlurredAhead(ctx, effect, blur, layer.scale, dx, dy)
-        } else if (effect != null) {
+        if (effect != null) {
             Effects.draw(
-                ctx, effect, source, sourceX, sourceY, layer.width, layer.height, layer.scale, dx, dy,
+                ctx, effect, source, sourceX, sourceY, layer.width, layer.height, matrix,
+                layer.left, layer.top, layer.job, dx, dy,
             )
         } else {
             if (filter != null) ctx.filter = filter

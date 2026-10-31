@@ -150,9 +150,7 @@ internal class WebPaint : Paint {
         set(value) {
             if (field != value) {
                 field = value
-                val filter = value?.webColorFilter
-                appliedColorFilter =
-                    if (filter is WebColorFilter.Tint && filter.isNoOpBlend) null else filter
+                appliedColorFilter = value?.webColorFilter?.applied
                 changed()
             }
         }

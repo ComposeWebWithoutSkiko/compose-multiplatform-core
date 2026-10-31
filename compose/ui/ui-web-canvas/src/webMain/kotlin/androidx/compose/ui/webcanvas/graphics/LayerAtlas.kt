@@ -48,16 +48,22 @@ internal class LayerAtlas(private val maxPixels: Long = MaxPixels) {
          * the slots they're made from.
          */
         Blurs,
+
+        /** The images of the foregrounds of the effects of layers ([FramePlan.Job.foreground]). */
+        Foregrounds,
+
+        /** The images the effects of layers work in ([FramePlan.Job.result]), after what they read. */
+        Results,
     }
 
     /** The pages of each level, of each kind. */
     private val levels = ArrayList<Array<AtlasLevel>>()
 
     /**
-     * Gives the jobs of [plan] their slots, and the images of their blurs to the ones that prepare
-     * them, level by level as long as [maxPixels] last, and clears the pages that get slots. The
-     * jobs without a slot are drawn where they're met. Pages that go unused for a while are
-     * released, so this is called for every frame, layers or not.
+     * Gives the jobs of [plan] their slots, and the images of their blurs and effects to the ones
+     * that prepare them, level by level as long as [maxPixels] last, and clears the pages that get
+     * slots. The jobs without a slot are drawn where they're met. Pages that go unused for a while
+     * are released, so this is called for every frame, layers or not.
      */
     fun layOut(plan: FramePlan) {
         while (levels.size < plan.levelCount) {
@@ -106,6 +112,8 @@ internal class LayerAtlas(private val maxPixels: Long = MaxPixels) {
                 SlotKind.Layers -> !job.isInPerspective
                 SlotKind.Perspective -> job.isInPerspective
                 SlotKind.Blurs -> job.blur.isPrepared && job.page != null
+                SlotKind.Foregrounds -> job.foreground.effect != null && job.page != null
+                SlotKind.Results -> job.result.effect != null && job.page != null
             }
 
         private fun widthOf(job: FramePlan.Job): Int =
@@ -119,7 +127,12 @@ internal class LayerAtlas(private val maxPixels: Long = MaxPixels) {
             if (kind == SlotKind.Perspective) min(PageSize, WebGLRenderer.maxTextureSize) else PageSize
 
         private fun place(job: FramePlan.Job, slotPage: AtlasPage, slotX: Int, slotY: Int) {
-            if (kind == SlotKind.Blurs) job.blur.place(slotPage, slotX, slotY) else job.place(slotPage, slotX, slotY)
+            when (kind) {
+                SlotKind.Layers, SlotKind.Perspective -> job.place(slotPage, slotX, slotY)
+                SlotKind.Blurs -> job.blur.place(slotPage, slotX, slotY)
+                SlotKind.Foregrounds -> job.foreground.place(slotPage, slotX, slotY)
+                SlotKind.Results -> job.result.place(slotPage, slotX, slotY)
+            }
         }
 
         private fun place(job: FramePlan.Job) {

@@ -47,6 +47,11 @@ import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
+// What filling an area with a shader computes, for every fill.
+private val scratchTransform = Affine()
+private val scratchInverse = Affine()
+private val scratchArea = FloatArray(4)
+
 /**
  * A shader of the web backend. Gradients and patterns of the Canvas 2D API are not bound to the
  * context that created them, so each shader creates its fill style once, with a shared scratch
@@ -106,12 +111,20 @@ internal sealed class WebShader : PlatformShader {
      * of the shader to these pixels.
      */
     open fun rasterize(ctx: Context2D, transform: Affine, width: Int, height: Int) {
+        fillWithStyle(ctx, transform, width, height)
+    }
+
+    /**
+     * Fills the [width] x [height] pixels of [ctx] in one draw with the [fill style][canvasStyle] of
+     * the shader, [transform] mapping the space of the shader to these pixels.
+     */
+    fun fillWithStyle(ctx: Context2D, transform: Affine, width: Int, height: Int) {
         val style = canvasStyle() ?: return
-        val full = transform.copy()
+        val full = scratchTransform.set(transform)
         styleTransform?.let { full.preConcat(it) }
-        val inverse = full.copy()
+        val inverse = scratchInverse.set(full)
         if (!inverse.invert()) return
-        val area = FloatArray(4)
+        val area = scratchArea
         inverse.mapRect(0f, 0f, width.toFloat(), height.toFloat(), area)
         ctx.setTransform(
             full.a.toDouble(),
@@ -639,12 +652,12 @@ internal class ImageShader(
 
     override fun needsRasterization(toDevice: Affine, deviceBounds: FloatArray): Boolean {
         if (!clampsWithoutRepetition) return false
-        val full = toDevice.copy()
+        val full = scratchTransform.set(toDevice)
         patternTransform?.let { full.preConcat(it) }
-        val inverse = full.copy()
+        val inverse = scratchInverse.set(full)
         if (!inverse.invert()) return false
         // The image space bounds of the drawn area: inside the image, clamping changes nothing.
-        val area = FloatArray(4)
+        val area = scratchArea
         inverse.mapRect(deviceBounds[0], deviceBounds[1], deviceBounds[2], deviceBounds[3], area)
         val tolerance = 0.5f
         return area[0] < -tolerance || area[1] < -tolerance ||
@@ -657,11 +670,11 @@ internal class ImageShader(
             return
         }
         val source = image.drawableSource() ?: return
-        val full = transform.copy()
+        val full = scratchTransform.set(transform)
         patternTransform?.let { full.preConcat(it) }
-        val inverse = full.copy()
+        val inverse = scratchInverse.set(full)
         if (!inverse.invert()) return
-        val area = FloatArray(4)
+        val area = scratchArea
         inverse.mapRect(0f, 0f, width.toFloat(), height.toFloat(), area)
         ctx.setTransform(
             full.a.toDouble(),

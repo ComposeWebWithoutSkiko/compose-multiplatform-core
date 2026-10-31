@@ -74,6 +74,14 @@ internal class FrameRenderer(
     internal var layersBlurredAhead = 0
         private set
 
+    /** The layers whose effect worked in an image drawn ahead in the last frame. */
+    internal var layersResultsAhead = 0
+        private set
+
+    /** The layers whose effect read an image of a foreground drawn ahead in the last frame. */
+    internal var layersForegroundsAhead = 0
+        private set
+
     /** The start of the last frame, which keeps the images of shadows (see [ShadowSprites]). */
     private var frameStart = 0.0
 
@@ -116,12 +124,15 @@ internal class FrameRenderer(
         layersDrawnAhead = 0
         layersProjectedAhead = 0
         layersBlurredAhead = 0
+        layersResultsAhead = 0
+        layersForegroundsAhead = 0
     }
 
     /**
      * Draws the content of the jobs that have a slot, from the deepest level up, each level
      * compositing the jobs of the level below it, with their color filters, the blurs of a level
-     * prepared, and the slots of the layers in perspective of a level in perspective, last: WebGL
+     * prepared, the images of its effects drawn, and the slots of the layers in perspective of a
+     * level in perspective, last: WebGL
      * holds them in the canvas of the shared context until they're composited, which drawing other
      * slots there (blurs, color matrices) would clear. Returns `false` if the content of a job met a
      * layer that the plan doesn't have, when the frame is to be drawn without the jobs.
@@ -140,6 +151,7 @@ internal class FrameRenderer(
             }
             applyColorFilters(jobs)
             layersBlurredAhead += blurs.prepare(jobs)
+            prepareEffects(jobs)
             layersProjectedAhead += projector.project(jobs)
         }
         return true
@@ -169,6 +181,20 @@ internal class FrameRenderer(
             )
             // It sets the transformation of the context directly.
             pageTarget.invalidateTransform()
+        }
+    }
+
+    /**
+     * Draws the images that the effects of the [jobs] work in, the foregrounds of all of them first:
+     * reading a page while drawing into another one would make the browser finish drawing the page
+     * once per job, instead of once per level.
+     */
+    private fun prepareEffects(jobs: List<FramePlan.Job>) {
+        for (job in jobs) {
+            if (Effects.prepareForeground(job)) layersForegroundsAhead++
+        }
+        for (job in jobs) {
+            if (Effects.prepareResult(job)) layersResultsAhead++
         }
     }
 

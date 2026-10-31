@@ -98,9 +98,19 @@ internal class FramePlan {
 
         /**
          * How the blur of the layer by its effect is prepared ahead, from its slot, if at all (see
-         * [Effects.planBlur]).
+         * [Effects.plan]).
          */
         val blur = PreparedBlur()
+
+        /** The image the effect of the layer works in, if it's drawn ahead (see [Effects.plan]). */
+        val result = PreparedImage()
+
+        /**
+         * The image of a foreground that [result] is blended with, if it's drawn ahead: on a page of
+         * its own, before [result], as a canvas drawn into itself or read while another is written
+         * costs a synchronization with the GPU every time.
+         */
+        val foreground = PreparedImage()
 
         /** The jobs in this one, in the order its content meets them. */
         val children = ArrayList<Job>()
@@ -168,6 +178,8 @@ internal class FramePlan {
             this.isInPerspective = isInPerspective
             projection.owner = null
             blur.clear()
+            result.clear()
+            foreground.clear()
             this.siblings = siblings
             index = siblings.size
         }
@@ -179,6 +191,8 @@ internal class FramePlan {
             page = null
             projection.owner = null
             blur.clear()
+            result.clear()
+            foreground.clear()
             children.clear()
             siblings = emptyList()
         }
@@ -204,7 +218,8 @@ internal class FramePlan {
     /**
      * Notes the layer whose content is [content] at [contentOp] (see [JobContent.replayContent]),
      * met while planning: the draws up to [closeJob] are its content. A layer [isInPerspective]
-     * then has its [Job.projection] filled; a layer whose blur is prepared ahead, its [Job.blur].
+     * then has its [Job.projection] filled; a layer with an effect, what it prepares ahead (see
+     * [Effects.plan]).
      */
     fun openJob(
         content: JobContent,

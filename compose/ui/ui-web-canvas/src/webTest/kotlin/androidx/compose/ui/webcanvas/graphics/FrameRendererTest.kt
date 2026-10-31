@@ -30,6 +30,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.ImageShader
+import androidx.compose.ui.graphics.LinearGradientShader
 import androidx.compose.ui.graphics.OffsetEffect
 import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.PaintingStyle
@@ -51,8 +53,11 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.webcanvas.WebCanvasGraphicsContext
+import androidx.compose.ui.webcanvas.blendRenderEffect
+import androidx.compose.ui.webcanvas.colorFilterRenderEffect
 import androidx.compose.ui.webcanvas.dom.CanvasFeatures
 import androidx.compose.ui.webcanvas.dom.createThrowingContext2D
+import androidx.compose.ui.webcanvas.shaderRenderEffect
 import androidx.compose.ui.webcanvas.text.directionalRun
 import kotlin.js.toJsString
 import kotlin.math.abs
@@ -312,6 +317,115 @@ class FrameRendererTest {
         // and without `ctx.filter` (as in Safari) the one with decal edges too, both blurred ahead
         // through the pixels. The blur of an offset is blurred where it's met.
         assertEquals(if (CanvasFeatures.filter) 2 else 4, renderer.layersBlurredAhead)
+    }
+
+    @Test
+    fun effectsMadeOfSeveralParts() {
+        val shader = LinearGradientShader(
+            from = Offset.Zero,
+            to = Offset(30f, 0f),
+            colors = listOf(Color.Red, Color.Black, Color.Blue),
+        )
+        val halfAlpha = ColorMatrix().apply { this[3, 3] = 0.5f }
+        val blurred = BlurEffect(3f, 3f, TileMode.Clamp)
+        val mask = LinearGradientShader(
+            from = Offset.Zero,
+            to = Offset(30f, 0f),
+            colors = listOf(Color.Black, Color.Transparent),
+        )
+        val coverImage = ImageBitmap(40, 30)
+        Canvas(coverImage).drawRect(Rect(0f, 0f, 40f, 30f), Paint())
+        val cover = ImageShader(coverImage, TileMode.Clamp, TileMode.Clamp)
+        val effects = listOf(
+            shaderRenderEffect(shader),
+            colorFilterRenderEffect(ColorFilter.tint(Color.Green, BlendMode.SrcIn), null),
+            colorFilterRenderEffect(ColorFilter.colorMatrix(halfAlpha), OffsetEffect(4f, 2f)),
+            blendRenderEffect(BlendMode.DstIn, null, shaderRenderEffect(shader)),
+            blendRenderEffect(BlendMode.Softlight, blurred, shaderRenderEffect(shader)),
+            colorFilterRenderEffect(
+                ColorFilter.tint(Color.White.copy(alpha = 0.3f), BlendMode.SrcOver),
+                blendRenderEffect(BlendMode.Softlight, blurred, shaderRenderEffect(shader)),
+            ),
+            colorFilterRenderEffect(ColorFilter.colorMatrix(halfAlpha), blurred),
+            // A mask that a single draw covers the layer with.
+            blendRenderEffect(BlendMode.DstIn, null, shaderRenderEffect(cover)),
+            // What Haze makes of a default progressive blur: the layer, and a masked blur over it.
+            blendRenderEffect(
+                BlendMode.SrcOver,
+                OffsetEffect(0f, 0f),
+                blendRenderEffect(BlendMode.DstIn, blurred, shaderRenderEffect(mask)),
+            ),
+            OffsetEffect(blurred, Offset(2f, 1f)),
+            // The same blur twice.
+            blendRenderEffect(BlendMode.Softlight, blurred, blurred),
+        )
+        var blurredAhead = 0
+        var resultsAhead = 0
+        for (frame in effects.chunked(4)) {
+            val cards = frame.mapIndexed { i, effect ->
+                card(Palette[i], alpha = 1f, topLeft = IntOffset(6 + i * 34, 10))
+                    .also { it.renderEffect = effect }
+            }
+            val group = layer(Width, 30) { cards.forEach { drawLayer(it) } }
+            group.alpha = 0.9f
+            group.topLeft = IntOffset(0, 40)
+            assertEquals(
+                2 * cards.size + 1,
+                assertDrawnAheadTheSame { drawLayers(*cards.toTypedArray(), group) },
+            )
+            blurredAhead += renderer.layersBlurredAhead
+            resultsAhead += renderer.layersResultsAhead
+        }
+        // Each of the effects with a blur, in and out of the group.
+        assertEquals(2 * 6, blurredAhead)
+        // All the effects but the shader, which needs no image, in and out of the group.
+        assertEquals(2 * 10, resultsAhead)
+    }
+
+    /** Draws a frame of a card with [effect], and returns the images it drew, from canvases or not. */
+    private fun drawsOfAFrameWith(effect: RenderEffect): Int {
+        val card = card(Palette[0], alpha = 1f, topLeft = IntOffset(6, 10))
+        card.renderEffect = effect
+        val image = ImageBitmap(Width, Height) as CanvasImageBitmap
+        renderer = FrameRenderer(image.drawTarget)
+        return contextCallsDuring(listOf("drawImage")) {
+            renderer.render { it.drawLayers(card) }
+        }.names.size
+    }
+
+    @Test
+    fun theMainPassOnlyReadsTheImagesOfEffects() {
+        val mask = LinearGradientShader(
+            from = Offset.Zero,
+            to = Offset(30f, 0f),
+            colors = listOf(Color.Black, Color.Transparent),
+        )
+        val blurred = BlurEffect(3f, 3f, TileMode.Clamp)
+        // The edges of the blur extended (9 draws), without `ctx.filter` the blur WebGL made drawn
+        // back into its slot, and the blur into the image the effect works in.
+        val blurAhead = 9 + (if (CanvasFeatures.filter) 0 else 1) + 1
+        val tinted = drawsOfAFrameWith(
+            colorFilterRenderEffect(
+                ColorFilter.tint(Color.White.copy(alpha = 0.3f), BlendMode.SrcOver),
+                blendRenderEffect(BlendMode.Softlight, blurred, shaderRenderEffect(mask)),
+            ),
+        )
+        assertEquals(1, renderer.layersBlurredAhead)
+        assertEquals(1, renderer.layersResultsAhead)
+        assertEquals(0, renderer.layersForegroundsAhead)
+        assertEquals(blurAhead + 1, tinted)
+        val progressive = drawsOfAFrameWith(
+            blendRenderEffect(
+                BlendMode.SrcOver,
+                OffsetEffect(0f, 0f),
+                blendRenderEffect(BlendMode.DstIn, blurred, shaderRenderEffect(mask)),
+            ),
+        )
+        assertEquals(1, renderer.layersBlurredAhead)
+        assertEquals(1, renderer.layersResultsAhead)
+        assertEquals(1, renderer.layersForegroundsAhead)
+        // Then the layer and the foreground into the image, which the main pass reads.
+        assertEquals(blurAhead + 2 + 1, progressive)
     }
 
     @Test

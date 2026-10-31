@@ -169,14 +169,15 @@ internal val ColorFilter.webColorFilter: WebColorFilter
             platformColorFilter
     )
 
+/** The filter to apply for this one: none for a tint that Skia makes no filter for. */
+internal val WebColorFilter.applied: WebColorFilter?
+    get() = if (this is WebColorFilter.Tint && isNoOpBlend) null else this
+
 /** Builds the color filter of a Compose [ColorMatrix]. */
 internal fun ColorMatrix.toWebColorFilter(): WebColorFilter = WebColorFilter.Matrix(values.copyOf())
 
 /** A render effect of the web backend, applied when a layer is composited. */
 internal sealed class WebRenderEffect : PlatformRenderEffect {
-    /** The effect applied before this one, if any. */
-    abstract val input: WebRenderEffect?
-
     /**
      * How far, in the layer's pixels, the effect can spread content outside the layer bounds:
      * stored as (left, top, right, bottom).
@@ -184,7 +185,7 @@ internal sealed class WebRenderEffect : PlatformRenderEffect {
     abstract fun outsets(out: FloatArray)
 
     class Blur(
-        override val input: WebRenderEffect?,
+        val input: WebRenderEffect?,
         val radiusX: Float,
         val radiusY: Float,
         val edgeTreatment: TileMode,
@@ -206,14 +207,58 @@ internal sealed class WebRenderEffect : PlatformRenderEffect {
         }
     }
 
-    class Translate(override val input: WebRenderEffect?, val offset: Offset) :
-        WebRenderEffect() {
+    class Translate(val input: WebRenderEffect?, val offset: Offset) : WebRenderEffect() {
         override fun outsets(out: FloatArray) {
             input?.outsets(out) ?: out.fill(0f)
             out[0] = max(0f, out[0] - offset.x)
             out[1] = max(0f, out[1] - offset.y)
             out[2] = max(0f, out[2] + offset.x)
             out[3] = max(0f, out[3] + offset.y)
+        }
+    }
+
+    /** The [shader] over the whole layer, whatever the layer holds. */
+    class ShaderFill(val shader: WebShader) : WebRenderEffect() {
+        override fun outsets(out: FloatArray) = out.fill(0f)
+    }
+
+    /** The result of [input], or the layer, through the [applied] one of a color filter. */
+    class ColorFiltered(val input: WebRenderEffect?, filter: WebColorFilter) : WebRenderEffect() {
+        val filter: WebColorFilter? = filter.applied
+
+        /**
+         * What the alpha of the result is multiplied by, if that's all the filter does (a tint
+         * keeping the result within its color), and `ctx.globalAlpha` can do it: browsers apply it
+         * before a filter of the same draw, as the one of [input] may be.
+         */
+        val alphaScale: Float? =
+            (filter as? WebColorFilter.Tint)
+                ?.takeIf { it.blendMode == BlendMode.DstIn && input !is ColorFiltered }
+                ?.color
+                ?.alpha
+
+        override fun outsets(out: FloatArray) {
+            input?.outsets(out) ?: out.fill(0f)
+        }
+    }
+
+    /** [foreground] over [background] in [blendMode], each one the layer if `null`. */
+    class Blend(
+        val blendMode: BlendMode,
+        val background: WebRenderEffect?,
+        val foreground: WebRenderEffect?,
+    ) : WebRenderEffect() {
+        override fun outsets(out: FloatArray) {
+            background?.outsets(out) ?: out.fill(0f)
+            val left = out[0]
+            val top = out[1]
+            val right = out[2]
+            val bottom = out[3]
+            foreground?.outsets(out) ?: out.fill(0f)
+            out[0] = max(out[0], left)
+            out[1] = max(out[1], top)
+            out[2] = max(out[2], right)
+            out[3] = max(out[3], bottom)
         }
     }
 }

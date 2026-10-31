@@ -27,8 +27,8 @@ import kotlin.js.JsAny
 import kotlin.js.js
 
 /**
- * An [ImageBitmap] of [image], a JS `ImageBitmap`. It draws from [image] itself, so that images
- * decoded by the browser reach Compose without their bytes.
+ * An [ImageBitmap] of [image], a JS `ImageBitmap` or a `<canvas>`. It draws from [image] itself, so
+ * that images decoded by the browser reach Compose without their bytes.
  */
 @InternalComposeUiApi
 public fun composeImageBitmapOf(image: JsAny): ImageBitmap = BrowserImageBitmap(image)

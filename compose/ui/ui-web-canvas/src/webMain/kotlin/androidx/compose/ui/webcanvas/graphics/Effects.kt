@@ -16,6 +16,7 @@
 
 package androidx.compose.ui.webcanvas.graphics
 
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.webcanvas.dom.CanvasFeatures
 import androidx.compose.ui.webcanvas.dom.Context2D
@@ -32,15 +33,21 @@ import kotlin.math.sqrt
 
 /** Applies [WebRenderEffect]s to the pixels of a layer. */
 internal object Effects {
+    /** The layer that the effect being applied reads. */
+    private val layer = EffectLayer()
+
     /**
      * Draws the [width] x [height] area of [source], a layer, at ([sourceX], [sourceY]) with
      * [effect] applied, at ([x], [y]) of [ctx] in pixels. The caller sets up the alpha and
      * compositing operation of [ctx], and clips it to the layer area, like Skia does, in a state of
      * [ctx] it restores after: a blur through the pixels changes the image smoothing of [ctx].
-     * [scale] converts the effect parameters from the layer space to pixels.
+     * [matrix] is the transformation of the content of the layer, whose pixels start at ([left],
+     * [top]): it scales the effect parameters, and places shaders, which are in the space of the
+     * content, whatever part of it the area holds. What [job] prepared ahead is used (see [plan]).
      *
      * The last effect is applied while drawing into [ctx] (a blur through `ctx.filter`, an offset
-     * by moving the draw), so it costs no image of its own.
+     * by moving the draw), so it costs no image of its own. The parts of an effect before it work in
+     * one image, as compositing operations on it.
      */
     fun draw(
         ctx: Context2D,
@@ -50,62 +57,301 @@ internal object Effects {
         sourceY: Int,
         width: Int,
         height: Int,
-        scale: Float,
+        matrix: Affine,
+        left: Int,
+        top: Int,
+        job: FramePlan.Job?,
         x: Double,
         y: Double,
     ) {
+        layer.set(source, sourceX, sourceY, width, height, matrix, left, top)
+        layer.blur = job?.blur
+        layer.result = job?.result
+        layer.foreground = job?.foreground
+        draw(ctx, effect, x, y)
+    }
+
+    /**
+     * Plans into [job] what its [width] x [height] layer, composited with [effect] at [scale], has
+     * prepared ahead of the frame: the blur of the layer itself, if it extends its edges or goes
+     * through its pixels (see [PreparedBlur]), the image the effect works in, if it needs one, and
+     * the image of a foreground that image is blended with, if that needs one too. Other images are
+     * made where they're met.
+     */
+    fun plan(effect: WebRenderEffect?, scale: Float, width: Int, height: Int, job: FramePlan.Job) {
+        planBlur(effect, scale, width, height, job.blur)
+        val result = imageOf(effect)
+        job.result.effect = result
+        job.foreground.effect = foregroundOf(result)
+    }
+
+    /** Draws the image of the foreground planned for [job], if it has a slot. Returns whether it does. */
+    fun prepareForeground(job: FramePlan.Job): Boolean = prepare(job, job.foreground)
+
+    /**
+     * Draws the image that the effect of [job] works in, if it has a slot, from the image of its
+     * foreground. Returns whether it does.
+     */
+    fun prepareResult(job: FramePlan.Job): Boolean = prepare(job, job.result)
+
+    private fun prepare(job: FramePlan.Job, image: PreparedImage): Boolean {
+        val page = image.page ?: return false
+        layer.set(
+            checkNotNull(job.page).canvas, job.slotX, job.slotY, job.width, job.height, job.matrix,
+            job.left, job.top,
+        )
+        layer.blur = job.blur
+        layer.result = job.result
+        layer.foreground = job.foreground
+        val target = page.target
+        target.setPixelTransform()
+        target.setGlobalAlpha(1.0)
+        target.setCompositeOperation(SourceOverOperation)
+        renderClipped(target.ctx, checkNotNull(image.effect), image.x, image.y)
+        return true
+    }
+
+    /** Draws the layer through [effect] at ([x], [y]) of [ctx] (see the other overload). */
+    private fun draw(ctx: Context2D, effect: WebRenderEffect, x: Double, y: Double) {
+        val width = layer.width
+        val height = layer.height
         when (effect) {
             is WebRenderEffect.Translate -> {
-                val dx = x + effect.offset.x * scale
-                val dy = y + effect.offset.y * scale
+                val toPixels = layer.toPixels
+                val offset = effect.offset
+                val dx = x + toPixels.a * offset.x + toPixels.c * offset.y
+                val dy = y + toPixels.b * offset.x + toPixels.d * offset.y
                 val input = effect.input
-                if (input == null) {
-                    drawArea(ctx, source, sourceX, sourceY, width, height, dx, dy)
-                } else {
-                    // The result of the input is an image of the layer size, which moves.
-                    ctx.save()
-                    ctx.beginPath()
-                    ctx.rect(dx, dy, width.toDouble(), height.toDouble())
-                    ctx.clip(JsStrings.nonzero)
-                    draw(ctx, input, source, sourceX, sourceY, width, height, scale, dx, dy)
-                    ctx.restore()
+                when {
+                    input == null -> drawLayer(ctx, dx, dy)
+                    // It has no edges: it moves within the area, which it keeps covering.
+                    isUnbounded(input) -> draw(ctx, input, dx, dy)
+                    // An image of the layer size, which moves.
+                    else -> withImageOf(input) { source, sourceX, sourceY ->
+                        drawArea(ctx, source, sourceX, sourceY, width, height, dx, dy)
+                    }
                 }
             }
             is WebRenderEffect.Blur -> {
-                val sigmaX = effect.sigmaX * scale
-                val sigmaY = effect.sigmaY * scale
+                val sigmaX = effect.sigmaX * layer.scale
+                val sigmaY = effect.sigmaY * layer.scale
                 val input = effect.input
-                if (input == null) {
-                    drawBlurred(
-                        ctx, source, sourceX, sourceY, width, height, sigmaX, sigmaY,
+                val blur = layer.blur
+                when {
+                    input != null -> withImageOf(input) { source, sourceX, sourceY ->
+                        drawBlurred(
+                            ctx, source, sourceX, sourceY, width, height, sigmaX, sigmaY,
+                            effect.edgeTreatment, x, y,
+                        )
+                    }
+                    blur?.page != null && blur.effect === effect ->
+                        drawBlurredAhead(ctx, blur, sigmaX, sigmaY, x, y)
+                    else -> drawBlurred(
+                        ctx, layer.source, layer.x, layer.y, width, height, sigmaX, sigmaY,
                         effect.edgeTreatment, x, y,
                     )
-                    return
                 }
-                // The blur applies to the result of the input effect, which is rendered first.
-                val lease = LayerCanvasPool.acquire(width, height)
-                draw(lease.ctx, input, source, sourceX, sourceY, width, height, scale, 0.0, 0.0)
-                drawBlurred(
-                    ctx, lease.canvas, 0, 0, width, height, sigmaX, sigmaY,
-                    effect.edgeTreatment, x, y,
-                )
-                LayerCanvasPool.release(lease)
+            }
+            is WebRenderEffect.ShaderFill -> fill(ctx, effect.shader, x, y)
+            is WebRenderEffect.ColorFiltered -> {
+                val filter = effect.filter
+                val input = effect.input
+                val alphaScale = effect.alphaScale
+                val svgFilter = filter?.let { SvgColorFilters.filterValue(it, ctx) }
+                when {
+                    filter == null -> drawResult(ctx, input, x, y)
+                    alphaScale != null -> {
+                        val alpha = ctx.globalAlpha
+                        ctx.globalAlpha = alpha * alphaScale
+                        drawResult(ctx, input, x, y)
+                        ctx.globalAlpha = alpha
+                    }
+                    svgFilter == null -> withImageOf(effect) { source, sourceX, sourceY ->
+                        drawArea(ctx, source, sourceX, sourceY, width, height, x, y)
+                    }
+                    input == null ->
+                        drawThrough(ctx, svgFilter, layer.source, layer.x, layer.y, width, height, x, y)
+                    else -> withImageOf(input) { source, sourceX, sourceY ->
+                        drawThrough(ctx, svgFilter, source, sourceX, sourceY, width, height, x, y)
+                    }
+                }
+            }
+            is WebRenderEffect.Blend -> withImageOf(effect) { source, sourceX, sourceY ->
+                drawArea(ctx, source, sourceX, sourceY, width, height, x, y)
             }
         }
     }
 
     /**
-     * Plans into [blur] how a [width] x [height] layer composited with [effect] at [scale] has its
-     * blur prepared ahead of the frame (see [PreparedBlur]): for a blur of the layer itself that
-     * extends its edges or goes through its pixels. Otherwise, nothing is prepared.
+     * Gives [use] the image of the result of [effect]: as it was prepared ahead, or else made here.
+     * Its pixels are the ones of the layer, at the position given.
      */
-    fun planBlur(effect: WebRenderEffect?, scale: Float, width: Int, height: Int, blur: PreparedBlur) {
-        blur.clear()
-        if (effect !is WebRenderEffect.Blur || effect.input != null) return
-        val sigmaX = effect.sigmaX * scale
-        val sigmaY = effect.sigmaY * scale
+    private inline fun withImageOf(
+        effect: WebRenderEffect,
+        use: (source: JsAny, x: Int, y: Int) -> Unit,
+    ) {
+        val image = layer.preparedImageOf(effect)
+        val page = image?.page
+        if (page != null) {
+            use(page.canvas, image.x, image.y)
+            return
+        }
+        val lease = LayerCanvasPool.acquire(layer.width, layer.height)
+        renderClipped(lease.ctx, effect, 0, 0)
+        use(lease.canvas, 0, 0)
+        LayerCanvasPool.release(lease)
+    }
+
+    /**
+     * Makes the image of the result of [effect] at ([x], [y]) of [ctx], whose area is cleared. It
+     * stays in the area, which also bounds the work of the filters applied.
+     */
+    private fun renderClipped(ctx: Context2D, effect: WebRenderEffect, x: Int, y: Int) {
+        ctx.save()
+        ctx.beginPath()
+        ctx.rect(x.toDouble(), y.toDouble(), layer.width.toDouble(), layer.height.toDouble())
+        ctx.clip(JsStrings.nonzero)
+        render(ctx, effect, x, y)
+        ctx.restore()
+    }
+
+    /** Makes the image of the result of [effect] in place (see [renderClipped]). */
+    private fun render(ctx: Context2D, effect: WebRenderEffect?, x: Int, y: Int) {
+        val width = layer.width
+        val height = layer.height
+        when (effect) {
+            is WebRenderEffect.ColorFiltered -> {
+                val filter = effect.filter
+                if (filter != null && SvgColorFilters.appliesThroughSvg(filter)) {
+                    draw(ctx, effect, x.toDouble(), y.toDouble())
+                } else {
+                    render(ctx, effect.input, x, y)
+                    if (filter != null) applyColorFilterInPlace(ctx, x, y, width, height, filter)
+                }
+            }
+            is WebRenderEffect.Blend -> {
+                render(ctx, effect.background, x, y)
+                when (effect.blendMode) {
+                    BlendMode.Dst -> Unit
+                    BlendMode.Clear ->
+                        ctx.clearRect(x.toDouble(), y.toDouble(), width.toDouble(), height.toDouble())
+                    else -> {
+                        ctx.globalCompositeOperation =
+                            compositeOperationFor(effect.blendMode) ?: SourceOverOperation
+                        drawResult(ctx, effect.foreground, x.toDouble(), y.toDouble())
+                        ctx.globalCompositeOperation = SourceOverOperation
+                    }
+                }
+            }
+            is WebRenderEffect.Blur,
+            is WebRenderEffect.ShaderFill,
+            is WebRenderEffect.Translate,
+            null -> drawResult(ctx, effect, x.toDouble(), y.toDouble())
+        }
+    }
+
+    /** Draws the result of [effect], or the layer if `null`, at ([x], [y]) of [ctx]. */
+    private fun drawResult(ctx: Context2D, effect: WebRenderEffect?, x: Double, y: Double) {
+        if (effect == null) drawLayer(ctx, x, y) else draw(ctx, effect, x, y)
+    }
+
+    private fun drawLayer(ctx: Context2D, x: Double, y: Double) {
+        drawArea(ctx, layer.source, layer.x, layer.y, layer.width, layer.height, x, y)
+    }
+
+    /**
+     * Fills the area at ([x], [y]) of [ctx] with [shader], placed there. One draw over all of [ctx],
+     * clipped by the caller, can move within the area and keep covering it; a shader that takes
+     * several draws goes through the compositing operation of [ctx] as one image.
+     */
+    private fun fill(ctx: Context2D, shader: WebShader, x: Double, y: Double) {
+        val toPixels = layer.toPixels
+        val width = layer.width
+        val height = layer.height
+        val transform = fillTransform.set(
+            toPixels.a, toPixels.b, toPixels.c, toPixels.d,
+            toPixels.e + x.toFloat(), toPixels.f + y.toFloat(),
+        )
+        fillArea[0] = x.toFloat()
+        fillArea[1] = y.toFloat()
+        fillArea[2] = x.toFloat() + width
+        fillArea[3] = y.toFloat() + height
+        if (shader.needsRasterization(transform, fillArea)) {
+            val lease = LayerCanvasPool.acquire(width, height)
+            shader.rasterize(lease.ctx, transform.set(toPixels), width, height)
+            drawArea(ctx, lease.canvas, 0, 0, width, height, x, y)
+            LayerCanvasPool.release(lease)
+            return
+        }
+        ctx.save()
+        shader.fillWithStyle(ctx, transform, ctx.canvas.width, ctx.canvas.height)
+        ctx.restore()
+    }
+
+    private val fillTransform = Affine()
+    private val fillArea = FloatArray(4)
+
+    /**
+     * Whether the result of [effect] has no edges, nor anything but a shader in it, so that moving
+     * it just moves the shader.
+     */
+    private fun isUnbounded(effect: WebRenderEffect?): Boolean =
+        when (effect) {
+            is WebRenderEffect.ShaderFill -> !effect.shader.mayNeedRasterization
+            is WebRenderEffect.ColorFiltered ->
+                (effect.filter == null || effect.alphaScale != null) && isUnbounded(effect.input)
+            is WebRenderEffect.Translate -> isUnbounded(effect.input)
+            is WebRenderEffect.Blend, is WebRenderEffect.Blur, null -> false
+        }
+
+    /** The effect whose image [draw] of [effect] reads first, if it reads any. */
+    private fun imageOf(effect: WebRenderEffect?): WebRenderEffect? =
+        when (effect) {
+            is WebRenderEffect.Translate -> {
+                val input = effect.input
+                if (input != null && isUnbounded(input)) imageOf(input) else input
+            }
+            is WebRenderEffect.Blur -> effect.input
+            is WebRenderEffect.ColorFiltered -> {
+                val filter = effect.filter
+                when {
+                    filter == null || effect.alphaScale != null -> imageOf(effect.input)
+                    SvgColorFilters.appliesThroughSvg(filter) -> effect.input
+                    else -> effect
+                }
+            }
+            is WebRenderEffect.Blend -> effect
+            is WebRenderEffect.ShaderFill, null -> null
+        }
+
+    /**
+     * The effect of the first foreground that needs an image of its own, along the backgrounds of
+     * the blends of [effect] and the inputs of its filters, if any.
+     */
+    private fun foregroundOf(effect: WebRenderEffect?): WebRenderEffect? =
+        when (effect) {
+            is WebRenderEffect.ColorFiltered -> foregroundOf(effect.input)
+            is WebRenderEffect.Blend -> foregroundOf(effect.background) ?: imageOf(effect.foreground)
+            is WebRenderEffect.Blur, is WebRenderEffect.ShaderFill, is WebRenderEffect.Translate, null -> null
+        }
+
+    /** The blur of the layer itself in [effect], if any, wherever in the effect it is. */
+    private fun layerBlurOf(effect: WebRenderEffect?): WebRenderEffect.Blur? =
+        when (effect) {
+            is WebRenderEffect.Blur -> if (effect.input == null) effect else layerBlurOf(effect.input)
+            is WebRenderEffect.Blend -> layerBlurOf(effect.background) ?: layerBlurOf(effect.foreground)
+            is WebRenderEffect.ColorFiltered -> layerBlurOf(effect.input)
+            is WebRenderEffect.Translate -> layerBlurOf(effect.input)
+            is WebRenderEffect.ShaderFill, null -> null
+        }
+
+    private fun planBlur(effect: WebRenderEffect?, scale: Float, width: Int, height: Int, blur: PreparedBlur) {
+        val layerBlur = layerBlurOf(effect) ?: return
+        val sigmaX = layerBlur.sigmaX * scale
+        val sigmaY = layerBlur.sigmaY * scale
         if (sigmaX <= MinSigma && sigmaY <= MinSigma) return
-        blur.plan(sigmaX, sigmaY, effect.edgeTreatment, width, height, !blursThroughFilter(sigmaX, sigmaY))
+        blur.effect = layerBlur
+        blur.plan(sigmaX, sigmaY, layerBlur.edgeTreatment, width, height, !blursThroughFilter(sigmaX, sigmaY))
     }
 
     /**
@@ -171,21 +417,20 @@ internal object Effects {
         }
 
     /**
-     * Draws a layer blurred by [effect] at ([x], [y]) of [ctx], from the image of its [blur]
-     * prepared ahead (see [planBlur]). [scale] is as for [draw].
+     * Draws a layer blurred with the given deviations at ([x], [y]) of [ctx], from the image of its
+     * [blur] prepared ahead (see [plan]).
      */
-    fun drawBlurredAhead(
+    private fun drawBlurredAhead(
         ctx: Context2D,
-        effect: WebRenderEffect.Blur,
         blur: PreparedBlur,
-        scale: Float,
+        sigmaX: Float,
+        sigmaY: Float,
         x: Double,
         y: Double,
     ) {
         val border = PreparedBlur.Border
         drawPrepared(
-            ctx, blur, effect.sigmaX * scale, effect.sigmaY * scale,
-            checkNotNull(blur.page).canvas, blur.x + border, blur.y + border, x, y,
+            ctx, blur, sigmaX, sigmaY, checkNotNull(blur.page).canvas, blur.x + border, blur.y + border, x, y,
         )
     }
 
@@ -567,6 +812,80 @@ internal object Effects {
     private const val MaxPixelSigma = 4f
 }
 
+/** The layer that [Effects] applies an effect to, with what's prepared for it ahead of the frame. */
+private class EffectLayer {
+    // The area of the layer in its source.
+    lateinit var source: JsAny
+        private set
+    var x = 0
+        private set
+    var y = 0
+        private set
+    var width = 0
+        private set
+    var height = 0
+        private set
+
+    /** Maps the space of the content to the pixels of the area. */
+    val toPixels = Affine()
+
+    /** The scale of the content in pixels, to scale effect parameters. */
+    var scale = 1f
+        private set
+
+    /** What can be read for the layer, if there's anything (see [Effects.plan]). */
+    var blur: PreparedBlur? = null
+    var result: PreparedImage? = null
+    var foreground: PreparedImage? = null
+
+    /** Sets the area of the layer, whose content [matrix] draws with its pixels from ([left], [top]). */
+    fun set(source: JsAny, x: Int, y: Int, width: Int, height: Int, matrix: Affine, left: Int, top: Int) {
+        this.source = source
+        this.x = x
+        this.y = y
+        this.width = width
+        this.height = height
+        toPixels.set(matrix.a, matrix.b, matrix.c, matrix.d, matrix.e - left, matrix.f - top)
+        scale = matrix.averageScale
+    }
+
+    /** The image prepared for [effect], if any. */
+    fun preparedImageOf(effect: WebRenderEffect): PreparedImage? =
+        when {
+            result?.effect === effect -> result
+            foreground?.effect === effect -> foreground
+            else -> null
+        }
+}
+
+/**
+ * The image of the result of an effect of a layer drawn ahead of a frame, in a slot of a page of the
+ * atlas (see [Effects.plan]): written and read once per level of the frame, not once per layer.
+ */
+internal class PreparedImage {
+    /** The effect whose result the image holds, if it's planned. */
+    var effect: WebRenderEffect? = null
+
+    /** The page of the slot of the image at ([x], [y]), if the atlas had room for it. */
+    var page: AtlasPage? = null
+        private set
+    var x = 0
+        private set
+    var y = 0
+        private set
+
+    fun place(page: AtlasPage, x: Int, y: Int) {
+        this.page = page
+        this.x = x
+        this.y = y
+    }
+
+    fun clear() {
+        effect = null
+        page = null
+    }
+}
+
 /**
  * How the blur of an area is prepared before it's drawn (see [Effects.drawBlurSource]): its edges
  * extended over a margin, for a blur that doesn't leave them transparent, and, where the browser
@@ -575,6 +894,9 @@ internal object Effects {
  * slot of a page of the atlas ([page]).
  */
 internal class PreparedBlur {
+    /** The blur planned, if any. */
+    var effect: WebRenderEffect.Blur? = null
+
     /** How far the edges of the area are extended, if at all. */
     var margin = 0
 
@@ -622,6 +944,7 @@ internal class PreparedBlur {
 
     /** Plans no image, at no place. */
     fun clear() {
+        effect = null
         margin = 0
         throughPixels = false
         page = null
