@@ -1115,8 +1115,6 @@ class LayerEffectsTest {
 
     @Test
     fun aCanvasOfThePoolComesBackWithItsImageSmoothing() {
-        // The canvases that other tests left in the pool taken, so that it keeps the one released.
-        val others = List(8) { LayerCanvasPool.acquire(1, 1) }
         val lease = LayerCanvasPool.acquire(100, 10)
         lease.ctx.imageSmoothingEnabled = false
         lease.ctx.imageSmoothingQuality = JsStrings.high
@@ -1126,7 +1124,28 @@ class LayerEffectsTest {
         assertTrue(reused.ctx.imageSmoothingEnabled)
         assertEquals("low", reused.ctx.imageSmoothingQuality.toString())
         LayerCanvasPool.release(reused)
-        others.forEach { LayerCanvasPool.release(it) }
+    }
+
+    @Test
+    fun aFullPoolMakesRoomForTheCanvasReturnedToIt() {
+        val small = List(8) { LayerCanvasPool.acquire(1, 1) }
+        val large = LayerCanvasPool.acquire(1000, 1000)
+        small.forEach { LayerCanvasPool.release(it) }
+        LayerCanvasPool.release(large)
+        val reused = LayerCanvasPool.acquire(1000, 1000)
+        assertSame(large.canvas, reused.canvas)
+        LayerCanvasPool.release(reused)
+    }
+
+    @Test
+    fun aCanvasOverTheBudgetOfThePoolLeavesTheOthersInIt() {
+        val small = LayerCanvasPool.acquire(1, 1)
+        LayerCanvasPool.release(small)
+        val tooLarge = LayerCanvasPool.acquire(5000, 4000)
+        LayerCanvasPool.release(tooLarge)
+        val reused = LayerCanvasPool.acquire(1, 1)
+        assertSame(small.canvas, reused.canvas)
+        LayerCanvasPool.release(reused)
     }
 
     private companion object {

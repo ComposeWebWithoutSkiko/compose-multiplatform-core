@@ -447,6 +447,7 @@ internal object LayerCanvasPool {
         val height: Int,
     )
 
+    /** The free canvases, the one returned longest ago first. */
     private val free = ArrayList<Entry>()
     private const val MaxFreeEntries = 8
     private const val MaxFreePixels = 4096 * 4096
@@ -469,7 +470,8 @@ internal object LayerCanvasPool {
             val entry = free[i]
             if (entry.width >= width && entry.height >= height) {
                 val area = entry.width.toLong() * entry.height
-                if (area < bestArea) {
+                // Of equal sizes the one returned last, so that the others age out of the pool.
+                if (area <= bestArea) {
                     bestArea = area
                     bestIndex = i
                 }
@@ -496,13 +498,17 @@ internal object LayerCanvasPool {
     }
 
     fun release(lease: Lease) {
-        val pixels = free.sumOf { it.width.toLong() * it.height } +
-            lease.capacityWidth.toLong() * lease.capacityHeight
-        if (free.size >= MaxFreeEntries || pixels > MaxFreePixels) {
+        if (lease.capacityWidth.toLong() * lease.capacityHeight > MaxFreePixels) {
             releaseCanvas(lease.canvas)
             return
         }
         free.add(Entry(lease.canvas, lease.ctx, lease.capacityWidth, lease.capacityHeight))
+        var pixels = free.sumOf { it.width.toLong() * it.height }
+        while (free.size > MaxFreeEntries || pixels > MaxFreePixels) {
+            val oldest = free.removeAt(0)
+            pixels -= oldest.width.toLong() * oldest.height
+            releaseCanvas(oldest.canvas)
+        }
     }
 
     private fun roundUp(size: Int): Int = ((size + 63) / 64) * 64
