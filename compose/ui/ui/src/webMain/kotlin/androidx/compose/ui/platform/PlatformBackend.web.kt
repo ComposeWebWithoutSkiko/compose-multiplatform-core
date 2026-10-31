@@ -34,6 +34,8 @@ internal actual fun createPlatformGraphicsContext(
     snapshotCache: Boolean,
 ): PlatformGraphicsContext = WebCanvasGraphicsContext()
 
+internal actual val platformGraphicsResourceCache: GraphicsResourceCache? = GraphicsResourceCache()
+
 @Suppress("DEPRECATION")
 @OptIn(InternalComposeUiApi::class)
 internal actual fun createPlatformFontLoader(): Font.ResourceLoader = WebFontResourceLoader()

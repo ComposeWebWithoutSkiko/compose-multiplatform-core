@@ -69,6 +69,7 @@ import androidx.compose.ui.platform.DelegatingSoftwareKeyboardController
 import androidx.compose.ui.platform.PlatformContext
 import androidx.compose.ui.platform.createPlatformFontLoader
 import androidx.compose.ui.platform.createPlatformGraphicsContext
+import androidx.compose.ui.platform.platformGraphicsResourceCache
 import androidx.compose.ui.platform.PlatformRootForTest
 import androidx.compose.ui.platform.PlatformTextInputMethodRequest
 import androidx.compose.ui.platform.PlatformTextInputSessionScope
@@ -479,6 +480,7 @@ internal class RootNodeOwner(
         override val clipboard get() = platformContext.clipboard
         override val accessibilityManager get() = platformContext.accessibilityManager
         override val graphicsContext get() = this@RootNodeOwner.graphicsContext
+        override val graphicsResourceCache get() = platformGraphicsResourceCache
         override val textToolbar get() = platformContext.textToolbar
 
         @Suppress("DEPRECATION")

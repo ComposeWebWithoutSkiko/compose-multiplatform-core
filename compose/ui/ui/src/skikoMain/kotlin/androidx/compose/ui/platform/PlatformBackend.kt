@@ -37,6 +37,9 @@ internal expect fun createPlatformGraphicsContext(
     snapshotCache: Boolean,
 ): PlatformGraphicsContext
 
+/** The cache that the compositions of this platform share graphics resources through, if any. */
+internal expect val platformGraphicsResourceCache: GraphicsResourceCache?
+
 /** Creates the deprecated [Font.ResourceLoader] provided through `LocalFontLoader`. */
 @Suppress("DEPRECATION")
 internal expect fun createPlatformFontLoader(): Font.ResourceLoader

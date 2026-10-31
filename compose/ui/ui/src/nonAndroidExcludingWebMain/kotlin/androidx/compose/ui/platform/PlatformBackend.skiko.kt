@@ -35,6 +35,8 @@ internal actual fun createPlatformGraphicsContext(
     snapshotCache = snapshotCache,
 )
 
+internal actual val platformGraphicsResourceCache: GraphicsResourceCache? get() = null
+
 @Suppress("DEPRECATION")
 internal actual fun createPlatformFontLoader(): Font.ResourceLoader = FontLoader()
 

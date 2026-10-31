@@ -30,8 +30,13 @@ import androidx.compose.ui.webcanvas.dom.createCanvas
 import androidx.compose.ui.webcanvas.dom.createElementCanvas
 import androidx.compose.ui.webcanvas.dom.getContext2D
 import androidx.compose.ui.webcanvas.dom.readImageDataArgb
+import androidx.compose.ui.webcanvas.dom.releaseCanvas
 import kotlin.js.JsAny
 import kotlin.math.abs
+import kotlin.math.max
+
+/** The pixels of the filtered copies an image keeps, or of the one it keeps if it's larger. */
+private const val MaxFilteredPixels = 1024L * 1024L
 
 /**
  * An [ImageBitmap] of the web backend. Its pixels live in the browser: either in a canvas, which
@@ -75,23 +80,35 @@ internal abstract class WebImageBitmap(
      */
     open val isDrawnWhole: Boolean get() = false
 
-    private var filteredKey: Any? = null
+    /** The filtered copies of [filteredVersion], the one used longest ago first. */
+    private val filteredSources = LinkedHashMap<Any, CanvasElement>()
     private var filteredVersion: Int = -1
-    private var filteredSource: CanvasElement? = null
 
     /**
-     * Returns a copy of this image with [filter] applied to each pixel. The last result is cached,
-     * since an image is usually drawn with the same filter (e.g. an icon tint) over and over.
+     * Returns a copy of this image with [filter] applied to each pixel. The copies are cached up to
+     * [MaxFilteredPixels]: an image is drawn with the same filters (e.g. icon tints) over and over,
+     * and a vector shared by several icons with one of its own for each tint.
      */
     fun filteredSource(filter: WebColorFilter): JsAny? {
-        if (filteredKey == filter.key && filteredVersion == version) {
-            filteredSource?.let { return it }
+        if (filteredVersion != version) {
+            filteredSources.values.forEach(::releaseCanvas)
+            filteredSources.clear()
+            filteredVersion = version
+        }
+        val key = filter.key
+        filteredSources.remove(key)?.let { copy ->
+            filteredSources[key] = copy
+            return copy
         }
         val source = drawableRegionSource() ?: return null
         val result = applyColorFilter(source, width, height, filter) ?: return null
-        filteredKey = filter.key
-        filteredVersion = version
-        filteredSource = result
+        val maxCopies = max(1L, MaxFilteredPixels / (width.toLong() * height))
+        val oldestFirst = filteredSources.values.iterator()
+        while (filteredSources.size >= maxCopies) {
+            releaseCanvas(oldestFirst.next())
+            oldestFirst.remove()
+        }
+        filteredSources[key] = result
         return result
     }
 
