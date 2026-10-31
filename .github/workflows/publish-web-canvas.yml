@@ -39,6 +39,6 @@ jobs:
           COMPOSE_REPO_KEY: ${{ secrets.REDLANCE_MAVEN_TOKEN }}
         run: >
           find . -type f ! -name 'maven-metadata*' -print0
-          | xargs -0 -P 8 -I {} curl --fail --silent --show-error --retry 3 --retry-all-errors
+          | xargs -0 -P 8 -I {} curl --fail --silent --show-error --retry 3 --retry-all-errors --max-time 300
           --user "$COMPOSE_REPO_USERNAME:$COMPOSE_REPO_KEY"
           --upload-file {} "$COMPOSE_REPO_URL/{}"
