@@ -143,6 +143,9 @@ internal class DrawTarget(
     private val saved = ArrayList<State>()
     private var savedCount = 0
 
+    /** Whether a [save] is open, and with it possibly a clip. */
+    val hasSavedState: Boolean get() = savedCount > 0
+
     /** Saves the state of the context (`ctx.save()`), which [restore] brings back. */
     fun save() {
         ctx.save()
@@ -449,7 +452,11 @@ internal object LayerCanvasPool {
 
     /** The free canvases, the one returned longest ago first. */
     private val free = ArrayList<Entry>()
-    private const val MaxFreeEntries = 8
+
+    /**
+     * What the free canvases may take. Pixels are the only limit: a limit of canvases below what a
+     * frame leases would have every canvas returned push out the one that the next lease needs.
+     */
     private const val MaxFreePixels = 4096 * 4096
 
     class Lease internal constructor(
@@ -504,7 +511,7 @@ internal object LayerCanvasPool {
         }
         free.add(Entry(lease.canvas, lease.ctx, lease.capacityWidth, lease.capacityHeight))
         var pixels = free.sumOf { it.width.toLong() * it.height }
-        while (free.size > MaxFreeEntries || pixels > MaxFreePixels) {
+        while (pixels > MaxFreePixels) {
             val oldest = free.removeAt(0)
             pixels -= oldest.width.toLong() * oldest.height
             releaseCanvas(oldest.canvas)

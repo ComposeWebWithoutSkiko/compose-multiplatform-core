@@ -296,6 +296,22 @@ internal fun releaseCanvas(canvas: CanvasElement) {
     canvas.height = 0
 }
 
+// language=js
+internal fun newWeakRef(target: JsAny): JsAny = js("new WeakRef(target)")
+
+// language=js
+internal fun deref(weakRef: JsAny): JsAny? = js("weakRef.deref()")
+
+// language=js
+internal fun newWeakMap(): JsAny = js("new WeakMap()")
+
+// language=js
+internal fun setInWeakMap(map: JsAny, key: JsAny, value: JsAny): Unit = js("{ map.set(key, value); }")
+
+/** An object with nothing but its identity, to key a `WeakMap` with or to watch through a `WeakRef`. */
+// language=js
+internal fun newIdentity(): JsAny = js("({})")
+
 /**
  * A context that throws whenever it's used: the context of a canvas that must not draw anything,
  * so that a draw reaching it fails instead of drawing.

@@ -17,9 +17,10 @@
 package androidx.compose.ui.webcanvas.graphics
 
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.webcanvas.dom.deref
+import androidx.compose.ui.webcanvas.dom.newWeakRef
 import kotlin.js.JsAny
 import kotlin.js.Promise
-import kotlin.js.js
 import kotlin.js.toJsReference
 import kotlin.test.Test
 import kotlin.test.assertNotSame
@@ -38,9 +39,7 @@ class SharedPaintsTest {
     @Test
     fun aSnapshotThatNothingUsesIsNotKeptAlive(): Promise<JsAny?> {
         val snapshot = weakSnapshotOfAPaintSnapshottedOnce()
-        // A weak reference keeps its target until the task that made it ends.
         return nextTask().then {
-            // Only Chrome's test launcher exposes gc(), not Safari.
             if (collectGarbage()) assertNull(deref(snapshot), "The snapshot is kept alive")
             null
         }
@@ -50,16 +49,3 @@ class SharedPaintsTest {
     private fun weakSnapshotOfAPaintSnapshottedOnce(): JsAny =
         newWeakRef(WebPaint().apply { color = Color(0xFF654321) }.snapshot().toJsReference())
 }
-
-// language=js
-private fun newWeakRef(target: JsAny): JsAny = js("new WeakRef(target)")
-
-// language=js
-private fun deref(ref: JsAny): JsAny? = js("ref.deref()")
-
-// language=js
-private fun nextTask(): Promise<JsAny?> = js("new Promise((resolve) => setTimeout(resolve, 0))")
-
-/** Collects the garbage and returns `true`, or returns `false` where `gc()` isn't exposed. */
-// language=js
-private fun collectGarbage(): Boolean = js("{ if (typeof gc !== 'function') return false; gc(); return true; }")

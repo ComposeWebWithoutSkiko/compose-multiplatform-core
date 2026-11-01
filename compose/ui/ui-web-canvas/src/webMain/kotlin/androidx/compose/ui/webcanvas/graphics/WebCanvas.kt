@@ -1908,13 +1908,13 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
         val bottom = max(dstTop, dstBottom)
         if (quickReject(left, top, right, bottom)) return
         val colorFilter = paint.appliedColorFilter
+        val alpha = paint.color.alpha * alphaMultiplier * (colorFilter?.drawAlpha ?: 1f)
+        if (alpha <= 0f && blendModeKeepsDestinationForTransparent(blendMode)) return
         val source = if (colorFilter != null) {
             webImage.filteredSource(colorFilter)
         } else {
             webImage.drawableRegionSource()
         } ?: return
-        val alpha = paint.color.alpha * alphaMultiplier
-        if (alpha <= 0f && blendModeKeepsDestinationForTransparent(blendMode)) return
         clipBeforeDrawing(left, top, right, bottom, paint, stroke = false)
         val t = target
         t.onDraw?.invoke()

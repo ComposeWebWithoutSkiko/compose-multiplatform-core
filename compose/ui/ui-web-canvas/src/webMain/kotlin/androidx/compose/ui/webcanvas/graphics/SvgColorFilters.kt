@@ -53,22 +53,25 @@ internal object SvgColorFilters {
      */
     fun filterValue(filter: WebColorFilter, ctx: Context2D): JsString? {
         if (!appliesThroughSvg(filter)) return null
-        probe.filter = filter
+        probe.key = filter.key
+        probe.values = filter.colorMatrix
         return SvgFilters.valueOf(ctx, probe)
     }
 
-    /** The color matrix of a color [filter], the same filter for the same [WebColorFilter.key]. */
-    private class ColorMatrix(var filter: WebColorFilter? = null) : SvgFilters.Content() {
+    /**
+     * The color matrix of a color filter, the same filter for the same [WebColorFilter.key]. It
+     * holds nothing of the filter, which may keep copies of images alive ([WebColorFilter.keepFor]).
+     */
+    private class ColorMatrix(var key: Any? = null, var values: FloatArray? = null) : SvgFilters.Content() {
         override fun writeTo(filter: JsAny) {
-            writeColorMatrix(filter, checkNotNull(this.filter).colorMatrix.joinToString(" "))
+            writeColorMatrix(filter, checkNotNull(values).joinToString(" "))
         }
 
-        override fun kept(): SvgFilters.Content = ColorMatrix(filter)
+        override fun kept(): SvgFilters.Content = ColorMatrix(key, values)
 
-        override fun equals(other: Any?): Boolean =
-            other is ColorMatrix && other.filter?.key == filter?.key
+        override fun equals(other: Any?): Boolean = other is ColorMatrix && other.key == key
 
-        override fun hashCode(): Int = filter?.key.hashCode()
+        override fun hashCode(): Int = key.hashCode()
     }
 
 }

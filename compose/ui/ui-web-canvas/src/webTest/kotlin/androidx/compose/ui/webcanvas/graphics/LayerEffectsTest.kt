@@ -66,7 +66,6 @@ import androidx.compose.ui.webcanvas.dom.getContext2D
 import androidx.compose.ui.webcanvas.dom.requireContext2D
 import androidx.compose.ui.webcanvas.shaderRenderEffect
 import kotlin.js.js
-import kotlin.math.abs
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -85,16 +84,6 @@ class LayerEffectsTest {
         val image = ImageBitmap(width, height)
         Canvas(image).draw()
         return image
-    }
-
-    private fun assertColor(expected: Color, actual: Color, tolerance: Float = 0.02f) {
-        assertTrue(
-            abs(expected.red - actual.red) <= tolerance &&
-                abs(expected.green - actual.green) <= tolerance &&
-                abs(expected.blue - actual.blue) <= tolerance &&
-                abs(expected.alpha - actual.alpha) <= tolerance,
-            "Expected $expected but was $actual",
-        )
     }
 
     private fun ImageBitmap.pixel(x: Int, y: Int): Color = toPixelMap()[x, y]
@@ -1126,15 +1115,56 @@ class LayerEffectsTest {
         LayerCanvasPool.release(reused)
     }
 
+    /** Empties the pool: all of its budget goes on one canvas, which the lease returned holds. */
+    private fun leaseThatEmptiesThePool(): LayerCanvasPool.Lease {
+        LayerCanvasPool.release(LayerCanvasPool.acquire(4096, 4096))
+        return LayerCanvasPool.acquire(4096, 4096)
+    }
+
     @Test
-    fun aFullPoolMakesRoomForTheCanvasReturnedToIt() {
-        val small = List(8) { LayerCanvasPool.acquire(1, 1) }
-        val large = LayerCanvasPool.acquire(1000, 1000)
-        small.forEach { LayerCanvasPool.release(it) }
-        LayerCanvasPool.release(large)
-        val reused = LayerCanvasPool.acquire(1000, 1000)
-        assertSame(large.canvas, reused.canvas)
+    fun thePoolKeepsEveryCanvasOfAFrame() {
+        val held = leaseThatEmptiesThePool()
+        fun frame() = List(1000) { LayerCanvasPool.acquire(64, 64) }
+            .onEach { LayerCanvasPool.release(it) }
+            .map { it.canvas }
+        val first = frame()
+        for (canvas in frame()) assertTrue(first.any { it === canvas }, "A canvas was made again")
+        LayerCanvasPool.release(held)
+    }
+
+    @Test
+    fun thePoolDropsTheCanvasReturnedLongestAgo() {
+        val held = leaseThatEmptiesThePool()
+        val leases = List(3) { LayerCanvasPool.acquire(2500, 2500) }
+        leases.forEach { LayerCanvasPool.release(it) }
+        assertEquals(0, leases[0].canvas.width)
+        assertTrue(leases[1].canvas.width > 0)
+        LayerCanvasPool.release(held)
+    }
+
+    @Test
+    fun thePoolKeepsToItsBudgetOfPixels() {
+        val first = LayerCanvasPool.acquire(3000, 3000)
+        val second = LayerCanvasPool.acquire(3000, 3000)
+        LayerCanvasPool.release(first)
+        LayerCanvasPool.release(second)
+        assertEquals(0, first.canvas.width)
+        val reused = LayerCanvasPool.acquire(3000, 3000)
+        assertSame(second.canvas, reused.canvas)
         LayerCanvasPool.release(reused)
+    }
+
+    @Test
+    fun ofEqualCanvasesThePoolGivesTheOneReturnedLast() {
+        val held = leaseThatEmptiesThePool()
+        val first = LayerCanvasPool.acquire(2000, 3100)
+        val second = LayerCanvasPool.acquire(2000, 3100)
+        LayerCanvasPool.release(first)
+        LayerCanvasPool.release(second)
+        val reused = LayerCanvasPool.acquire(2000, 3100)
+        assertSame(second.canvas, reused.canvas)
+        LayerCanvasPool.release(reused)
+        LayerCanvasPool.release(held)
     }
 
     @Test

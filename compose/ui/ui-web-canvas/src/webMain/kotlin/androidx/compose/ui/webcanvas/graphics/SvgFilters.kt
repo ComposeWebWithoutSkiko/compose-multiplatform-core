@@ -19,6 +19,8 @@ package androidx.compose.ui.webcanvas.graphics
 import androidx.compose.ui.webcanvas.dom.CanvasFeatures
 import androidx.compose.ui.webcanvas.dom.Context2D
 import androidx.compose.ui.webcanvas.dom.filterScopeOf
+import androidx.compose.ui.webcanvas.dom.newWeakMap
+import androidx.compose.ui.webcanvas.dom.setInWeakMap
 import kotlin.js.JsAny
 import kotlin.js.JsReference
 import kotlin.js.JsString
@@ -67,7 +69,7 @@ internal object SvgFilters {
     }
 
     /** The [TreeFilters] of the trees, by the node that resolves them: they don't keep it alive. */
-    private val trees = createWeakMap()
+    private val trees = newWeakMap()
     private var nextId = 0
 
     /**
@@ -79,7 +81,7 @@ internal object SvgFilters {
         val scope = filterScopeOf(ctx) ?: return null
         val tree = weakMapGet(trees, scope)?.unsafeCast<JsReference<TreeFilters>>()?.get()
             ?: TreeFilters(createFilterContainer(scope)).also {
-                weakMapSet(trees, scope, it.toJsReference())
+                setInWeakMap(trees, scope, it.toJsReference())
             }
         // The page may replace the content of its body, taking the filters away.
         ensureInScope(tree.container, scope)
@@ -111,13 +113,7 @@ internal object SvgFilters {
 }
 
 // language=js
-private fun createWeakMap(): JsAny = js("new WeakMap()")
-
-// language=js
 private fun weakMapGet(map: JsAny, key: JsAny): JsAny? = js("map.get(key)")
-
-// language=js
-private fun weakMapSet(map: JsAny, key: JsAny, value: JsAny): Unit = js("{ map.set(key, value); }")
 
 /** A hidden `<svg>` element to hold filters, in the document of [scope]. */
 // language=js

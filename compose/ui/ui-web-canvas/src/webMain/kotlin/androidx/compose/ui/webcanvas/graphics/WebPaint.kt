@@ -27,9 +27,10 @@ import androidx.compose.ui.graphics.Shader
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.webcanvas.dom.deref
+import androidx.compose.ui.webcanvas.dom.newWeakRef
 import kotlin.js.JsAny
 import kotlin.js.JsReference
-import kotlin.js.js
 import kotlin.js.toJsReference
 import kotlin.js.unsafeCast
 
@@ -331,12 +332,6 @@ private object SharedPaints {
         return snapshot
     }
 }
-
-// language=js
-private fun newWeakRef(target: JsAny): JsAny = js("new WeakRef(target)")
-
-// language=js
-private fun deref(weakRef: JsAny): JsAny? = js("weakRef.deref()")
 
 /** Casts a Compose [Paint] to the backend's paint, copying it when it comes from elsewhere. */
 internal fun Paint.asWebPaint(): WebPaint =

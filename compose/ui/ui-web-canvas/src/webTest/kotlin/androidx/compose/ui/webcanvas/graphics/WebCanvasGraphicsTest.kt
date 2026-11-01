@@ -75,21 +75,6 @@ class WebCanvasGraphicsTest {
         return image
     }
 
-    private fun assertColor(
-        expected: Color,
-        actual: Color,
-        tolerance: Float = 0.02f,
-        message: String? = null,
-    ) {
-        assertTrue(
-            abs(expected.red - actual.red) <= tolerance &&
-                abs(expected.green - actual.green) <= tolerance &&
-                abs(expected.blue - actual.blue) <= tolerance &&
-                abs(expected.alpha - actual.alpha) <= tolerance,
-            "${message?.let { "$it: " } ?: ""}expected $expected but was $actual",
-        )
-    }
-
     private fun ImageBitmap.pixel(x: Int, y: Int): Color = toPixelMap()[x, y]
 
     @Test

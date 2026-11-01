@@ -25,6 +25,8 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Canvas
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.ImageShader
 import androidx.compose.ui.graphics.Paint
@@ -43,13 +45,11 @@ import androidx.compose.ui.webcanvas.SharedWebGLContext
 import androidx.compose.ui.webcanvas.WebCanvasGraphicsContext
 import kotlin.js.JsAny
 import kotlin.js.js
-import kotlin.math.abs
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertSame
-import kotlin.test.assertTrue
 
 /** The WebGL context shared by Compose's drawing and embedded WebGL content. */
 class SharedWebGLTest {
@@ -65,16 +65,6 @@ class SharedWebGLTest {
         val image = ImageBitmap(width, height)
         Canvas(image).draw()
         return image
-    }
-
-    private fun assertColor(expected: Color, actual: Color, tolerance: Float = 0.02f) {
-        assertTrue(
-            abs(expected.red - actual.red) <= tolerance &&
-                abs(expected.green - actual.green) <= tolerance &&
-                abs(expected.blue - actual.blue) <= tolerance &&
-                abs(expected.alpha - actual.alpha) <= tolerance,
-            "Expected $expected but was $actual",
-        )
     }
 
     /** Draws a layer in perspective and a mesh with vertex colors, which both use WebGL. */
@@ -159,6 +149,31 @@ class SharedWebGLTest {
             SharedWebGLContext.invalidateFramebufferImage(redFrames)
             val image = image { drawImage(redFrames, Offset.Zero, Paint()) }
             assertColor(Color.Green, image.toPixelMap()[10, 10])
+        } finally {
+            SharedWebGLContext.releaseFramebufferImage(redFrames)
+            SharedWebGLContext.releaseFramebufferImage(blueFrames)
+            deleteFramebuffer(gl, red)
+            deleteFramebuffer(gl, blue)
+        }
+    }
+
+    @Test
+    fun aFilterKeepsTheFramesOfItsImagesApart() {
+        val gl = sharedContext()
+        val red = createFramebuffer(gl, 20, 20, red = 1.0, green = 0.0, blue = 0.0)
+        val blue = createFramebuffer(gl, 20, 20, red = 0.0, green = 0.0, blue = 1.0)
+        val redFrames = SharedWebGLContext.createFramebufferImage(red, 20, 20)
+        val blueFrames = SharedWebGLContext.createFramebufferImage(blue, 20, 20)
+        val paint = Paint().apply { colorFilter = ColorFilter.colorMatrix(ColorMatrix()) }
+        fun drawBoth() = image(width = 40, height = 20) {
+            drawImage(redFrames, Offset.Zero, paint)
+            drawImage(blueFrames, Offset(20f, 0f), paint)
+        }
+        try {
+            val pixels = drawBoth().toPixelMap()
+            assertColor(Color.Red, pixels[10, 10])
+            assertColor(Color.Blue, pixels[30, 10])
+            assertEquals(emptyList(), contextCallsDuring(listOf("blitFramebuffer")) { drawBoth() }.names)
         } finally {
             SharedWebGLContext.releaseFramebufferImage(redFrames)
             SharedWebGLContext.releaseFramebufferImage(blueFrames)

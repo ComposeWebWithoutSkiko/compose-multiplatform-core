@@ -31,6 +31,8 @@ import androidx.compose.ui.graphics.platform.PlatformColorFilter
 import androidx.compose.ui.graphics.platform.PlatformRenderEffect
 import androidx.compose.ui.graphics.platform.platformColorFilter
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.webcanvas.dom.newWeakMap
+import androidx.compose.ui.webcanvas.dom.setInWeakMap
 import androidx.compose.ui.webcanvas.dom.toJsNumberArray
 import kotlin.js.JsAny
 import kotlin.math.abs
@@ -52,6 +54,20 @@ internal sealed class WebColorFilter : PlatformColorFilter() {
     abstract val key: Any
 
     /**
+     * The filter that makes the image of a draw through this one, which the draw completes with
+     * [drawAlpha], so that tints that differ only in alpha share an image.
+     */
+    open val painted: WebColorFilter get() = this
+
+    /** The alpha that a draw of an image through this filter multiplies its own with. */
+    open val drawAlpha: Float get() = 1f
+
+    private val kept: JsAny by lazy { newWeakMap() }
+
+    /** Keeps [value], a copy of the image known by [imageKey] or its hold, while both it and this live. */
+    fun keepFor(imageKey: JsAny, value: JsAny) = setInWeakMap(kept, imageKey, value)
+
+    /**
      * The color matrix of the filter ([colorMatrixOf]), made once: of a filter that no compositing
      * operation applies.
      */
@@ -68,6 +84,16 @@ internal sealed class WebColorFilter : PlatformColorFilter() {
         /** [color] as an ARGB color. */
         val tintArgb: Int = color.toArgb()
         override val key: Any = TintKey(tintArgb, blendMode)
+
+        override val painted: WebColorFilter by lazy {
+            if (blendMode == BlendMode.SrcIn && color.alpha < 1f) {
+                Tint(color.copy(alpha = 1f), blendMode)
+            } else {
+                this
+            }
+        }
+
+        override val drawAlpha: Float = if (blendMode == BlendMode.SrcIn) color.alpha else 1f
 
         override fun filter(argb: Int): Int = blendColors(tintArgb, argb, blendMode)
 

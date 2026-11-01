@@ -16,6 +16,7 @@
 
 package androidx.compose.ui.webcanvas.graphics
 
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.ImageBitmapConfig
 import androidx.compose.ui.graphics.colorspace.ColorSpace
@@ -28,15 +29,18 @@ import androidx.compose.ui.webcanvas.dom.ImageData
 import androidx.compose.ui.webcanvas.dom.JsStrings
 import androidx.compose.ui.webcanvas.dom.createCanvas
 import androidx.compose.ui.webcanvas.dom.createElementCanvas
+import androidx.compose.ui.webcanvas.dom.deref
 import androidx.compose.ui.webcanvas.dom.getContext2D
+import androidx.compose.ui.webcanvas.dom.newIdentity
+import androidx.compose.ui.webcanvas.dom.newWeakRef
 import androidx.compose.ui.webcanvas.dom.readImageDataArgb
 import androidx.compose.ui.webcanvas.dom.releaseCanvas
 import kotlin.js.JsAny
+import kotlin.js.unsafeCast
 import kotlin.math.abs
-import kotlin.math.max
 
-/** The pixels of the filtered copies an image keeps, or of the one it keeps if it's larger. */
-private const val MaxFilteredPixels = 1024L * 1024L
+/** The references to copies an image gathers before it drops those of the copies that are gone. */
+private const val MaxCopyEntries = 100
 
 /**
  * An [ImageBitmap] of the web backend. Its pixels live in the browser: either in a canvas, which
@@ -80,36 +84,66 @@ internal abstract class WebImageBitmap(
      */
     open val isDrawnWhole: Boolean get() = false
 
-    /** The filtered copies of [filteredVersion], the one used longest ago first. */
-    private val filteredSources = LinkedHashMap<Any, CanvasElement>()
+    /** Weak references to the filtered copies of [filteredVersion], by [WebColorFilter.painted]. */
+    private val filteredCopies = HashMap<Any, JsAny>()
     private var filteredVersion: Int = -1
 
+    /** The number of references to copies, for tests. */
+    internal val filteredCopyEntries: Int get() = filteredCopies.size
+
+    /** What the filters know this image by, for its copies and its hold that they keep. */
+    protected val copiesKey: JsAny by lazy { newIdentity() }
+
     /**
-     * Returns a copy of this image with [filter] applied to each pixel. The copies are cached up to
-     * [MaxFilteredPixels]: an image is drawn with the same filters (e.g. icon tints) over and over,
-     * and a vector shared by several icons with one of its own for each tint.
+     * Returns this image with [filter] applied to each pixel, for a draw that multiplies its alpha
+     * with [WebColorFilter.drawAlpha]. A copy lives as long as the filters that asked for it
+     * ([WebColorFilter.keepFor]) rather than up to a budget: tints in use never evict each other,
+     * and those no longer in use go with their filters. An image only finds its copies.
      */
     fun filteredSource(filter: WebColorFilter): JsAny? {
         if (filteredVersion != version) {
-            filteredSources.values.forEach(::releaseCanvas)
-            filteredSources.clear()
+            dropFilteredCopies()
             filteredVersion = version
         }
-        val key = filter.key
-        filteredSources.remove(key)?.let { copy ->
-            filteredSources[key] = copy
-            return copy
+        return ownFilteredSource(filter) ?: filteredCopy(filter)
+    }
+
+    /** Forgets what was derived from the pixels of the previous [version]. */
+    protected open fun dropFilteredCopies() {
+        filteredCopies.values.forEach { weakRef -> releaseCopy(weakRef) }
+        filteredCopies.clear()
+    }
+
+    /** The pixels of this image as they are, if they can show [filter]. */
+    protected open fun ownFilteredSource(filter: WebColorFilter): JsAny? = null
+
+    private fun filteredCopy(filter: WebColorFilter): JsAny? {
+        val painted = filter.painted
+        val key = painted.key
+        filteredCopies[key]?.let { weakRef ->
+            val copy = deref(weakRef)
+            if (copy != null) {
+                filter.keepFor(copiesKey, copy)
+                return copy
+            }
         }
         val source = drawableRegionSource() ?: return null
-        val result = applyColorFilter(source, width, height, filter) ?: return null
-        val maxCopies = max(1L, MaxFilteredPixels / (width.toLong() * height))
-        val oldestFirst = filteredSources.values.iterator()
-        while (filteredSources.size >= maxCopies) {
-            releaseCanvas(oldestFirst.next())
-            oldestFirst.remove()
+        val copy = applyColorFilter(source, width, height, painted) ?: return null
+        if (filteredCopies.size >= MaxCopyEntries) {
+            filteredCopies.values.removeAll { deref(it) == null }
         }
-        filteredSources[key] = result
-        return result
+        filteredCopies[key] = newWeakRef(copy)
+        filter.keepFor(copiesKey, copy)
+        return copy
+    }
+
+    /** Frees the copy made for [painted], if it's still there. */
+    protected fun releaseFilteredCopy(painted: WebColorFilter) {
+        filteredCopies.remove(painted.key)?.let { weakRef -> releaseCopy(weakRef) }
+    }
+
+    private fun releaseCopy(weakRef: JsAny) {
+        deref(weakRef)?.let { releaseCanvas(it.unsafeCast<CanvasElement>()) }
     }
 
     override fun prepareToDraw() = Unit
@@ -186,6 +220,47 @@ internal class CanvasImageBitmap(
         DrawTarget(context, originX = 0, originY = 0, width = width, height = height).also {
             it.onDraw = ::markChanged
         }
+
+    /**
+     * The key of the tint the pixels of this mask are in, if any, and a weak reference to the object
+     * that the filters of that tint keep, which goes with the last of them.
+     */
+    private var heldTint: Any? = null
+    private var heldBy: JsAny? = null
+
+    override fun dropFilteredCopies() {
+        super.dropFilteredCopies()
+        heldTint = null
+        heldBy = null
+    }
+
+    /**
+     * An [ImageBitmapConfig.Alpha8] image means its alpha alone, so a tint that replaces its colors
+     * needs no copy: the canvas takes the tint, once, as long as no filter of another tint in use
+     * holds it. The colors of a mask are then that tint: a draw with no filter shows it instead of
+     * black, and a filter that doesn't replace them (a translucent [BlendMode.SrcOver]) sees it.
+     */
+    override fun ownFilteredSource(filter: WebColorFilter): JsAny? {
+        val tint = filter.painted as? WebColorFilter.Tint ?: return null
+        // A clip left open would tint a part of the pixels.
+        if (config != ImageBitmapConfig.Alpha8 || tint.blendMode != BlendMode.SrcIn || drawTarget.hasSavedState) {
+            return null
+        }
+        var holder = heldBy?.let { deref(it) }
+        if (heldTint != tint.key) {
+            if (holder != null) return null
+            releaseFilteredCopy(tint)
+            drawTarget.setPixelTransform()
+            applyColorFilterInPlace(context, 0, 0, width, height, tint)
+            heldTint = tint.key
+        }
+        if (holder == null) {
+            holder = newIdentity()
+            heldBy = newWeakRef(holder)
+        }
+        filter.keepFor(copiesKey, holder)
+        return canvas
+    }
 
     override fun readImageData(x: Int, y: Int, width: Int, height: Int): ImageData =
         context.getImageData(x, y, width, height)
