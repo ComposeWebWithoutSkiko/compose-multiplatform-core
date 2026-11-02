@@ -68,9 +68,50 @@ private fun spyOnContexts(methods: JsString): JsAny = js(
     }"""
 )
 
+/**
+ * Runs [block] and returns how many times it set [property] of the 2D contexts, of canvas elements
+ * and of `OffscreenCanvas`es.
+ */
+internal fun propertyWritesDuring(property: String, block: () -> Unit): Int {
+    val spy = spyOnWrites(property)
+    try {
+        block()
+    } finally {
+        stopSpying(spy)
+    }
+    return writeCount(spy)
+}
+
 /** Whether the 2D contexts of the browser have [property]. */
 // language=js
 internal fun contextHasProperty(property: String): Boolean = js("property in CanvasRenderingContext2D.prototype")
+
+// language=js
+private fun spyOnWrites(property: String): JsAny = js(
+    """{
+        const spy = { count: 0, restores: [] };
+        const prototypes = [CanvasRenderingContext2D.prototype];
+        if (typeof OffscreenCanvasRenderingContext2D !== 'undefined') {
+            prototypes.push(OffscreenCanvasRenderingContext2D.prototype);
+        }
+        for (const prototype of prototypes) {
+            const descriptor = Object.getOwnPropertyDescriptor(prototype, property);
+            if (!descriptor || !descriptor.set) continue;
+            spy.restores.push(() => { Object.defineProperty(prototype, property, descriptor); });
+            Object.defineProperty(prototype, property, {
+                ...descriptor,
+                set(value) {
+                    spy.count++;
+                    descriptor.set.call(this, value);
+                },
+            });
+        }
+        return spy;
+    }"""
+)
+
+// language=js
+private fun writeCount(spy: JsAny): Int = js("spy.count")
 
 // language=js
 private fun stopSpying(spy: JsAny): Unit = js("spy.restores.forEach((restore) => restore())")

@@ -22,6 +22,7 @@ import androidx.compose.ui.webcanvas.graphics.TextRunDrawing
 import androidx.compose.ui.webcanvas.graphics.WebCanvas
 import androidx.compose.ui.webcanvas.graphics.WebPaint
 import androidx.compose.ui.webcanvas.graphics.contextHasProperty
+import androidx.compose.ui.webcanvas.graphics.propertyWritesDuring
 import kotlin.js.JsAny
 import kotlin.js.js
 import kotlin.math.abs
@@ -34,12 +35,17 @@ import kotlin.test.assertTrue
 class TextMeasurementTest {
     private class Entry(val key: Int)
 
-    private fun sansSerif(size: Float, language: String = "en", pixelRatio: Float = 1f) = RunFont.of(
+    private fun sansSerif(
+        size: Float,
+        language: String = "en",
+        letterSpacing: Float = 0f,
+        pixelRatio: Float = 1f,
+    ) = RunFont.of(
         WebTypeface(GenericFamilies.SansSerif, 400, isItalic = false, isRegistered = false, isGeneric = true),
         size = size,
         weight = 400,
         isItalic = false,
-        letterSpacing = 0f,
+        letterSpacing = letterSpacing,
         scaleX = 1f,
         pixelRatio = pixelRatio,
         language = language,
@@ -151,6 +157,19 @@ class TextMeasurementTest {
         val calls = textCallsDuring("measureText") { TextMeasurement.width(sansSerif(17f), "measured as it's drawn") }
         assertTrue(callCount(calls) > 0, "measured nothing")
         assertTrue(allOnTheClassOf(calls, drawnInto), "measured on another kind of canvas than the one text is drawn into")
+    }
+
+    @Test
+    fun aFontIsSetOnceForTheTextsMeasuredInIt() {
+        // Measured afresh, so that every text below selects the font.
+        TextMeasurement.clearCaches()
+        val font = sansSerif(17f, "ja", letterSpacing = 1.5f)
+        TextMeasurement.width(font, "the first text")
+        val rewritten = listOf("font", "lang", "letterSpacing").filter { contextHasProperty(it) }.mapNotNull { property ->
+            val writes = propertyWritesDuring(property) { TextMeasurement.width(font, "a text after $property") }
+            if (writes == 0) null else "$property: $writes writes"
+        }
+        assertEquals(emptyList(), rewritten)
     }
 }
 

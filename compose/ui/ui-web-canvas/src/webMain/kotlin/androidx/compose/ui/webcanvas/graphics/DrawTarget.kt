@@ -53,7 +53,8 @@ internal class DrawTarget(
 
     /**
      * The state last applied to the context, as far as it's known: an unknown value (not valid,
-     * NaN or null) is applied again.
+     * NaN or null) is applied again. Compared with `!=`: on wasm, `===` between JS strings is never
+     * true.
      *
      * Transient state (shadow, filter, line dash) is always reset right after the draw that needs
      * it, so it's at its default value at every `save()` and needs no tracking.
@@ -224,7 +225,7 @@ internal class DrawTarget(
     }
 
     fun setCompositeOperation(value: JsString) {
-        if (state.compositeOperation !== value) {
+        if (state.compositeOperation != value) {
             ctx.globalCompositeOperation = value
             state.compositeOperation = value
         }
@@ -242,7 +243,7 @@ internal class DrawTarget(
 
     fun setFillStyle(style: JsAny) {
         val s = state
-        if (s.fillStyle !== style) {
+        if (s.fillStyle != style) {
             ctx.fillStyle = style
             s.fillStyle = style
             s.fillColorValid = false
@@ -261,7 +262,7 @@ internal class DrawTarget(
 
     fun setStrokeStyle(style: JsAny) {
         val s = state
-        if (s.strokeStyle !== style) {
+        if (s.strokeStyle != style) {
             ctx.strokeStyle = style
             s.strokeStyle = style
             s.strokeColorValid = false
@@ -276,14 +277,14 @@ internal class DrawTarget(
     }
 
     fun setLineCap(value: JsString) {
-        if (state.lineCap !== value) {
+        if (state.lineCap != value) {
             ctx.lineCap = value
             state.lineCap = value
         }
     }
 
     fun setLineJoin(value: JsString) {
-        if (state.lineJoin !== value) {
+        if (state.lineJoin != value) {
             ctx.lineJoin = value
             state.lineJoin = value
         }
@@ -313,7 +314,7 @@ internal class DrawTarget(
     }
 
     fun setFont(value: JsString) {
-        if (state.font !== value) {
+        if (state.font != value) {
             ctx.font = value
             state.font = value
         }
@@ -321,7 +322,7 @@ internal class DrawTarget(
 
     /** Sets the language of the text drawn next, a BCP 47 tag (see `setLanguage`). */
     fun setLanguage(value: JsString) {
-        if (state.language !== value) {
+        if (state.language != value) {
             setLanguage(ctx, value)
             state.language = value
         }
@@ -329,7 +330,7 @@ internal class DrawTarget(
 
     /** Sets the spacing between the letters of the text drawn next, a CSS length. */
     fun setLetterSpacing(value: JsString) {
-        if (state.letterSpacing !== value) {
+        if (state.letterSpacing != value) {
             setLetterSpacing(ctx, value)
             state.letterSpacing = value
         }
@@ -341,7 +342,7 @@ internal class DrawTarget(
      */
     fun setDirection(value: JsString) {
         val s = state
-        if (s.direction !== value) {
+        if (s.direction != value) {
             ctx.direction = value
             s.direction = value
         }

@@ -48,6 +48,8 @@ internal object TextMeasurement {
     // Japanese, and small text, otherwise with `normal`.
     private val ctx: Context2D get() = ScratchContext.ctx
 
+    // The text state set on the context. Compared with `!=`: on wasm, `===` between JS strings is
+    // never true.
     private var currentFont: JsString? = null
     private var currentLanguage: JsString? = null
     private var currentLetterSpacing: JsString? = null
@@ -121,16 +123,16 @@ internal object TextMeasurement {
     }
 
     private fun select(font: RunFont, rtl: Boolean) {
-        if (currentFont !== font.css) {
+        if (currentFont != font.css) {
             ctx.font = font.css
             currentFont = font.css
         }
-        if (currentLanguage !== font.language) {
+        if (currentLanguage != font.language) {
             setLanguage(ctx, font.language)
             currentLanguage = font.language
         }
         val spacing = font.letterSpacingCss
-        if (spacing !== currentLetterSpacing) {
+        if (spacing != currentLetterSpacing) {
             setLetterSpacing(ctx, spacing ?: JsStrings.zeroPx)
             currentLetterSpacing = spacing
         }
