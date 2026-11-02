@@ -31,6 +31,7 @@ import androidx.compose.ui.webcanvas.dom.CanvasPattern
 import androidx.compose.ui.webcanvas.dom.Context2D
 import androidx.compose.ui.webcanvas.dom.CssColors
 import androidx.compose.ui.webcanvas.dom.JsStrings
+import androidx.compose.ui.webcanvas.dom.ScratchContext
 import androidx.compose.ui.webcanvas.dom.createCanvas
 import androidx.compose.ui.webcanvas.dom.createConicGradientOrNull
 import androidx.compose.ui.webcanvas.dom.getContext2D
@@ -849,13 +850,6 @@ private fun addDecalStops(gradient: CanvasGradient, stops: GradientStops, start:
 /** A new transformation applying [matrix] after this one, if any. */
 private fun Affine?.followedBy(matrix: Affine): Affine =
     matrix.copy().also { combined -> this?.let(combined::preConcat) }
-
-/** A 1x1 context used to create gradients and patterns, which aren't bound to their context. */
-internal object ScratchContext {
-    val ctx: Context2D by lazy {
-        getContext2D(createCanvas(1, 1), false) ?: error("Canvas 2D is not supported")
-    }
-}
 
 internal fun validateColorStops(colors: List<Color>, colorStops: List<Float>?) {
     if (colorStops == null) {

@@ -598,7 +598,7 @@ class FrameRendererTest {
         }
         val turned = card(Palette[2], alpha = 0.5f, topLeft = IntOffset(80, 10)).also { it.rotationY = 30f }
         val fading = card(Palette[3], alpha = 0.5f, topLeft = IntOffset(110, 50))
-        val text = TextRunDrawing(directionalRun("Text", isRtl = false), "12px sans-serif".toJsString(), paint.asWebPaint(), false, null, null, pixelRatio = 1f)
+        val text = TextRunDrawing(directionalRun("Text", isRtl = false), "12px sans-serif".toJsString(), "en".toJsString(), paint.asWebPaint(), false, null, null, pixelRatio = 1f)
         val frame = recorded {
             save()
             saveLayer(Rect(0f, 0f, 10f, 10f), Paint().apply { alpha = 0.5f })

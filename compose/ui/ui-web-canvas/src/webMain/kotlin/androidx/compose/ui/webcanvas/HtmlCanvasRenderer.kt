@@ -30,7 +30,7 @@ import kotlin.js.unsafeCast
 /**
  * Renders Compose frames into an HTML `<canvas>` element through its 2D context.
  *
- * @param canvasElement the `HTMLCanvasElement` (or `OffscreenCanvas`) to render into
+ * @param canvasElement the `<canvas>` element of this window to render into
  */
 @InternalComposeUiApi
 public class HtmlCanvasRenderer(canvasElement: JsAny) {

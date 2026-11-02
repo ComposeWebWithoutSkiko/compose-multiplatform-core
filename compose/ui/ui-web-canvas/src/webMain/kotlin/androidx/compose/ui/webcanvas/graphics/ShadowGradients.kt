@@ -19,8 +19,7 @@ package androidx.compose.ui.webcanvas.graphics
 import androidx.collection.MutableIntObjectMap
 import androidx.compose.ui.webcanvas.dom.CanvasGradient
 import androidx.compose.ui.webcanvas.dom.CssColors
-import androidx.compose.ui.webcanvas.dom.createCanvas
-import androidx.compose.ui.webcanvas.dom.requireContext2D
+import androidx.compose.ui.webcanvas.dom.ScratchContext
 import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.roundToInt
@@ -46,7 +45,7 @@ internal class ShadowGradients private constructor(rgb: Int) {
 
     /** The profile along the x axis, from 0 to 1, placed by the transformation it's filled with. */
     val edge: CanvasGradient =
-        gradientContext.createLinearGradient(0.0, 0.0, 1.0, 0.0).also { addStops(it) }
+        ScratchContext.ctx.createLinearGradient(0.0, 0.0, 1.0, 0.0).also { addStops(it) }
 
     private val corners = arrayOfNulls<CanvasGradient>(CornerSteps)
 
@@ -59,7 +58,7 @@ internal class ShadowGradients private constructor(rgb: Int) {
     fun corner(innerRatio: Float): CanvasGradient {
         val step = (innerRatio * CornerSteps).roundToInt().coerceIn(0, CornerSteps - 1)
         return corners[step]
-            ?: gradientContext
+            ?: ScratchContext.ctx
                 .createRadialGradient(0.0, 0.0, step.toDouble() / CornerSteps, 0.0, 0.0, 1.0)
                 .also {
                     addStops(it)
@@ -91,7 +90,6 @@ internal class ShadowGradients private constructor(rgb: Int) {
         /** Colors of shadows are few (black, usually); more than this many are forgotten. */
         private const val MaxColors = 32
 
-        private val gradientContext by lazy { requireContext2D(createCanvas(1, 1)) }
         private val byColor = MutableIntObjectMap<ShadowGradients>()
 
         /** The gradients of the opaque color [rgb]. */

@@ -24,6 +24,7 @@ import androidx.compose.ui.webcanvas.dom.JsStrings
 import androidx.compose.ui.webcanvas.dom.createElementCanvas
 import androidx.compose.ui.webcanvas.dom.releaseCanvas
 import androidx.compose.ui.webcanvas.dom.requireContext2D
+import androidx.compose.ui.webcanvas.dom.setLanguage
 import androidx.compose.ui.webcanvas.dom.setLetterSpacing
 import kotlin.js.JsAny
 import kotlin.js.JsString
@@ -86,6 +87,7 @@ internal class DrawTarget(
         var imageSmoothing: Int = -1 // -1: unknown, 0: disabled, 1..3: low, medium, high
 
         var font: JsString? = null
+        var language: JsString? = null
         var letterSpacing: JsString? = null
         var direction: JsString? = null
         var isTextAlignLeft = false
@@ -104,6 +106,7 @@ internal class DrawTarget(
             miterLimit = Double.NaN
             imageSmoothing = -1
             font = null
+            language = null
             letterSpacing = null
             direction = null
             isTextAlignLeft = false
@@ -131,6 +134,7 @@ internal class DrawTarget(
             miterLimit = other.miterLimit
             imageSmoothing = other.imageSmoothing
             font = other.font
+            language = other.language
             letterSpacing = other.letterSpacing
             direction = other.direction
             isTextAlignLeft = other.isTextAlignLeft
@@ -312,6 +316,14 @@ internal class DrawTarget(
         if (state.font !== value) {
             ctx.font = value
             state.font = value
+        }
+    }
+
+    /** Sets the language of the text drawn next, a BCP 47 tag (see `setLanguage`). */
+    fun setLanguage(value: JsString) {
+        if (state.language !== value) {
+            setLanguage(ctx, value)
+            state.language = value
         }
     }
 

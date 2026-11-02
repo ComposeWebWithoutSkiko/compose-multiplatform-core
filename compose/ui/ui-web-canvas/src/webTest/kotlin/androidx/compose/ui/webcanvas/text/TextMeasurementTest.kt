@@ -16,15 +16,53 @@
 
 package androidx.compose.ui.webcanvas.text
 
+import androidx.compose.ui.graphics.toPixelMap
+import androidx.compose.ui.webcanvas.graphics.CanvasImageBitmap
+import androidx.compose.ui.webcanvas.graphics.TextRunDrawing
+import androidx.compose.ui.webcanvas.graphics.WebCanvas
+import androidx.compose.ui.webcanvas.graphics.WebPaint
+import androidx.compose.ui.webcanvas.graphics.contextHasProperty
 import kotlin.js.JsAny
 import kotlin.js.js
+import kotlin.math.abs
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertSame
+import kotlin.test.assertTrue
 
 class TextMeasurementTest {
     private class Entry(val key: Int)
+
+    private fun sansSerif(size: Float, language: String = "en", pixelRatio: Float = 1f) = RunFont.of(
+        WebTypeface(GenericFamilies.SansSerif, 400, isItalic = false, isRegistered = false, isGeneric = true),
+        size = size,
+        weight = 400,
+        isItalic = false,
+        letterSpacing = 0f,
+        scaleX = 1f,
+        pixelRatio = pixelRatio,
+        language = language,
+    )
+
+    /** A left-to-right run of [text] in [font], drawn in black. */
+    private fun runOf(font: RunFont, text: String) = TextRunDrawing(
+        directionalRun(text, isRtl = false), font.css, font.language, WebPaint(),
+        isRtl = false, letterSpacing = font.letterSpacingCss, shadow = null, pixelRatio = font.pixelRatio,
+    )
+
+    /**
+     * Asserts that [text] in [font] is measured as wide as a canvas it's drawn into measures it, with
+     * the text state that drawing gives that canvas, and returns that width.
+     */
+    private fun assertMeasuredAsDrawn(font: RunFont, text: String): Float {
+        val image = CanvasImageBitmap(1, 1)
+        val run = runOf(font, text)
+        WebCanvas(image.drawTarget).drawText(run, 0f, 0f)
+        val drawn = image.context.measureText(run.jsText).width.toFloat()
+        assertEquals(drawn, TextMeasurement.width(font, text), 0.01f, "$text in ${font.language}")
+        return drawn
+    }
 
     @Test
     fun aRecentCacheKeepsTheValuesUsedLately() {
@@ -43,15 +81,7 @@ class TextMeasurementTest {
 
     @Test
     fun aWidthUsedAllAlongStaysMeasuredAmongManyOthers() {
-        val font = RunFont.of(
-            WebTypeface(GenericFamilies.SansSerif, 400, isItalic = false, isRegistered = false, isGeneric = true),
-            size = 14f,
-            weight = 400,
-            isItalic = false,
-            letterSpacing = 0f,
-            scaleX = 1f,
-            pixelRatio = 1f,
-        )
+        val font = sansSerif(14f)
         val width = TextMeasurement.width(font, "kept")
         // More words than the cache holds, the kept one measured again now and then.
         for (i in 0 until 50_200) {
@@ -67,15 +97,7 @@ class TextMeasurementTest {
     @Test
     fun theMetricsOfABrowserWithoutFontBoxesAreApproximatedFromTheSize() {
         // Firefox before 116 measures no font bounding boxes.
-        val font = RunFont.of(
-            WebTypeface(GenericFamilies.SansSerif, 400, isItalic = false, isRegistered = false, isGeneric = true),
-            size = 20f,
-            weight = 400,
-            isItalic = false,
-            letterSpacing = 0f,
-            scaleX = 1f,
-            pixelRatio = 1f,
-        )
+        val font = sansSerif(20f)
         val restore = hideFontBoundingBoxes()
         try {
             TextMeasurement.clearCaches()
@@ -87,7 +109,58 @@ class TextMeasurementTest {
             TextMeasurement.clearCaches()
         }
     }
+
+    @Test
+    fun textIsMeasuredAsWideAsTheCanvasesItIsDrawnIntoMeasureIt() {
+        // Firefox gives the system font another face in an OffscreenCanvas than in a <canvas>, and
+        // kerns small text with `normal` unlike with the default kerning (`auto`), which both keep.
+        assertMeasuredAsDrawn(sansSerif(12f), KernedLatin)
+    }
+
+    @Test
+    fun textIsMeasuredInTheLanguageOfItsFont() {
+        val japanese = assertMeasuredAsDrawn(sansSerif(24f, "ja"), HanAndKana)
+        val korean = assertMeasuredAsDrawn(sansSerif(24f, "ko"), HanAndKana)
+        // Where the language picks the glyphs, the comparison above tells the languages apart.
+        if (contextHasProperty("lang")) {
+            assertTrue(abs(japanese - korean) > 1f, "Japanese $japanese and Korean $korean measure alike")
+        }
+    }
+
+    @Test
+    fun textIsMeasuredAsWideAsItIsDrawnAtAPixelRatio() {
+        // Text is drawn in the font of its CSS size scaled by the pixel ratio, and measured unscaled:
+        // a browser kerning by the size on the device rather than the CSS size would split the two.
+        for ((language, text) in listOf("en" to KernedLatin, "ja" to HanAndKana)) {
+            val font = sansSerif(24f, language, pixelRatio = 2f)
+            val image = CanvasImageBitmap(800, 80)
+            WebCanvas(image.drawTarget).drawText(runOf(font, text), 10f, 40f)
+            val pixels = image.toPixelMap()
+            val inkedRight = (0 until pixels.width).last { x ->
+                (0 until pixels.height).any { y -> pixels[x, y].alpha > 0.25f }
+            }
+            // The ink ends within the antialiasing and the side bearing of the last letter of the
+            // advance it's measured with.
+            assertEquals(TextMeasurement.width(font, text), (inkedRight + 1 - 10).toFloat(), 3.5f, "$text in $language")
+        }
+    }
+
+    @Test
+    fun textIsMeasuredOnTheKindOfCanvasItIsDrawnInto() {
+        val drawnInto = CanvasImageBitmap(1, 1).canvas
+        val calls = textCallsDuring("measureText") { TextMeasurement.width(sansSerif(17f), "measured as it's drawn") }
+        assertTrue(callCount(calls) > 0, "measured nothing")
+        assertTrue(allOnTheClassOf(calls, drawnInto), "measured on another kind of canvas than the one text is drawn into")
+    }
 }
+
+/** Latin text with pairs of letters that fonts kern (AV, AT, Wa, To). */
+private const val KernedLatin = "Meditate peacefully AVATAR Wave Toy"
+
+/** Two Han characters and five kana, which Japanese and Korean fonts draw unlike each other. */
+private val HanAndKana = charArrayOf(
+    Char(0x76F4), Char(0x89D2), Char(0x3053), Char(0x3093), Char(0x306B), Char(0x3061), Char(0x306F),
+).concatToString()
 
 /**
  * Makes the `TextMetrics` of the browser lack their font bounding boxes, and returns the function
@@ -108,40 +181,3 @@ private fun hideFontBoundingBoxes(): JsAny = js(
 
 // language=js
 private fun call(block: JsAny): Unit = js("block()")
-
-/** Counts the calls of `measureText` of the 2D contexts while [block] runs. */
-internal fun measureTextCallsDuring(block: () -> Unit): Int {
-    val spy = spyOnMeasureText()
-    try {
-        block()
-    } finally {
-        stopSpying(spy)
-    }
-    return callCount(spy)
-}
-
-// language=js
-private fun spyOnMeasureText(): JsAny = js(
-    """{
-        const spy = { count: 0, prototypes: [CanvasRenderingContext2D.prototype], originals: [] };
-        if (typeof OffscreenCanvasRenderingContext2D !== 'undefined') {
-            spy.prototypes.push(OffscreenCanvasRenderingContext2D.prototype);
-        }
-        for (const prototype of spy.prototypes) {
-            const original = prototype.measureText;
-            spy.originals.push(original);
-            prototype.measureText = function () {
-                spy.count++;
-                return original.apply(this, arguments);
-            };
-        }
-        return spy;
-    }"""
-)
-
-// language=js
-private fun stopSpying(spy: JsAny): Unit =
-    js("spy.prototypes.forEach((prototype, i) => { prototype.measureText = spy.originals[i]; })")
-
-// language=js
-private fun callCount(spy: JsAny): Int = js("spy.count")

@@ -122,6 +122,7 @@ class DeferredClipTest {
     private fun text(text: String, size: Int = 12, shadow: TextShadow? = null, pixelRatio: Float = 1f) = TextRunDrawing(
         directionalRun(text, isRtl = false),
         "${size}px sans-serif".toJsString(),
+        "en".toJsString(),
         paint(Color.Black).asWebPaint(),
         isRtl = false,
         letterSpacing = null,

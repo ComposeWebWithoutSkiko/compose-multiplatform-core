@@ -18,11 +18,10 @@ package androidx.compose.ui.webcanvas.text
 
 import androidx.compose.ui.webcanvas.dom.Context2D
 import androidx.compose.ui.webcanvas.dom.JsStrings
-import androidx.compose.ui.webcanvas.dom.createCanvas
+import androidx.compose.ui.webcanvas.dom.ScratchContext
 import androidx.compose.ui.webcanvas.dom.fontBoundingBoxAscentOf
 import androidx.compose.ui.webcanvas.dom.fontBoundingBoxDescentOf
-import androidx.compose.ui.webcanvas.dom.getContext2D
-import androidx.compose.ui.webcanvas.dom.setFontKerning
+import androidx.compose.ui.webcanvas.dom.setLanguage
 import androidx.compose.ui.webcanvas.dom.setLetterSpacing
 import androidx.compose.ui.webcanvas.text.unicode.codePointAt
 import androidx.compose.ui.webcanvas.text.unicode.codePointBefore
@@ -45,16 +44,12 @@ internal class FontMetrics(
  * breaker measures every word of every paragraph and the same words appear again and again.
  */
 internal object TextMeasurement {
-    private val ctx: Context2D by lazy {
-        val context = getContext2D(createCanvas(1, 1), willReadFrequently = false)
-            ?: error("Canvas 2D is not supported")
-        context.textAlign = JsStrings.left
-        context.textBaseline = JsStrings.alphabetic
-        setFontKerning(context, JsStrings.normal)
-        context
-    }
+    // The kerning is the default (`auto`), as in every context text is drawn into: Firefox kerns
+    // Japanese, and small text, otherwise with `normal`.
+    private val ctx: Context2D get() = ScratchContext.ctx
 
     private var currentFont: JsString? = null
+    private var currentLanguage: JsString? = null
     private var currentLetterSpacing: JsString? = null
     private var currentRtl = false
 
@@ -129,6 +124,10 @@ internal object TextMeasurement {
         if (currentFont !== font.css) {
             ctx.font = font.css
             currentFont = font.css
+        }
+        if (currentLanguage !== font.language) {
+            setLanguage(ctx, font.language)
+            currentLanguage = font.language
         }
         val spacing = font.letterSpacingCss
         if (spacing !== currentLetterSpacing) {

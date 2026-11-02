@@ -644,12 +644,12 @@ internal class WebParagraph(
             val words = piece.justifiedWords ?: justifiedWordsOf(piece).also { piece.justifiedWords = it }
             for (word in words) {
                 val x = if (piece.isRtl) piece.right - word.advance - word.width else piece.x + word.advance
-                val run = TextRunDrawing(word.jsText, font.css, paint, piece.isRtl, font.letterSpacingCss, shadow, font.pixelRatio)
+                val run = TextRunDrawing(word.jsText, font.css, font.language, paint, piece.isRtl, font.letterSpacingCss, shadow, font.pixelRatio)
                 drawer.draw(run, x, baseline, font.scaleX, style.skewX, transformed)
             }
             return
         }
-        val run = TextRunDrawing(piece.jsText, font.css, paint, piece.isRtl, font.letterSpacingCss, shadow, font.pixelRatio)
+        val run = TextRunDrawing(piece.jsText, font.css, font.language, paint, piece.isRtl, font.letterSpacingCss, shadow, font.pixelRatio)
         drawer.draw(run, piece.x, baseline, font.scaleX, style.skewX, transformed)
     }
 

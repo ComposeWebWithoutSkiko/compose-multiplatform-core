@@ -133,7 +133,7 @@ internal class WebParagraphIntrinsics(
     // while a font loads, observe when it finishes.
     private val fontsVersion = FontFaces.version
 
-    private val styleResolver = StyleResolver(density, fontFamilyResolver) { state ->
+    private val styleResolver = StyleResolver(density, fontFamilyResolver, defaultLocaleList) { state ->
         if (resolvedFonts.none { it.state === state }) {
             resolvedFonts.add(ResolvedFont(state, state.value))
         }
@@ -144,7 +144,7 @@ internal class WebParagraphIntrinsics(
     private val layoutText = layoutTextOf(text, styled.placeholders)
 
     val textDirection: ResolvedTextDirection =
-        resolveTextDirection(layoutText, style.textDirection, style.localeList ?: defaultLocaleList)
+        resolveTextDirection(layoutText, style.textDirection, primaryLocaleOf(style.localeList, defaultLocaleList))
 
     val analysis = ParagraphAnalysis(
         text = text,
@@ -186,11 +186,21 @@ internal class WebParagraphIntrinsics(
         styleResolver.resolve(text, style, annotations, placeholders, drawStyle)
 }
 
-/** The direction of a paragraph of [layoutText] (see [layoutTextOf]) with the [textDirection]. */
+/**
+ * The locale of text: the first locale of [localeList], or of [defaultLocaleList] where there is no
+ * [localeList], or the current locale where that list is empty.
+ */
+internal fun primaryLocaleOf(localeList: LocaleList?, defaultLocaleList: LocaleList): Locale =
+    (localeList ?: defaultLocaleList).firstOrNull() ?: Locale.current
+
+/**
+ * The direction of a paragraph of [layoutText] (see [layoutTextOf]) with the [textDirection], in
+ * the [locale] of the text (see [primaryLocaleOf]).
+ */
 internal fun resolveTextDirection(
     layoutText: CharSequence,
     textDirection: TextDirection?,
-    localeList: LocaleList?,
+    locale: Locale,
 ): ResolvedTextDirection {
     fun contentBased(fallback: () -> ResolvedTextDirection) =
         when (TextUnicode.firstStrongDirection(layoutText)) {
@@ -200,7 +210,7 @@ internal fun resolveTextDirection(
         }
 
     fun localeBased(): ResolvedTextDirection =
-        if ((localeList?.firstOrNull() ?: Locale.current).isRtl()) {
+        if (locale.isRtl()) {
             ResolvedTextDirection.Rtl
         } else {
             ResolvedTextDirection.Ltr

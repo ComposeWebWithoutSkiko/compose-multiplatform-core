@@ -28,6 +28,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.Paragraph
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextGranularity
 import androidx.compose.ui.text.TextInclusionStrategy
 import androidx.compose.ui.text.TextRange
@@ -42,6 +43,7 @@ import androidx.compose.ui.platform.registerWebCanvasComposeImplementation
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.sp
+import kotlin.js.JsAny
 import kotlin.math.ceil
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -65,6 +67,7 @@ class WebParagraphTest {
         maxLines: Int = Int.MAX_VALUE,
         overflow: TextOverflow = TextOverflow.Clip,
         style: TextStyle = this.style,
+        spanStyles: List<AnnotatedString.Range<SpanStyle>> = emptyList(),
         placeholders: List<AnnotatedString.Range<Placeholder>> = emptyList(),
     ): Paragraph = Paragraph(
         text = text,
@@ -73,6 +76,7 @@ class WebParagraphTest {
         density = density,
         fontFamilyResolver = createFontFamilyResolver(),
         defaultLocaleList = LocaleList("en-US"),
+        spanStyles = spanStyles,
         placeholders = placeholders,
         maxLines = maxLines,
         overflow = overflow,
@@ -589,6 +593,23 @@ class WebParagraphTest {
             }
         }
         assertTrue(inked > 10, "inked pixels: $inked")
+    }
+
+    @Test
+    fun textIsDrawnInTheLanguageOfItsLocale() {
+        // A Korean word and two Han characters, which the languages draw unlike each other.
+        val han = charArrayOf(Char(0x76F4), Char(0x89D2)).concatToString()
+        val text = charArrayOf(Char(0xAC00), Char(0xB098), Char(0xB2E4), ' ').concatToString() + han
+        val korean = style.copy(localeList = LocaleList("ko"))
+        fun drawn(p: Paragraph): JsAny = textCallsDuring("fillText") {
+            p.paint(Canvas(ImageBitmap(ceil(p.maxIntrinsicWidth).toInt() + 1, ceil(p.height).toInt())))
+        }
+        assertTrue(someAndAllIn(drawn(paragraph(text, style = korean)), "ko"), "in the locale of the paragraph")
+        assertTrue(someAndAllIn(drawn(paragraph(text)), "en-US"), "in the default locale")
+        val japaneseHan = AnnotatedString.Range(SpanStyle(localeList = LocaleList("ja")), text.length - han.length, text.length)
+        val withSpan = drawn(paragraph(text, style = korean, spanStyles = listOf(japaneseHan)))
+        assertTrue(someAndAllWithPartIn(withSpan, han, "ja"), "the span in its own locale")
+        assertTrue(someAndAllWithoutPartIn(withSpan, han, "ko"), "the rest in the locale of the paragraph")
     }
 
     @Test

@@ -68,6 +68,10 @@ private fun spyOnContexts(methods: JsString): JsAny = js(
     }"""
 )
 
+/** Whether the 2D contexts of the browser have [property]. */
+// language=js
+internal fun contextHasProperty(property: String): Boolean = js("property in CanvasRenderingContext2D.prototype")
+
 // language=js
 private fun stopSpying(spy: JsAny): Unit = js("spy.restores.forEach((restore) => restore())")
 

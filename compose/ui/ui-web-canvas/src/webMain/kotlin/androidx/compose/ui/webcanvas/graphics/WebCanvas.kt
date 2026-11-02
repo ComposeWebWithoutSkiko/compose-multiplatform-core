@@ -466,9 +466,9 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
     private fun compositeLayer(layer: Layer) {
         val paint = layer.paint
         // A color filter applies in place (tints as a compositing operation, or through the pixels
-        // without SVG filters), or as an SVG filter: on the composite into a target that resolves
-        // it (all those of this module do, not an `OffscreenCanvas` given to render into), if
-        // nothing else filters the composite, or else on a copy of the layer.
+        // without SVG filters), or as an SVG filter: on the composite into the target, which
+        // resolves it (every target is a `<canvas>` element), if nothing else filters the
+        // composite, or else on a copy of the layer.
         if (!layer.isDrawnAhead) {
             applyLayerColorFilterInPlace(
                 paint, layer.sourceCtx, layer.sourceX, layer.sourceY, layer.width, layer.height,
@@ -2211,10 +2211,11 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
         }
     }
 
-    /** Sets the font, the letter spacing and the direction of [run] to the target. */
+    /** Sets the font, the language, the letter spacing and the direction of [run] to the target. */
     private fun setTextStyle(run: TextRunDrawing) {
         val t = target
         t.setFont(run.font)
+        t.setLanguage(run.language)
         t.setLetterSpacing(run.letterSpacing ?: JsStrings.zeroPx)
         t.setDirection(if (run.isRtl) JsStrings.rtl else JsStrings.ltr)
     }
@@ -2339,14 +2340,16 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
 }
 
 /**
- * A run of text prepared for drawing: the text, its CSS font and its paint. The paint must not be
- * modified afterwards: recorded runs are drawn again later. The paint and the shadow are in the units
- * of the font, which is drawn scaled by [pixelRatio] (see `RunFont`).
+ * A run of text prepared for drawing: the text, its CSS font, the language of its text and its
+ * paint. The paint must not be modified afterwards: recorded runs are drawn again later. The paint
+ * and the shadow are in the units of the font, which is drawn scaled by [pixelRatio] (see `RunFont`).
  */
 internal class TextRunDrawing(
     /** The run drawn, in its directional override (see `jsRunOf`). */
     val jsText: JsString,
     val font: JsString,
+    /** A BCP 47 tag (see `setLanguage`). */
+    val language: JsString,
     val paint: WebPaint,
     val isRtl: Boolean,
     val letterSpacing: JsString?,

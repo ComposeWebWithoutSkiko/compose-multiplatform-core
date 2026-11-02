@@ -540,21 +540,10 @@ internal object Effects {
             drawThrough(ctx, "blur(${sigmaX}px)".toJsString(), source, sourceX, sourceY, width, height, x, y)
             return
         }
-        val blur = blurProbe.set(sigmaX, sigmaY)
-        val filter = SvgFilters.valueOf(ctx, blur)
-        if (filter != null) {
-            drawThrough(ctx, filter, source, sourceX, sourceY, width, height, x, y)
-            return
+        val filter = checkNotNull(SvgFilters.valueOf(ctx, blurProbe.set(sigmaX, sigmaY))) {
+            "Every target is a canvas element, which resolves SVG filters"
         }
-        // A target that doesn't resolve SVG filters (an `OffscreenCanvas` given to render into): the
-        // area is blurred into a canvas element first, alone, as the blur is clipped to it.
-        val lease = LayerCanvasPool.acquire(width, height)
-        val leaseFilter = checkNotNull(SvgFilters.valueOf(lease.ctx, blur)) {
-            "A canvas element resolves SVG filters"
-        }
-        drawThrough(lease.ctx, leaseFilter, source, sourceX, sourceY, width, height, 0.0, 0.0)
-        drawArea(ctx, lease.canvas, 0, 0, width, height, x, y)
-        LayerCanvasPool.release(lease)
+        drawThrough(ctx, filter, source, sourceX, sourceY, width, height, x, y)
     }
 
     private fun drawThrough(

@@ -16,9 +16,7 @@
 
 package androidx.compose.ui.webcanvas.path
 
-import androidx.compose.ui.webcanvas.dom.Context2D
-import androidx.compose.ui.webcanvas.dom.createCanvas
-import androidx.compose.ui.webcanvas.dom.getContext2D
+import androidx.compose.ui.webcanvas.dom.ScratchContext
 import androidx.compose.ui.webcanvas.graphics.toJs
 import kotlin.js.JsAny
 import kotlin.js.js
@@ -99,13 +97,7 @@ internal const val MaxDisplayConicTolerance = 0.1f
  * `SkPath::contains`.
  */
 internal fun PathData.contains(x: Float, y: Float): Boolean =
-    hitTestContext.isPointInPath(toPath2D(), x.toDouble(), y.toDouble(), fillType.toJs())
-
-/** A context for hit tests, whose transformation stays the identity. */
-private val hitTestContext: Context2D by lazy {
-    getContext2D(createCanvas(1, 1), willReadFrequently = false)
-        ?: error("Canvas 2D is not supported")
-}
+    ScratchContext.ctx.isPointInPath(toPath2D(), x.toDouble(), y.toDouble(), fillType.toJs())
 
 private fun newPath2D(): JsAny = js("new Path2D()")
 

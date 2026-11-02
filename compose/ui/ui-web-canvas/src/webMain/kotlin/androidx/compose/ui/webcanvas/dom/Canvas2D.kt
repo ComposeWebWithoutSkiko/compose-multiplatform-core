@@ -40,7 +40,6 @@ internal external interface Context2D : JsAny {
     var lineDashOffset: Double
     var font: JsString
     var textAlign: JsString
-    var textBaseline: JsString
     var direction: JsString
     var imageSmoothingEnabled: Boolean
     var imageSmoothingQuality: JsString
@@ -182,8 +181,14 @@ internal fun clearLineDash(ctx: Context2D): Unit = js("ctx.setLineDash([])")
 // language=js
 internal fun setLetterSpacing(ctx: Context2D, value: JsString): Unit = js("ctx.letterSpacing = value")
 
+/**
+ * Sets the language of the text [ctx] draws and measures next, a BCP 47 tag, which picks the glyphs
+ * of characters several languages share (Han characters in Chinese, Japanese and Korean). Safari
+ * lacks `ctx.lang` (27.2 included): it picks them by the language of the page in a canvas in the
+ * page, and by none in the others.
+ */
 // language=js
-internal fun setFontKerning(ctx: Context2D, value: JsString): Unit = js("ctx.fontKerning = value")
+internal fun setLanguage(ctx: Context2D, value: JsString): Unit = js("ctx.lang = value")
 
 /**
  * Adds a round rectangle with elliptical corners of the same radii to the current path. Uses
@@ -252,7 +257,8 @@ internal fun createElementCanvas(width: Int, height: Int): CanvasElement = js(
 
 /**
  * Creates a canvas to draw offscreen: an `OffscreenCanvas` when the browser supports it with a 2D
- * context, a detached `<canvas>` element otherwise.
+ * context, a detached `<canvas>` element otherwise. Text isn't drawn into it, as text is measured in
+ * `<canvas>` elements (see [ScratchContext]).
  */
 // language=js
 internal fun createCanvas(width: Int, height: Int): CanvasElement = js(
@@ -289,6 +295,19 @@ internal fun getContext2D(canvas: JsAny, willReadFrequently: Boolean): Context2D
 /** The 2D context of a canvas created to draw offscreen, which the browser always provides. */
 internal fun requireContext2D(canvas: JsAny, willReadFrequently: Boolean = false): Context2D =
     getContext2D(canvas, willReadFrequently) ?: error("Canvas 2D is not supported")
+
+/**
+ * The context of the parts of the Canvas 2D API that draw nothing: measuring text, creating
+ * gradients and patterns (which aren't bound to a context), hit testing paths and detecting
+ * features. Only `TextMeasurement` sets its text state, which it caches, and nothing sets its
+ * transformation, which hit tests need to be the identity. It's a `<canvas>` element's where there
+ * is a document, the kind every canvas text is drawn into: Firefox resolves `system-ui` and
+ * `-apple-system` to other, narrower faces in an `OffscreenCanvas`, so text measured there wouldn't
+ * fit where it's drawn.
+ */
+internal object ScratchContext {
+    val ctx: Context2D by lazy { requireContext2D(createElementCanvas(1, 1)) }
+}
 
 /** Frees the memory of [canvas] right away, rather than when it's collected. */
 internal fun releaseCanvas(canvas: CanvasElement) {
@@ -345,23 +364,17 @@ internal fun FloatArray.toJsNumberArray(): JsAny {
 /** Feature detection results for the Canvas 2D API of the current browser. */
 internal object CanvasFeatures {
     /** Whether `ctx.filter` is applied (missing in Safari, 27.2 included). */
-    val filter: Boolean by lazy { detectCanvasFilter() }
+    val filter: Boolean by lazy { detectCanvasFilter(ScratchContext.ctx) }
 }
 
 // language=js
-private fun detectCanvasFilter(): Boolean = js(
+private fun detectCanvasFilter(ctx: Context2D): Boolean = js(
     """{
-        try {
-            const canvas = (typeof OffscreenCanvas !== 'undefined')
-                ? new OffscreenCanvas(1, 1)
-                : document.createElement('canvas');
-            const ctx = canvas.getContext('2d');
-            if (!ctx || !('filter' in ctx)) return false;
-            ctx.filter = 'blur(1px)';
-            return ctx.filter === 'blur(1px)';
-        } catch (e) {
-            return false;
-        }
+        if (!('filter' in ctx)) return false;
+        ctx.filter = 'blur(1px)';
+        const applied = ctx.filter === 'blur(1px)';
+        ctx.filter = 'none';
+        return applied;
     }"""
 )
 
@@ -379,10 +392,8 @@ internal object JsStrings {
     val bevel = "bevel".toJsString()
 
     val left = "left".toJsString()
-    val alphabetic = "alphabetic".toJsString()
     val ltr = "ltr".toJsString()
     val rtl = "rtl".toJsString()
-    val normal = "normal".toJsString()
     val zeroPx = "0px".toJsString()
 
     val low = "low".toJsString()

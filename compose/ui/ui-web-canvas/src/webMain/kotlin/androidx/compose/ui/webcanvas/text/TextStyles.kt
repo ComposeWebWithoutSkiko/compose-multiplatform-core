@@ -55,8 +55,9 @@ import kotlin.math.round
 
 /**
  * A font as the canvas uses it: a typeface at a size, with the requested (possibly synthesized)
- * weight and style, letter spacing and horizontal scale. The fonts used lately are shared, so that
- * their measurements and JS strings are made once (see [TextMeasurement]).
+ * weight and style, letter spacing and horizontal scale, for text in a [language], which picks the
+ * glyphs of characters several languages share. The fonts used lately are shared, so that their
+ * measurements and JS strings are made once (see [TextMeasurement]).
  *
  * The browser gets the font at its size in CSS pixels, [pixelRatio] times smaller than [size], as
  * for DOM text: a font may change with its size (the system font of macOS does), so the same text
@@ -71,10 +72,14 @@ internal class RunFont private constructor(
     val scaleX: Float,
     val pixelRatio: Float,
     val cssString: String,
+    languageTag: String,
     /** Identifies the font among the shared ones. */
     val key: String,
 ) {
     val css: JsString = cssString.toJsString()
+
+    /** The language of the text, a BCP 47 tag (see `setLanguage`). */
+    val language: JsString = languageTag.toJsString()
 
     val letterSpacingCss: JsString? =
         if (letterSpacing != 0f) "${cssNumber(letterSpacing / pixelRatio)}px".toJsString() else null
@@ -95,6 +100,7 @@ internal class RunFont private constructor(
             letterSpacing: Float,
             scaleX: Float,
             pixelRatio: Float,
+            language: String,
         ): RunFont {
             val css = buildString {
                 if (isItalic) append("italic ")
@@ -110,9 +116,9 @@ internal class RunFont private constructor(
                     append(GenericFamilies.SansSerif)
                 }
             }
-            val key = "$css|$letterSpacing|$scaleX|$pixelRatio"
+            val key = "$css|$letterSpacing|$scaleX|$pixelRatio|$language"
             return instances[key]
-                ?: RunFont(typeface, size, weight, isItalic, letterSpacing, scaleX, pixelRatio, css, key)
+                ?: RunFont(typeface, size, weight, isItalic, letterSpacing, scaleX, pixelRatio, css, language, key)
                     .also { instances.put(it) }
         }
     }
@@ -175,7 +181,6 @@ internal class RunStyle(
     val lineHeight: Float?,
     /** See [LineHeightStyle.Alignment.topRatio]: -1 scales the font's ascent and descent. */
     val topRatio: Float,
-    val localeList: LocaleList?,
     val fontFeatureSettings: String?,
 ) {
     val fontSize: Float get() = font.size
@@ -222,6 +227,8 @@ private val DefaultFontSize = 16.sp
 internal class StyleResolver(
     private val density: Density,
     private val fontFamilyResolver: FontFamily.Resolver,
+    /** The locales of the text where its styles have none. */
+    private val defaultLocaleList: LocaleList,
     private val onFontResolved: (State<Any>) -> Unit,
 ) {
     fun resolve(
@@ -357,6 +364,7 @@ internal class StyleResolver(
             letterSpacing = letterSpacing,
             scaleX = if (scaleX > 0f) scaleX else 1f,
             pixelRatio = density.density,
+            language = primaryLocaleOf(localeList, defaultLocaleList).toLanguageTag(),
         )
         val lineHeightPx = if (lineHeight.isSpecified) {
             if (lineHeight.isEm) {
@@ -379,7 +387,6 @@ internal class StyleResolver(
             skewX = geometricTransform?.skewX ?: 0f,
             lineHeight = lineHeightPx,
             topRatio = topRatio,
-            localeList = localeList,
             fontFeatureSettings = fontFeatureSettings,
         )
     }
