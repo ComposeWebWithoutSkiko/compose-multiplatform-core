@@ -79,6 +79,15 @@ internal sealed class WebColorFilter : PlatformColorFilter() {
      */
     val jsColorMatrix: JsAny by lazy { colorMatrix.toJsNumberArray() }
 
+    /**
+     * The halves of the colors after this filter that draw soft-light as hard-light (see
+     * [HardLightPasses]), made once, or `null` for a tint applied as a compositing operation, which
+     * they can't follow.
+     */
+    val hardLightHalves: HardLightHalves? by lazy {
+        if ((this as? Tint)?.appliesAsComposite == true) null else HardLightHalves.of(colorMatrix)
+    }
+
     /** Applies the filter to a tint. */
     class Tint(val color: Color, val blendMode: BlendMode) : WebColorFilter() {
         /** [color] as an ARGB color. */
@@ -274,6 +283,12 @@ internal sealed class WebRenderEffect : PlatformRenderEffect {
         val background: WebRenderEffect?,
         val foreground: WebRenderEffect?,
     ) : WebRenderEffect() {
+        /**
+         * [foreground] drawing soft-light as hard-light (see [HardLightForegrounds]), made once, or
+         * `null` if it can't.
+         */
+        val hardLightForegrounds: HardLightForegrounds? by lazy { HardLightForegrounds.of(foreground) }
+
         override fun outsets(out: FloatArray) {
             background?.outsets(out) ?: out.fill(0f)
             val left = out[0]

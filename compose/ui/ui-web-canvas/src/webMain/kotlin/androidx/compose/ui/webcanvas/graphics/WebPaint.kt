@@ -241,6 +241,33 @@ internal class WebPaint : Paint {
             }
     }
 
+    /** The [HardLightPasses] of this snapshot, made once: [NoHardLightPasses] when it has none. */
+    private var hardLightPasses: Any? = null
+
+    /**
+     * The draws of this snapshot drawing its soft-light as hard-light ([HardLightPasses]), or `null`
+     * if its color filter is a tint applied as a compositing operation.
+     */
+    internal fun hardLightPasses(): HardLightPasses? {
+        check(isShared) { "Only a snapshot keeps its passes" }
+        val passes = hardLightPasses ?: makeHardLightPasses().also { hardLightPasses = it ?: NoHardLightPasses }
+        return passes as? HardLightPasses
+    }
+
+    private fun makeHardLightPasses(): HardLightPasses? {
+        val filter = appliedColorFilter
+        val halves = if (filter == null) HardLightHalves.plain else filter.hardLightHalves ?: return null
+        return HardLightPasses(pass(BlendMode.Multiply, halves.dark), pass(BlendMode.Screen, halves.light))
+    }
+
+    /** A snapshot of this paint drawing in [mode] through [filter]. */
+    private fun pass(mode: BlendMode, filter: ColorFilter): WebPaint =
+        WebPaint().also {
+            it.copyFrom(this)
+            it.blendMode = mode
+            it.colorFilter = filter
+        }.snapshot()
+
     internal fun copyFrom(other: WebPaint) {
         color = other.color
         isAntiAlias = other.isAntiAlias
@@ -275,6 +302,9 @@ internal class WebPaint : Paint {
         renderEffect = null
     }
 }
+
+/** What a snapshot keeps when it has no [HardLightPasses]. */
+private object NoHardLightPasses
 
 /**
  * The snapshots of paints (see [WebPaint.snapshot]), one per state: Compose draws with a few paints

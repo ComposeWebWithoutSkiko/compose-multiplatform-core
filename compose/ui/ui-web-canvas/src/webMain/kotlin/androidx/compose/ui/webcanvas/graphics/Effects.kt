@@ -236,9 +236,18 @@ internal object Effects {
                     BlendMode.Clear ->
                         ctx.clearRect(x.toDouble(), y.toDouble(), width.toDouble(), height.toDouble())
                     else -> {
-                        ctx.globalCompositeOperation =
-                            compositeOperationFor(effect.blendMode) ?: SourceOverOperation
-                        drawResult(ctx, effect.foreground, x.toDouble(), y.toDouble())
+                        val hardLight = if (effect.blendMode == BlendMode.Softlight && CanvasFeatures.softLightReadsBack) {
+                            effect.hardLightForegrounds
+                        } else {
+                            null
+                        }
+                        if (hardLight != null) {
+                            // Soft-light would read the canvas back: hard-light instead.
+                            drawResultIn(ctx, BlendMode.Multiply, hardLight.multiply, x, y)
+                            drawResultIn(ctx, BlendMode.Screen, hardLight.screen, x, y)
+                        } else {
+                            drawResultIn(ctx, effect.blendMode, effect.foreground, x, y)
+                        }
                         ctx.globalCompositeOperation = SourceOverOperation
                     }
                 }
@@ -248,6 +257,12 @@ internal object Effects {
             is WebRenderEffect.Translate,
             null -> drawResult(ctx, effect, x.toDouble(), y.toDouble())
         }
+    }
+
+    /** [drawResult] in [blendMode], at ([x], [y]) in pixels. */
+    private fun drawResultIn(ctx: Context2D, blendMode: BlendMode, effect: WebRenderEffect?, x: Int, y: Int) {
+        ctx.globalCompositeOperation = compositeOperationFor(blendMode) ?: SourceOverOperation
+        drawResult(ctx, effect, x.toDouble(), y.toDouble())
     }
 
     /** Draws the result of [effect], or the layer if `null`, at ([x], [y]) of [ctx]. */

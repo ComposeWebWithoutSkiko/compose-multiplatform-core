@@ -1182,6 +1182,8 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
         if (shader != null && blendMode != BlendMode.Clear) {
             t.setCompositeOperation(compositeOperationFor(blendMode) ?: SourceOverOperation)
             val colorFilter = paint.appliedColorFilter
+            // Like an image drawn through a filter, the image a pattern tiles is filtered once.
+            val tilesFilteredImage = colorFilter != null && shader is ImageShader && !shader.mayNeedRasterization
             val style = when {
                 canonicalShader != null -> {
                     // Filled in the canonical space of the shader (see fillOrStroke).
@@ -1190,6 +1192,8 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
                     fillInStyleSpace = true
                     canonicalShader.canonicalStyle()
                 }
+                // Null without content, like the pattern of the image as it is.
+                tilesFilteredImage -> shader.filteredStyle(colorFilter)
                 // Without content, even through a color filter.
                 !shader.mayNeedRasterization && shader.canvasStyle() == null -> null
                 colorFilter != null || shader.mayNeedRasterization ->
@@ -1199,7 +1203,7 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
             // Like Skia, a shader without content (e.g. an image not decoded yet) draws nothing,
             // rather than the paint color.
             if (style == null) return false
-            val alpha = paint.color.alpha * alphaMultiplier
+            val alpha = paint.color.alpha * alphaMultiplier * (if (tilesFilteredImage) colorFilter.drawAlpha else 1f)
             if (alpha <= 0f && blendModeKeepsDestinationForTransparent(blendMode)) return false
             t.setGlobalAlpha(alpha.toDouble())
             if (stroke) t.setStrokeStyle(style) else t.setFillStyle(style)
@@ -1316,10 +1320,13 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
         return if (shader.canonicalStyle() != null) shader else null
     }
 
-    /** Whether drawing with [paint] may need its shader drawn as an image. */
+    /**
+     * Whether drawing with [paint] may need its shader drawn as an image: not an image tiled by a
+     * pattern through a color filter, whose pixels are filtered (see [applyPaint]).
+     */
     private fun mayRasterizeShader(paint: WebPaint): Boolean {
         val shader = paint.shader?.webShader ?: return false
-        return shader.mayNeedRasterization || paint.appliedColorFilter != null
+        return shader.mayNeedRasterization || (paint.appliedColorFilter != null && shader !is ImageShader)
     }
 
     /**
@@ -1555,6 +1562,21 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
     /** The space of the shader of [fillThroughTransform]. */
     private val shaderSpace = Affine()
 
+    /**
+     * Where drawing in soft-light reads the canvas back ([CanvasFeatures.softLightReadsBack]), draws
+     * [paint]'s soft-light as hard-light through [draw], once with each of its [HardLightPasses],
+     * and returns `true`; returns `false` for [draw] to be drawn with [paint] instead.
+     */
+    private inline fun drawnAsHardLight(paint: WebPaint, draw: (WebPaint) -> Unit): Boolean {
+        if (paint.blendMode != BlendMode.Softlight || !CanvasFeatures.softLightReadsBack || drawsNothing) {
+            return false
+        }
+        val passes = paint.snapshot().hardLightPasses() ?: return false
+        draw(passes.multiply)
+        draw(passes.screen)
+        return true
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Drawing
 
@@ -1563,6 +1585,7 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
     }
 
     internal fun drawLine(x1: Float, y1: Float, x2: Float, y2: Float, paint: WebPaint) {
+        if (drawnAsHardLight(paint) { drawLine(x1, y1, x2, y2, it) }) return
         // Lines are always stroked, whatever the paint style.
         drawShape(
             paint,
@@ -1597,6 +1620,7 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
         stroke: Boolean = paint.style == PaintingStyle.Stroke,
     ) {
         if (drawsNothing) return
+        if (drawnAsHardLight(paint) { drawRect(left, top, right, bottom, it, stroke) }) return
         // Shader fills go through drawShape, which can fill with shared canonical gradients.
         val simple = paint.pathEffect == null && (paint.shader == null || stroke) &&
             !isUnboundedBlendMode(paint.blendMode) && paint.blurFilter == null &&
@@ -1655,6 +1679,7 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
         radiusY: Float,
         paint: WebPaint,
     ) {
+        if (drawnAsHardLight(paint) { drawRoundRect(left, top, right, bottom, radiusX, radiusY, it) }) return
         if (radiusX <= 0f || radiusY <= 0f) {
             drawRect(left, top, right, bottom, paint)
             return
@@ -1699,6 +1724,7 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
     }
 
     internal fun drawOval(left: Float, top: Float, right: Float, bottom: Float, paint: WebPaint) {
+        if (drawnAsHardLight(paint) { drawOval(left, top, right, bottom, it) }) return
         val cx = (left + right) / 2
         val cy = (top + bottom) / 2
         val rx = abs(right - left) / 2
@@ -1726,6 +1752,7 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
 
     internal fun drawCircle(cx: Float, cy: Float, radius: Float, paint: WebPaint) {
         if (radius <= 0f && paint.style == PaintingStyle.Fill) return
+        if (drawnAsHardLight(paint) { drawCircle(cx, cy, radius, it) }) return
         val r = max(radius, 0f)
         drawShape(
             paint,
@@ -1767,6 +1794,7 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
         paint: WebPaint,
     ) {
         if (sweepAngle == 0f) return
+        if (drawnAsHardLight(paint) { drawArc(left, top, right, bottom, startAngle, sweepAngle, useCenter, it) }) return
         val cx = (left + right) / 2
         val cy = (top + bottom) / 2
         val rx = abs(right - left) / 2
@@ -1811,6 +1839,7 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
     ) {
         if (drawsNothing) return
         if (data.isEmpty) return
+        if (drawnAsHardLight(paint) { drawPathData(data, it, stroke, applyPathEffect) }) return
         val effect = paint.pathEffect as? WebPathEffect
         if (applyPathEffect && effect != null && (effect !is WebPathEffect.Dash || !stroke)) {
             // A stamped effect, for instance, turns a stroke into a filled path.
@@ -1907,6 +1936,10 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
         val right = max(dstLeft, dstRight)
         val bottom = max(dstTop, dstBottom)
         if (quickReject(left, top, right, bottom)) return
+        val asHardLight = drawnAsHardLight(paint) {
+            drawImageRect(image, srcLeft, srcTop, srcRight, srcBottom, dstLeft, dstTop, dstRight, dstBottom, it)
+        }
+        if (asHardLight) return
         val colorFilter = paint.appliedColorFilter
         val alpha = paint.color.alpha * alphaMultiplier * (colorFilter?.drawAlpha ?: 1f)
         if (alpha <= 0f && blendModeKeepsDestinationForTransparent(blendMode)) return
@@ -1970,6 +2003,7 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
     }
 
     internal fun drawPoints(pointMode: PointMode, points: List<Offset>, paint: WebPaint) {
+        if (drawnAsHardLight(paint) { drawPoints(pointMode, points, it) }) return
         drawPoints(pointMode, points.size, paint, { points[it].x }, { points[it].y })
     }
 
@@ -1979,6 +2013,7 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
     }
 
     internal fun drawRawPoints(pointMode: PointMode, points: FloatArray, paint: WebPaint) {
+        if (drawnAsHardLight(paint) { drawRawPoints(pointMode, points, it) }) return
         drawPoints(pointMode, points.size / 2, paint, { points[2 * it] }, { points[2 * it + 1] })
     }
 
@@ -2098,7 +2133,9 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
 
     override fun drawVertices(vertices: Vertices, blendMode: BlendMode, paint: Paint) {
         if (drawsNothing || paint.blendMode == BlendMode.Dst) return
-        Vertices2D.draw(this, vertices, blendMode, paint.asWebPaint())
+        val webPaint = paint.asWebPaint()
+        if (drawnAsHardLight(webPaint) { drawVertices(vertices, blendMode, it) }) return
+        Vertices2D.draw(this, vertices, blendMode, webPaint)
     }
 
     /**
@@ -2164,25 +2201,32 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
     /** The transformation around a run of text drawn in the units of its font. */
     private val unscaledMatrix = Affine()
 
-    /** Draws a run of text at ([x], [y]), the start of its baseline. */
-    internal fun drawText(run: TextRunDrawing, x: Float, y: Float) {
+    /**
+     * Draws a run of text at ([x], [y]), the start of its baseline, with [paint]: the run's own, or
+     * one of its [HardLightPasses]. A shadow, whose color doesn't go through the paint, keeps the
+     * run in its blend mode.
+     */
+    internal fun drawText(run: TextRunDrawing, x: Float, y: Float, paint: WebPaint = run.paint) {
         if (drawsNothing) return
+        if (run.shadow == null && drawnAsHardLight(paint) { drawText(run, x, y, it) }) return
         val ratio = run.pixelRatio
         unscaledMatrix.set(matrix)
         matrix.preScale(ratio, ratio)
-        drawTextInFontUnits(run, x / ratio, y / ratio)
+        drawTextInFontUnits(run, x / ratio, y / ratio, paint)
         matrix.set(unscaledMatrix)
     }
 
-    /** Draws a run of text at ([x], [y]), with the units of its font transformed by [matrix]. */
-    private fun drawTextInFontUnits(run: TextRunDrawing, x: Float, y: Float) {
-        val paint = run.paint
+    /**
+     * Draws a run of text at ([x], [y]) with [paint], with the units of its font transformed by
+     * [matrix].
+     */
+    private fun drawTextInFontUnits(run: TextRunDrawing, x: Float, y: Float, paint: WebPaint) {
         val stroke = paint.style == PaintingStyle.Stroke
         val shadow = run.shadow
         // The offset of the shadow on the device.
         val shadowX = if (shadow != null) matrix.a * shadow.offsetX + matrix.c * shadow.offsetY else 0f
         val shadowY = if (shadow != null) matrix.b * shadow.offsetX + matrix.d * shadow.offsetY else 0f
-        clipBeforeText(run, x, y, shadowX, shadowY)
+        clipBeforeText(run, x, y, paint, shadowX, shadowY)
         if (!applyPaint(paint, stroke)) return
         val t = target
         setTextStyle(run)
@@ -2221,13 +2265,19 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
     }
 
     /**
-     * [clipBefore] drawing [run] at ([x], [y]), with its shadow offset by ([shadowX], [shadowY])
-     * device pixels.
+     * [clipBefore] drawing [run] at ([x], [y]) with [paint], with its shadow offset by ([shadowX],
+     * [shadowY]) device pixels.
      */
-    private fun clipBeforeText(run: TextRunDrawing, x: Float, y: Float, shadowX: Float, shadowY: Float) {
+    private fun clipBeforeText(
+        run: TextRunDrawing,
+        x: Float,
+        y: Float,
+        paint: WebPaint,
+        shadowX: Float,
+        shadowY: Float,
+    ) {
         if (deferredClip == null) return
         val ink = run.inkBounds ?: measureInk(run)
-        val paint = run.paint
         val bounds = drawnBoundsOf(
             x + ink[0], y + ink[1], x + ink[2], y + ink[3], paint, paint.style == PaintingStyle.Stroke,
         )

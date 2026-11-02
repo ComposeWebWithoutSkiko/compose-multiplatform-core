@@ -365,7 +365,24 @@ internal fun FloatArray.toJsNumberArray(): JsAny {
 internal object CanvasFeatures {
     /** Whether `ctx.filter` is applied (missing in Safari, 27.2 included). */
     val filter: Boolean by lazy { detectCanvasFilter(ScratchContext.ctx) }
+
+    /**
+     * Whether drawing in the `soft-light` composite operation reads the whole canvas back: in
+     * Firefox, which can't draw soft-light properly. Its accelerated Canvas 2D (`DrawTargetWebgl`)
+     * doesn't support the operation (`SupportsDrawOptions`), so every such draw reads the canvas
+     * back into its software renderer (`MarkSkiaChanged`, `ReadIntoSkia`) and counts as a
+     * fallback; a canvas with fallbacks in more than 30% of its frames, from its 10th on, is taken
+     * off acceleration for good. Soft-light is then drawn as hard-light (see `HardLightPasses`),
+     * also where Firefox's canvases aren't accelerated, which gains nothing.
+     *
+     * No API tells it: unlike [filter], it's a fact of Firefox's engine, Gecko, which the user agent
+     * names.
+     */
+    val softLightReadsBack: Boolean by lazy { isGecko() }
 }
+
+// language=js
+private fun isGecko(): Boolean = js("typeof navigator !== 'undefined' && navigator.userAgent.includes('Gecko/')")
 
 // language=js
 private fun detectCanvasFilter(ctx: Context2D): Boolean = js(

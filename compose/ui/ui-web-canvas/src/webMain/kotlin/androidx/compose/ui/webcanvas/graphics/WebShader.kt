@@ -576,6 +576,24 @@ internal class SweepGradientShader(
     }
 }
 
+/** The patterns of an image through color filters that its shader keeps (see `filteredStyle`). */
+private const val FilteredStyles = 2
+
+/**
+ * [source], an image shader that a pattern tiles ([ImageShader.mayNeedRasterization] is false),
+ * through [filter], applied once to the pixels of its image (see [ImageShader.filteredStyle]).
+ */
+internal class FilteredImageShader(
+    private val source: ImageShader,
+    private val filter: WebColorFilter,
+) : WebShader() {
+    override val version: Int get() = source.version
+
+    override fun createStyle(ctx: Context2D): JsAny? = source.filteredStyle(filter)
+
+    override fun transformed(matrix: Affine): WebShader = FilteredImageShader(source.transformed(matrix), filter)
+}
+
 internal class ImageShader(
     val image: WebImageBitmap,
     val tileModeX: TileMode,
@@ -585,8 +603,43 @@ internal class ImageShader(
     // A pattern shows its image as it was when it was created.
     override val version: Int get() = image.version
 
-    override fun createStyle(ctx: Context2D): JsAny? {
-        val source = image.drawableSource() ?: return null
+    override fun createStyle(ctx: Context2D): JsAny? = patternOf(ctx, image.drawableSource() ?: return null)
+
+    // The patterns of the image through the last two color filters (see filteredStyle), by the key
+    // of the filter, of the image's version filteredVersion.
+    private val filteredKeys = arrayOfNulls<Any>(FilteredStyles)
+    private val filteredStyles = arrayOfNulls<JsAny>(FilteredStyles)
+    private var filteredVersion = -1
+    private var nextFilteredSlot = 0
+
+    /**
+     * The fill style drawing the image through [filter], like [canvasStyle] draws it: a pattern of
+     * its pixels filtered once ([WebImageBitmap.filteredSource]), like an image drawn through a
+     * filter, which a draw with it completes with [WebColorFilter.drawAlpha]. The patterns of the
+     * last two filters are kept: the halves of a paint drawn as hard-light ([HardLightPasses])
+     * alternate.
+     */
+    fun filteredStyle(filter: WebColorFilter): JsAny? {
+        val version = version
+        if (filteredVersion != version) {
+            filteredKeys.fill(null)
+            filteredStyles.fill(null)
+            filteredVersion = version
+        }
+        val key = filter.painted.key
+        for (slot in 0 until FilteredStyles) {
+            if (filteredKeys[slot] == key) return filteredStyles[slot]
+        }
+        val style = patternOf(ScratchContext.ctx, image.filteredSource(filter) ?: return null) ?: return null
+        val slot = nextFilteredSlot
+        filteredKeys[slot] = key
+        filteredStyles[slot] = style
+        nextFilteredSlot = (slot + 1) % FilteredStyles
+        return style
+    }
+
+    /** A pattern of [source], the pixels of [image] or a copy of them, tiled as this shader tiles. */
+    private fun patternOf(ctx: Context2D, source: JsAny): JsAny? {
         var tile: JsAny = source
         var tileWidth = image.width
         var tileHeight = image.height
@@ -639,7 +692,7 @@ internal class ImageShader(
         return pattern
     }
 
-    override fun transformed(matrix: Affine): WebShader =
+    override fun transformed(matrix: Affine): ImageShader =
         ImageShader(image, tileModeX, tileModeY, patternTransform.followedBy(matrix))
 
     // Canvas patterns can't extend the edge pixels of an image (TileMode.Clamp): when the drawn
