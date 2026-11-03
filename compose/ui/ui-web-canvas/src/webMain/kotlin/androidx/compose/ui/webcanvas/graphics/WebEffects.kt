@@ -68,25 +68,27 @@ internal sealed class WebColorFilter : PlatformColorFilter() {
     fun keepFor(imageKey: JsAny, value: JsAny) = setInWeakMap(kept, imageKey, value)
 
     /**
-     * The color matrix of the filter ([colorMatrixOf]), made once: of a filter that no compositing
-     * operation applies.
+     * The color matrix of the filter ([colorMatrixOf]), made once, or `null` for a tint applied as a
+     * compositing operation, which no matrix applies.
      */
-    val colorMatrix: FloatArray by lazy { colorMatrixOf(this) }
+    val colorMatrix: FloatArray? by lazy {
+        if ((this as? Tint)?.appliesAsComposite == true) null else colorMatrixOf(this)
+    }
 
     /**
      * [colorMatrix] as a JS array, for the code that applies it in JS, made once: a copy, which JS
      * needs on Wasm, where it can't read a Kotlin array.
      */
-    val jsColorMatrix: JsAny by lazy { colorMatrix.toJsNumberArray() }
+    val jsColorMatrix: JsAny by lazy {
+        checkNotNull(colorMatrix) { "A tint applied as a compositing operation has no color matrix" }.toJsNumberArray()
+    }
 
     /**
      * The halves of the colors after this filter that draw soft-light as hard-light (see
      * [HardLightPasses]), made once, or `null` for a tint applied as a compositing operation, which
      * they can't follow.
      */
-    val hardLightHalves: HardLightHalves? by lazy {
-        if ((this as? Tint)?.appliesAsComposite == true) null else HardLightHalves.of(colorMatrix)
-    }
+    val hardLightHalves: HardLightHalves? by lazy { colorMatrix?.let(HardLightHalves::of) }
 
     /** Applies the filter to a tint. */
     class Tint(val color: Color, val blendMode: BlendMode) : WebColorFilter() {

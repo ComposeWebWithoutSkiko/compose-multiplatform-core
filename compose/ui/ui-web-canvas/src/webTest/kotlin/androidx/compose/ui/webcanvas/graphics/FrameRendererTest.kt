@@ -46,7 +46,6 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
-import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.platform.registerWebCanvasComposeImplementation
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.IntOffset
@@ -60,7 +59,6 @@ import androidx.compose.ui.webcanvas.dom.createThrowingContext2D
 import androidx.compose.ui.webcanvas.shaderRenderEffect
 import androidx.compose.ui.webcanvas.text.directionalRun
 import kotlin.js.toJsString
-import kotlin.math.abs
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -125,27 +123,8 @@ class FrameRendererTest {
         val ahead = ImageBitmap(Width, Height) as CanvasImageBitmap
         renderer = FrameRenderer(ahead.drawTarget, atlas)
         renderer.render { it.draw() }
-        assertSamePixels(direct, ahead)
+        assertSamePixels(direct.imageData(), ahead.imageData(), Tolerance, what = "drawn ahead: ")
         return renderer.layersDrawnAhead
-    }
-
-    private fun assertSamePixels(expected: ImageBitmap, actual: ImageBitmap) {
-        val e = expected.toPixelMap()
-        val a = actual.toPixelMap()
-        for (y in 0 until Height) {
-            for (x in 0 until Width) {
-                val p = e[x, y]
-                val q = a[x, y]
-                // Compared premultiplied, as the pixels are stored.
-                assertTrue(
-                    abs(p.red * p.alpha - q.red * q.alpha) <= Tolerance &&
-                        abs(p.green * p.alpha - q.green * q.alpha) <= Tolerance &&
-                        abs(p.blue * p.alpha - q.blue * q.alpha) <= Tolerance &&
-                        abs(p.alpha - q.alpha) <= Tolerance,
-                    "($x, $y): $p drawn directly, $q drawn ahead",
-                )
-            }
-        }
     }
 
     @Test
@@ -528,7 +507,7 @@ class FrameRendererTest {
             it.drawLayers(card)
             card.alpha = 1f
         }
-        assertEquals(1f, image.toPixelMap()[12, 12].alpha, Tolerance)
+        assertEquals(255f, (argbAt(image.imageData(), 12, 12) ushr 24).toFloat(), Tolerance.toFloat())
     }
 
     @Test
@@ -543,9 +522,9 @@ class FrameRendererTest {
             it.drawRawPoints(PointMode.Points, points, paint)
             points[0] = 40f
         }
-        val pixels = image.toPixelMap()
-        assertEquals(0f, pixels[10, 10].alpha)
-        assertEquals(1f, pixels[40, 10].alpha, Tolerance)
+        val pixels = image.imageData()
+        assertEquals(0, argbAt(pixels, 10, 10) ushr 24)
+        assertEquals(255f, (argbAt(pixels, 40, 10) ushr 24).toFloat(), Tolerance.toFloat())
     }
 
     @Test
@@ -564,7 +543,7 @@ class FrameRendererTest {
         drawn.replay(canvas)
         assertTrue(canvas.isPlanBroken)
         canvas.finish()
-        assertSamePixels(direct, image)
+        assertSamePixels(direct.imageData(), image.imageData(), Tolerance)
     }
 
     /** Plans [frame] with a canvas whose context throws whenever it's used. */
@@ -673,8 +652,8 @@ class FrameRendererTest {
         const val Width = 150
         const val Height = 80
 
-        /** The rounding of 8-bit channels, applied once more or less. */
-        const val Tolerance = 2f / 255f
+        /** The rounding of 8-bit channels, applied once more or less, in levels. */
+        const val Tolerance = 2
 
         val Palette = listOf(
             Color(0xFF3366CC), Color(0xFFDC3912), Color(0xFFFF9900),

@@ -21,10 +21,8 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.ImageBitmapConfig
 import androidx.compose.ui.graphics.colorspace.ColorSpace
 import androidx.compose.ui.graphics.colorspace.ColorSpaces
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.webcanvas.dom.CanvasElement
 import androidx.compose.ui.webcanvas.dom.Context2D
-import androidx.compose.ui.webcanvas.dom.CssColors
 import androidx.compose.ui.webcanvas.dom.ImageData
 import androidx.compose.ui.webcanvas.dom.JsStrings
 import androidx.compose.ui.webcanvas.dom.createCanvas
@@ -84,8 +82,13 @@ internal abstract class WebImageBitmap(
      */
     open val isDrawnWhole: Boolean get() = false
 
-    /** Weak references to the filtered copies of [filteredVersion], by [WebColorFilter.painted]. */
-    private val filteredCopies = HashMap<Any, JsAny>()
+    /** The filtered copies, by [WebColorFilter.painted]. */
+    private val filteredCopies = HashMap<Any, FilteredCopy>()
+
+    /** A weak reference to a filtered copy, of the pixels of [version]. */
+    private class FilteredCopy(val weakRef: JsAny, var version: Int)
+
+    /** The [version] [filteredSource] last saw. */
     private var filteredVersion: Int = -1
 
     /** The number of references to copies, for tests. */
@@ -98,21 +101,21 @@ internal abstract class WebImageBitmap(
      * Returns this image with [filter] applied to each pixel, for a draw that multiplies its alpha
      * with [WebColorFilter.drawAlpha]. A copy lives as long as the filters that asked for it
      * ([WebColorFilter.keepFor]) rather than up to a budget: tints in use never evict each other,
-     * and those no longer in use go with their filters. An image only finds its copies.
+     * and those no longer in use go with their filters. An image only finds its copies. When the
+     * pixels change, a copy is drawn again into its canvas the next time it's asked for, so that an
+     * image that changes in every frame doesn't make a canvas in every frame; one no longer asked for
+     * keeps the older pixels until its filters go.
      */
     fun filteredSource(filter: WebColorFilter): JsAny? {
         if (filteredVersion != version) {
-            dropFilteredCopies()
+            onNewVersion()
             filteredVersion = version
         }
         return ownFilteredSource(filter) ?: filteredCopy(filter)
     }
 
-    /** Forgets what was derived from the pixels of the previous [version]. */
-    protected open fun dropFilteredCopies() {
-        filteredCopies.values.forEach { weakRef -> releaseCopy(weakRef) }
-        filteredCopies.clear()
-    }
+    /** Forgets what was derived from the pixels of the previous [version], apart from the copies. */
+    protected open fun onNewVersion() = Unit
 
     /** The pixels of this image as they are, if they can show [filter]. */
     protected open fun ownFilteredSource(filter: WebColorFilter): JsAny? = null
@@ -120,30 +123,41 @@ internal abstract class WebImageBitmap(
     private fun filteredCopy(filter: WebColorFilter): JsAny? {
         val painted = filter.painted
         val key = painted.key
-        filteredCopies[key]?.let { weakRef ->
-            val copy = deref(weakRef)
-            if (copy != null) {
-                filter.keepFor(copiesKey, copy)
-                return copy
+        val kept = filteredCopies[key]
+        val keptCopy = kept?.let { deref(it.weakRef) }
+        if (kept != null && keptCopy != null) {
+            if (kept.version != version) {
+                val source = drawableRegionSource() ?: return null
+                val canvas = keptCopy.unsafeCast<CanvasElement>()
+                val ctx = getContext2D(canvas, willReadFrequently = colorFilterReadsPixels(painted)) ?: return null
+                ctx.clearRect(0.0, 0.0, width.toDouble(), height.toDouble())
+                drawThroughColorFilter(ctx, width, height, painted) { drawWhole(it, source) }
+                kept.version = version
             }
+            filter.keepFor(copiesKey, keptCopy)
+            return keptCopy
         }
         val source = drawableRegionSource() ?: return null
-        val copy = applyColorFilter(source, width, height, painted) ?: return null
+        val copy = canvasThroughColorFilter(width, height, painted) { drawWhole(it, source) } ?: return null
         if (filteredCopies.size >= MaxCopyEntries) {
-            filteredCopies.values.removeAll { deref(it) == null }
+            filteredCopies.values.removeAll { deref(it.weakRef) == null }
         }
-        filteredCopies[key] = newWeakRef(copy)
+        filteredCopies[key] = FilteredCopy(newWeakRef(copy), version)
         filter.keepFor(copiesKey, copy)
         return copy
     }
 
-    /** Frees the copy made for [painted], if it's still there. */
-    protected fun releaseFilteredCopy(painted: WebColorFilter) {
-        filteredCopies.remove(painted.key)?.let { weakRef -> releaseCopy(weakRef) }
+    /** Draws the top-left [width] x [height] pixels of [source], the pixels of this image, into [ctx]. */
+    private fun drawWhole(ctx: Context2D, source: JsAny) {
+        val w = width.toDouble()
+        val h = height.toDouble()
+        ctx.drawImage(source, 0.0, 0.0, w, h, 0.0, 0.0, w, h)
     }
 
-    private fun releaseCopy(weakRef: JsAny) {
-        deref(weakRef)?.let { releaseCanvas(it.unsafeCast<CanvasElement>()) }
+    /** Frees the copy made for [painted], if it's still there. */
+    protected fun releaseFilteredCopy(painted: WebColorFilter) {
+        val kept = filteredCopies.remove(painted.key) ?: return
+        deref(kept.weakRef)?.let { releaseCanvas(it.unsafeCast<CanvasElement>()) }
     }
 
     override fun prepareToDraw() = Unit
@@ -228,8 +242,7 @@ internal class CanvasImageBitmap(
     private var heldTint: Any? = null
     private var heldBy: JsAny? = null
 
-    override fun dropFilteredCopies() {
-        super.dropFilteredCopies()
+    override fun onNewVersion() {
         heldTint = null
         heldBy = null
     }
@@ -356,43 +369,46 @@ internal class FramebufferImageBitmap(
 }
 
 /**
- * Applies [filter] to the top-left [width] x [height] pixels of [source] and returns the result in
- * a new canvas. The filter is applied on the GPU, with compositing operations (tints) or an SVG
- * color matrix, unless the browser supports neither, in which case it goes through the pixels.
+ * Returns a new [width] x [height] canvas of what [draw] draws into its context, through [filter],
+ * if any (see [drawThroughColorFilter]): a canvas element where the filter applies through SVG,
+ * which only an element's context resolves.
  */
-internal fun applyColorFilter(
-    source: JsAny,
+internal fun canvasThroughColorFilter(
     width: Int,
     height: Int,
-    filter: WebColorFilter,
+    filter: WebColorFilter?,
+    draw: (Context2D) -> Unit,
 ): CanvasElement? {
     if (width <= 0 || height <= 0) return null
-    val w = width.toDouble()
-    val h = height.toDouble()
-    val tintComposite = (filter as? WebColorFilter.Tint)?.let { compositeOperationFor(it.blendMode) }
-    if (filter is WebColorFilter.Tint && tintComposite != null && filter.appliesAsComposite) {
-        val canvas = createCanvas(width, height)
-        val ctx = getContext2D(canvas, willReadFrequently = false) ?: return null
-        ctx.drawImage(source, 0.0, 0.0, w, h, 0.0, 0.0, w, h)
-        // A blend color filter blends the filter color (source) into each pixel (destination).
-        ctx.globalCompositeOperation = tintComposite
-        ctx.fillStyle = CssColors.of(filter.color.toArgb())
-        ctx.fillRect(0.0, 0.0, w, h)
-        return canvas
-    }
-    if (SvgColorFilters.appliesThroughSvg(filter)) {
-        val canvas = createElementCanvas(width, height)
-        val ctx = getContext2D(canvas, willReadFrequently = false) ?: return null
+    val throughSvg = filter != null && SvgColorFilters.appliesThroughSvg(filter)
+    val canvas = if (throughSvg) createElementCanvas(width, height) else createCanvas(width, height)
+    val ctx = getContext2D(canvas, willReadFrequently = filter != null && colorFilterReadsPixels(filter)) ?: return null
+    drawThroughColorFilter(ctx, width, height, filter, draw)
+    return canvas
+}
+
+/**
+ * Draws with [draw] into [ctx], whose top-left [width] x [height] pixels it fills, through [filter],
+ * if any, in a canvas made for it ([canvasThroughColorFilter]). The filter is applied on the GPU,
+ * through an SVG color matrix as [draw] draws, or with a compositing operation after (tints), unless
+ * the browser supports neither, in which case it goes through the pixels (see
+ * [applyColorFilterInPlace]).
+ */
+internal fun drawThroughColorFilter(
+    ctx: Context2D,
+    width: Int,
+    height: Int,
+    filter: WebColorFilter?,
+    draw: (Context2D) -> Unit,
+) {
+    if (filter != null && SvgColorFilters.appliesThroughSvg(filter)) {
         ctx.filter = checkNotNull(SvgColorFilters.filterValue(filter, ctx)) {
             "A canvas element resolves SVG filters"
         }
-        ctx.drawImage(source, 0.0, 0.0, w, h, 0.0, 0.0, w, h)
+        draw(ctx)
         ctx.filter = JsStrings.none
-        return canvas
+        return
     }
-    val canvas = createCanvas(width, height)
-    val ctx = getContext2D(canvas, willReadFrequently = true) ?: return null
-    ctx.drawImage(source, 0.0, 0.0, w, h, 0.0, 0.0, w, h)
-    applyColorFilterInPlace(ctx, 0, 0, width, height, filter)
-    return canvas
+    draw(ctx)
+    if (filter != null) applyColorFilterInPlace(ctx, 0, 0, width, height, filter)
 }

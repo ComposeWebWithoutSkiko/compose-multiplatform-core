@@ -69,7 +69,7 @@ class WebImageBitmapTest {
     private fun drawn(image: ImageBitmap, paint: Paint, x: Int = 1): Color {
         val target = ImageBitmap(image.width, image.height)
         Canvas(target).drawImage(image, Offset.Zero, paint)
-        return target.toPixelMap()[x, 1]
+        return Color(argbAt(target.imageData(), x, 1))
     }
 
     @Test
@@ -112,7 +112,7 @@ class WebImageBitmapTest {
     }
 
     @Test
-    fun aChangedMaskIsPaintedAgainAndDropsItsCopies() {
+    fun aChangedMaskIsPaintedAgainAndKeepsTheCanvasesOfItsCopies() {
         val image = mask()
         val red = tint(Color.Red)
         val blue = tint(Color.Blue)
@@ -120,7 +120,32 @@ class WebImageBitmapTest {
         val copy = image.copy(blue)
         image.markChanged()
         assertEquals(1, contextCallsDuring(listOf("fillRect")) { image.source(red) }.names.size)
-        assertEquals(0, copy.width)
+        assertSame(copy, image.copy(blue))
+    }
+
+    @Test
+    fun theCopyOfAChangedImageShowsItsNewPixels() {
+        val image = canvasImage(ImageBitmapConfig.Argb8888)
+        val paint = Paint().apply { colorFilter = ColorFilter.tint(Color.Red) }
+        assertColor(Color.Transparent, drawn(image, paint, x = 6))
+        val copy = image.copy(tint(Color.Red))
+        // The right half too, through the canvas that draws into the image.
+        Canvas(image).drawRect(Rect(4f, 0f, 8f, 8f), Paint().apply { color = Color.Black })
+        assertColor(Color.Red, drawn(image, paint, x = 6))
+        assertSame(copy, image.copy(tint(Color.Red)))
+    }
+
+    @Test
+    fun theCopyOfAChangedImageThroughAColorMatrixShowsItsNewPixels() {
+        // Copied through an SVG filter where the browser applies them, through the pixels elsewhere.
+        val image = canvasImage(ImageBitmapConfig.Argb8888)
+        val inverting = ColorFilter.colorMatrix(ColorMatrix(InvertingMatrix))
+        val paint = Paint().apply { colorFilter = inverting }
+        assertColor(Color.Transparent, drawn(image, paint, x = 6))
+        val copy = image.copy(inverting.webColorFilter)
+        Canvas(image).drawRect(Rect(4f, 0f, 8f, 8f), Paint().apply { color = Color.Black })
+        assertColor(Color.White, drawn(image, paint, x = 6))
+        assertSame(copy, image.copy(inverting.webColorFilter))
     }
 
     @Test

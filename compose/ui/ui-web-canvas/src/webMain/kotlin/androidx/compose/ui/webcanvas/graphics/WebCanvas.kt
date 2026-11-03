@@ -46,9 +46,7 @@ import androidx.compose.ui.webcanvas.dom.JsStrings
 import androidx.compose.ui.webcanvas.dom.addRoundRect
 import androidx.compose.ui.webcanvas.dom.clearLineDash
 import androidx.compose.ui.webcanvas.dom.createCanvas
-import androidx.compose.ui.webcanvas.dom.createElementCanvas
 import androidx.compose.ui.webcanvas.dom.getContext2D
-import androidx.compose.ui.webcanvas.dom.requireContext2D
 import androidx.compose.ui.webcanvas.dom.setLineDash
 import androidx.compose.ui.webcanvas.dom.setPatternTransform
 import androidx.compose.ui.webcanvas.dom.toJsNumberArray
@@ -1178,12 +1176,14 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
         val t = target
         t.onDraw?.invoke()
         t.setTransform(matrix)
-        val shader = paint.shader?.webShader
-        if (shader != null && blendMode != BlendMode.Clear) {
+        val ownShader = paint.shader?.webShader
+        if (ownShader != null && blendMode != BlendMode.Clear) {
             t.setCompositeOperation(compositeOperationFor(blendMode) ?: SourceOverOperation)
             val colorFilter = paint.appliedColorFilter
-            // Like an image drawn through a filter, the image a pattern tiles is filtered once.
-            val tilesFilteredImage = colorFilter != null && shader is ImageShader && !shader.mayNeedRasterization
+            val filteredShader = colorFilteredShader(paint)
+            val shader = filteredShader ?: ownShader
+            // The color filter left to apply to an image of the shader, if it doesn't apply to its colors.
+            val imageFilter = if (filteredShader == null) colorFilter else null
             val style = when {
                 canonicalShader != null -> {
                     // Filled in the canonical space of the shader (see fillOrStroke).
@@ -1192,18 +1192,18 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
                     fillInStyleSpace = true
                     canonicalShader.canonicalStyle()
                 }
-                // Null without content, like the pattern of the image as it is.
-                tilesFilteredImage -> shader.filteredStyle(colorFilter)
                 // Without content, even through a color filter.
                 !shader.mayNeedRasterization && shader.canvasStyle() == null -> null
-                colorFilter != null || shader.mayNeedRasterization ->
-                    shaderStyleForDraw(shader, colorFilter, isBounded)
+                imageFilter != null || shader.mayNeedRasterization ->
+                    shaderStyleForDraw(shader, imageFilter, isBounded)
                 else -> shader.canvasStyle()
             }
             // Like Skia, a shader without content (e.g. an image not decoded yet) draws nothing,
             // rather than the paint color.
             if (style == null) return false
-            val alpha = paint.color.alpha * alphaMultiplier * (if (tilesFilteredImage) colorFilter.drawAlpha else 1f)
+            // Through a filter, like an image drawn through it, with the alpha of the filter's draws.
+            val filterAlpha = filteredShader?.let { colorFilter?.drawAlpha } ?: 1f
+            val alpha = paint.color.alpha * alphaMultiplier * filterAlpha
             if (alpha <= 0f && blendModeKeepsDestinationForTransparent(blendMode)) return false
             t.setGlobalAlpha(alpha.toDouble())
             if (stroke) t.setStrokeStyle(style) else t.setFillStyle(style)
@@ -1307,27 +1307,36 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
     private var fillInStyleSpace = false
 
     /**
-     * Returns the shader of [paint] if filling with it can use its canonical style (setting
-     * [canonicalShaderTransform]), or `null`.
+     * Returns the shader of [paint], through its color filter if any ([colorFilteredShader]), if
+     * filling with it can use its canonical style (setting [canonicalShaderTransform]), or `null`.
      */
     private fun canonicalFillShader(paint: WebPaint, stroke: Boolean): WebShader? {
-        if (stroke || paint.appliedColorFilter != null) return null
+        if (stroke) return null
         // Blurring through a shadow (without `ctx.filter`) moves the transformation itself.
         if (paint.blurFilter != null && !CanvasFeatures.filter) return null
-        val shader = paint.shader?.webShader ?: return null
+        val shader = colorFilteredShader(paint) ?: return null
         if (shader.mayNeedRasterization) return null
         if (!shader.canonicalTransform(canonicalShaderTransform)) return null
         return if (shader.canonicalStyle() != null) shader else null
     }
 
     /**
-     * Whether drawing with [paint] may need its shader drawn as an image: not an image tiled by a
-     * pattern through a color filter, whose pixels are filtered (see [applyPaint]).
+     * The shader of [paint] with its color filter, if any, applied to the colors it draws, without
+     * an image of it ([WebShader.filtered]), or `null` without a shader, or if the filter needs an
+     * image of the shader.
      */
-    private fun mayRasterizeShader(paint: WebPaint): Boolean {
-        val shader = paint.shader?.webShader ?: return false
-        return shader.mayNeedRasterization || (paint.appliedColorFilter != null && shader !is ImageShader)
+    private fun colorFilteredShader(paint: WebPaint): WebShader? {
+        val shader = paint.shader?.webShader ?: return null
+        val filter = paint.appliedColorFilter ?: return shader
+        return shader.filtered(filter.painted)
     }
+
+    /**
+     * Whether drawing with [paint] may need its shader drawn as an image: one without a fill style
+     * of its own, or one that its color filter needs an image of (see [applyPaint]).
+     */
+    private fun mayRasterizeShader(paint: WebPaint): Boolean =
+        paint.shader != null && colorFilteredShader(paint)?.mayNeedRasterization != false
 
     /**
      * Returns the fill style drawing [shader], filtered by [colorFilter], over the area of the
@@ -1362,10 +1371,8 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
         if (width > MaxLayerSize || height > MaxLayerSize) return shader.canvasStyle()
         val colorFilterKey = colorFilter?.key
         val version = shader.version
-        val cached = shader.raster
-        if (cached != null && cached.matches(matrix, left, top, width, height, colorFilterKey, version)) {
-            return cached.pattern
-        }
+        shader.rasters?.find { it.matches(matrix, left, top, width, height, colorFilterKey, version) }
+            ?.let { return it.pattern }
         val canvas = createCanvas(width, height)
         val readsPixels = colorFilter != null && colorFilterReadsPixels(colorFilter)
         val ctx = getContext2D(canvas, willReadFrequently = readsPixels) ?: return null
@@ -1392,7 +1399,8 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
             toLocal.e.toDouble(),
             toLocal.f.toDouble(),
         )
-        shader.raster = ShaderRaster(matrix.copy(), left, top, width, height, colorFilterKey, version, pattern)
+        val rasters = shader.rasters ?: LastTwo<ShaderRaster>().also { shader.rasters = it }
+        rasters.add(ShaderRaster(matrix.copy(), left, top, width, height, colorFilterKey, version, pattern))
         return pattern
     }
 
@@ -1568,9 +1576,7 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
      * and returns `true`; returns `false` for [draw] to be drawn with [paint] instead.
      */
     private inline fun drawnAsHardLight(paint: WebPaint, draw: (WebPaint) -> Unit): Boolean {
-        if (paint.blendMode != BlendMode.Softlight || !CanvasFeatures.softLightReadsBack || drawsNothing) {
-            return false
-        }
+        if (!isDrawnAsHardLight(paint.blendMode) || drawsNothing) return false
         val passes = paint.snapshot().hardLightPasses() ?: return false
         draw(passes.multiply)
         draw(passes.screen)
@@ -2510,16 +2516,10 @@ internal fun applyColorFilter(
         applyColorFilterInPlace(ctx, 0, 0, width, height, filter)
         return canvas
     }
-    val result = createElementCanvas(width, height)
-    val resultCtx = requireContext2D(result)
     val w = width.toDouble()
     val h = height.toDouble()
-    resultCtx.filter = checkNotNull(SvgColorFilters.filterValue(filter, resultCtx)) {
-        "A canvas element resolves SVG filters"
-    }
-    resultCtx.drawImage(canvas, 0.0, 0.0, w, h, 0.0, 0.0, w, h)
-    resultCtx.filter = JsStrings.none
-    return result
+    val result = canvasThroughColorFilter(width, height, filter) { it.drawImage(canvas, 0.0, 0.0, w, h, 0.0, 0.0, w, h) }
+    return checkNotNull(result) { "Canvas 2D is not supported" }
 }
 
 /**

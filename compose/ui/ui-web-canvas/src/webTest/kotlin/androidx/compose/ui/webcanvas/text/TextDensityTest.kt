@@ -58,14 +58,14 @@ import androidx.compose.ui.webcanvas.dom.setLineDash
 import androidx.compose.ui.webcanvas.dom.toJsNumberArray
 import androidx.compose.ui.webcanvas.graphics.CanvasImageBitmap
 import androidx.compose.ui.webcanvas.graphics.FrameRenderer
-import androidx.compose.ui.webcanvas.graphics.maxPremultipliedDifference
+import androidx.compose.ui.webcanvas.graphics.assertSamePixels
+import androidx.compose.ui.webcanvas.graphics.imageData
 import kotlin.js.JsString
 import kotlin.js.toJsString
 import kotlin.math.round
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertTrue
 
 /**
  * Text at a density above 1: the font of its size in CSS pixels, scaled up, as the browser draws DOM
@@ -98,14 +98,6 @@ class TextDensityTest {
     )
 
     private fun image() = ImageBitmap(Width, Height) as CanvasImageBitmap
-
-    private fun assertSamePixels(expected: Context2D, actual: Context2D, tolerance: Int = 0) {
-        val difference = maxPremultipliedDifference(
-            expected.getImageData(0, 0, Width, Height),
-            actual.getImageData(0, 0, Width, Height),
-        )
-        assertTrue(difference <= tolerance, "The largest difference is $difference")
-    }
 
     @Test
     fun textIsLaidOutAsItsFontInCssPixelsScaledUp() {
@@ -275,7 +267,7 @@ class TextDensityTest {
         val paint = Paint().apply { blendMode = BlendMode.SrcIn }
         brush.applyTo(Size(paragraph.width, paragraph.height), paint, 1f)
         canvas.drawRect(Rect(0f, 0f, Width.toFloat(), Height.toFloat()), paint)
-        assertSamePixels(expected.context, actual.context, tolerance = 2)
+        assertSamePixels(expected.imageData(), actual.imageData(), tolerance = 2)
     }
 
     @Test
@@ -325,7 +317,7 @@ class TextDensityTest {
         FrameRenderer(recorded.drawTarget).render {
             paragraph.paint(it, Color.Black, textDecoration = TextDecoration.Underline, drawStyle = stroke)
         }
-        assertSamePixels(direct.context, recorded.context)
+        assertSamePixels(direct.imageData(), recorded.imageData())
     }
 
     private fun width(density: Float, width: Int): Int = (density * width).toInt()
@@ -344,7 +336,7 @@ class TextDensityTest {
         make(1f).draw(scaled, 1f)
         val actual = image()
         make(2f).draw(Canvas(actual), 2f)
-        assertSamePixels(expected.context, actual.context)
+        assertSamePixels(expected.imageData(), actual.imageData())
     }
 
     /**
@@ -365,7 +357,7 @@ class TextDensityTest {
         expected.setTransform(scale, 0.0, 0.0, scale, 0.0, 0.0)
         expected.font = "400 16px ${GenericFamilies.SansSerif}".toJsString()
         expected.reference(directionalRun(Sample, isRtl = false), paragraph.firstBaseline / scale)
-        assertSamePixels(expected, actual.context)
+        assertSamePixels(expected.getImageData(0, 0, Width, Height), actual.imageData())
     }
 
     private companion object {

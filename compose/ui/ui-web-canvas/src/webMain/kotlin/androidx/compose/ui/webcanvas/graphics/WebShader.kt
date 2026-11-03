@@ -32,9 +32,7 @@ import androidx.compose.ui.webcanvas.dom.Context2D
 import androidx.compose.ui.webcanvas.dom.CssColors
 import androidx.compose.ui.webcanvas.dom.JsStrings
 import androidx.compose.ui.webcanvas.dom.ScratchContext
-import androidx.compose.ui.webcanvas.dom.createCanvas
 import androidx.compose.ui.webcanvas.dom.createConicGradientOrNull
-import androidx.compose.ui.webcanvas.dom.getContext2D
 import androidx.compose.ui.webcanvas.dom.setPatternTransform
 import kotlin.js.JsAny
 import kotlin.math.abs
@@ -67,7 +65,7 @@ internal sealed class WebShader : PlatformShader {
 
     /**
      * Increases whenever what the shader draws changes (the pixels of its image), so that what's
-     * derived from it is made again: its fill style, and its [raster]. Gradients never change.
+     * derived from it is made again: its fill style, and its [rasters]. Gradients never change.
      */
     open val version: Int get() = 0
 
@@ -144,8 +142,35 @@ internal sealed class WebShader : PlatformShader {
         )
     }
 
-    /** The last image of the shader made by the canvas, reused while the draws match it. */
-    internal var raster: ShaderRaster? = null
+    /**
+     * The last two images of the shader made by the canvas, reused while the draws match one of
+     * them: the halves of a paint drawn as hard-light ([HardLightPasses]) alternate.
+     */
+    internal var rasters: LastTwo<ShaderRaster>? = null
+
+    /** The shaders of this one through the last two filters asked for (see [filtered]). */
+    private var filteredShaders: LastTwo<KeyedShader>? = null
+
+    /**
+     * This shader with [filter], a filter's [WebColorFilter.painted] form, applied to the colors it
+     * draws, without an image of it, or `null` if that takes one (see [rasterize]). A draw with it
+     * multiplies its alpha with the filter's [WebColorFilter.drawAlpha]. The shaders through the last
+     * two filters are kept: the halves of a paint drawn as hard-light ([HardLightPasses]) alternate.
+     */
+    fun filtered(filter: WebColorFilter): WebShader? {
+        val key = filter.key
+        filteredShaders?.find { it.key == key }?.let { return it.shader }
+        val shader = createFiltered(filter) ?: return null
+        val kept = filteredShaders ?: LastTwo<KeyedShader>().also { filteredShaders = it }
+        kept.add(KeyedShader(key, shader))
+        return shader
+    }
+
+    /** Makes the shader of [filtered], or returns `null` if it takes an image of this one. */
+    protected open fun createFiltered(filter: WebColorFilter): WebShader? = null
+
+    /** A shader through the filter of [key]. */
+    private class KeyedShader(val key: Any, val shader: WebShader)
 
     /**
      * The fill style of the shader in a canonical geometry (e.g. a gradient from (0, 0) to (1, 0)),
@@ -199,6 +224,28 @@ private const val CanonicalLinear = 0
 private const val CanonicalRadial = 1
 private const val CanonicalSweep = 2
 
+/**
+ * The last two items added: what the draws of a shader alternate between, as the halves of a paint
+ * drawn as hard-light ([HardLightPasses]) do.
+ */
+internal class LastTwo<T : Any> {
+    /** The last item added. */
+    var last: T? = null
+        private set
+
+    /** The item added before [last]. */
+    var previous: T? = null
+        private set
+
+    fun add(item: T) {
+        previous = last
+        last = item
+    }
+
+    /** The last or the previous item that [predicate] matches, or `null`. */
+    inline fun find(predicate: (T) -> Boolean): T? = last?.takeIf(predicate) ?: previous?.takeIf(predicate)
+}
+
 /** An image of a shader over a device area, as a pattern that fills the area. */
 internal class ShaderRaster(
     val transform: Affine,
@@ -237,12 +284,12 @@ internal val Shader.webShader: WebShader
  * as they are: the canvas stops follow the premultiplied interpolation (see [canvasStops]), so that,
  * for example, a gradient to transparent black doesn't darken.
  */
-internal class GradientStops(colors: List<Color>, stops: List<Float>?) {
+internal class GradientStops {
     /** The colors of the canvas stops, at [positions]: in order, within 0..1. */
     val colors: IntArray
     val positions: FloatArray
 
-    init {
+    constructor(colors: List<Color>, stops: List<Float>?) {
         val argb = IntArray(colors.size) { colors[it].toArgb() }
         // Clamped into 0..1 and after the previous one, as canvas gradients need them, before the
         // stops in between are computed from them.
@@ -255,6 +302,30 @@ internal class GradientStops(colors: List<Color>, stops: List<Float>?) {
         this.colors = IntArray(count)
         this.positions = FloatArray(count)
         canvasStops(argb, clamped, this.colors, this.positions)
+    }
+
+    private constructor(colors: IntArray, positions: FloatArray) {
+        this.colors = colors
+        this.positions = positions
+    }
+
+    /**
+     * These stops with [filter] applied to the colors that a canvas gradient draws with them, or
+     * `null` if no color matrix applies it, or if its matrix makes the alpha of a color depend on
+     * more than that alpha: the colors of transparent stops, taken from their neighbors (see
+     * [canvasStops]), must stay out of sight. Between two stops a canvas interpolates the colors and
+     * the alpha linearly, so the matrix is linear there but for its clamp to 0..1: with a stop added
+     * where a channel reaches either end, the filtered stops draw the filter of every color exactly,
+     * up to their 8 bits.
+     */
+    fun filtered(filter: WebColorFilter): GradientStops? {
+        val matrix = filter.colorMatrix ?: return null
+        if (matrix[15] != 0f || matrix[16] != 0f || matrix[17] != 0f || matrix[19] != 0f) return null
+        val count = filteredStops(colors, positions, filter, matrix, outColors = null, outPositions = null)
+        val filteredColors = IntArray(count)
+        val filteredPositions = FloatArray(count)
+        filteredStops(colors, positions, filter, matrix, filteredColors, filteredPositions)
+        return GradientStops(filteredColors, filteredPositions)
     }
 
     /** Adds the stops to [gradient], mapped into the [start]..[end] fraction of the gradient line. */
@@ -319,6 +390,74 @@ private fun canvasStops(argb: IntArray, positions: FloatArray, outColors: IntArr
         }
     }
     return count
+}
+
+/**
+ * Writes the stops [colors] at [positions] through [filter], whose color matrix is [matrix], into
+ * [outColors] and [outPositions], if given, and returns how many there are: each stop filtered, and
+ * between two stops, a stop where a channel of the matrix's output reaches 0 or 1.
+ */
+private fun filteredStops(
+    colors: IntArray,
+    positions: FloatArray,
+    filter: WebColorFilter,
+    matrix: FloatArray,
+    outColors: IntArray?,
+    outPositions: FloatArray?,
+): Int {
+    var count = 0
+    fun add(argb: Int, position: Float) {
+        if (outColors != null && outPositions != null) {
+            outColors[count] = filter.filter(argb)
+            outPositions[count] = position
+        }
+        count++
+    }
+    // Where the four channels reach 0 and 1 between two stops.
+    val ends = FloatArray(8)
+    add(colors[0], positions[0])
+    for (i in 0 until colors.lastIndex) {
+        val c0 = colors[i]
+        val c1 = colors[i + 1]
+        val p0 = positions[i]
+        val p1 = positions[i + 1]
+        if (p1 > p0) {
+            var found = 0
+            for (row in 0 until 4) {
+                val v0 = matrixChannel(matrix, row, c0)
+                val v1 = matrixChannel(matrix, row, c1)
+                for (end in 0..1) {
+                    // Never between the stops where the channel doesn't change (NaN or infinite).
+                    val t = (end - v0) / (v1 - v0)
+                    if (t > 0f && t < 1f) ends[found++] = t
+                }
+            }
+            ends.sort(0, found)
+            for (k in 0 until found) add(mixColors(c0, c1, ends[k]), p0 + ends[k] * (p1 - p0))
+        }
+        add(c1, p1)
+    }
+    return count
+}
+
+/** The channel of [row] of [matrix] (see [colorMatrixOf]) applied to [argb], not clamped. */
+private fun matrixChannel(matrix: FloatArray, row: Int, argb: Int): Float {
+    val offset = 5 * row
+    return matrix[offset] * ((argb ushr 16) and 0xFF) / 255f +
+        matrix[offset + 1] * ((argb ushr 8) and 0xFF) / 255f +
+        matrix[offset + 2] * (argb and 0xFF) / 255f +
+        matrix[offset + 3] * (argb ushr 24) / 255f +
+        matrix[offset + 4]
+}
+
+/** The color at [t] from [c0] to [c1], each channel interpolated as a canvas gradient does. */
+private fun mixColors(c0: Int, c1: Int, t: Float): Int {
+    fun channel(shift: Int): Int {
+        val from = (c0 ushr shift) and 0xFF
+        val to = (c1 ushr shift) and 0xFF
+        return (from + (to - from) * t).roundToInt()
+    }
+    return argbOf(channel(24), channel(16), channel(8), channel(0))
 }
 
 /** The largest error of the premultiplied color between two canvas stops. */
@@ -454,6 +593,9 @@ internal class LinearGradientShader(
             tileMode = tileMode,
         )
     }
+
+    override fun createFiltered(filter: WebColorFilter): WebShader? =
+        stops.filtered(filter)?.let { LinearGradientShader(from, to, it, tileMode) }
 }
 
 internal class RadialGradientShader(
@@ -526,6 +668,9 @@ internal class RadialGradientShader(
         }
         return RadialGradientShader(center, radius, stops, tileMode, combined)
     }
+
+    override fun createFiltered(filter: WebColorFilter): WebShader? =
+        stops.filtered(filter)?.let { RadialGradientShader(center, radius, it, tileMode, styleTransform) }
 }
 
 internal class SweepGradientShader(
@@ -574,14 +719,15 @@ internal class SweepGradientShader(
         }
         return SweepGradientShader(center, stops, combined)
     }
-}
 
-/** The patterns of an image through color filters that its shader keeps (see `filteredStyle`). */
-private const val FilteredStyles = 2
+    override fun createFiltered(filter: WebColorFilter): WebShader? =
+        stops.filtered(filter)?.let { SweepGradientShader(center, it, styleTransform) }
+}
 
 /**
  * [source], an image shader that a pattern tiles ([ImageShader.mayNeedRasterization] is false),
- * through [filter], applied once to the pixels of its image (see [ImageShader.filteredStyle]).
+ * through [filter], a filter's [WebColorFilter.painted] form, applied once to the pixels of its image
+ * (see [ImageShader.patternOf]), like an image drawn through a filter.
  */
 internal class FilteredImageShader(
     private val source: ImageShader,
@@ -589,7 +735,7 @@ internal class FilteredImageShader(
 ) : WebShader() {
     override val version: Int get() = source.version
 
-    override fun createStyle(ctx: Context2D): JsAny? = source.filteredStyle(filter)
+    override fun createStyle(ctx: Context2D): JsAny? = source.patternOf(ctx, filter)
 
     override fun transformed(matrix: Affine): WebShader = FilteredImageShader(source.transformed(matrix), filter)
 }
@@ -603,71 +749,25 @@ internal class ImageShader(
     // A pattern shows its image as it was when it was created.
     override val version: Int get() = image.version
 
-    override fun createStyle(ctx: Context2D): JsAny? = patternOf(ctx, image.drawableSource() ?: return null)
+    override fun createStyle(ctx: Context2D): JsAny? = patternOf(ctx, filter = null)
 
-    // The patterns of the image through the last two color filters (see filteredStyle), by the key
-    // of the filter, of the image's version filteredVersion.
-    private val filteredKeys = arrayOfNulls<Any>(FilteredStyles)
-    private val filteredStyles = arrayOfNulls<JsAny>(FilteredStyles)
-    private var filteredVersion = -1
-    private var nextFilteredSlot = 0
+    override fun createFiltered(filter: WebColorFilter): WebShader? =
+        if (mayNeedRasterization) null else FilteredImageShader(this, filter)
 
     /**
-     * The fill style drawing the image through [filter], like [canvasStyle] draws it: a pattern of
-     * its pixels filtered once ([WebImageBitmap.filteredSource]), like an image drawn through a
-     * filter, which a draw with it completes with [WebColorFilter.drawAlpha]. The patterns of the
-     * last two filters are kept: the halves of a paint drawn as hard-light ([HardLightPasses])
-     * alternate.
+     * A pattern of the image through [filter], if any, tiled as this shader tiles: of its pixels
+     * filtered once ([WebImageBitmap.filteredSource]), the copy that the image drawn through the
+     * filter shows, or for a mirroring pattern, of a tile of the image and its reflections drawn
+     * through the filter, one copy rather than a tile of the filtered copy.
      */
-    fun filteredStyle(filter: WebColorFilter): JsAny? {
-        val version = version
-        if (filteredVersion != version) {
-            filteredKeys.fill(null)
-            filteredStyles.fill(null)
-            filteredVersion = version
-        }
-        val key = filter.painted.key
-        for (slot in 0 until FilteredStyles) {
-            if (filteredKeys[slot] == key) return filteredStyles[slot]
-        }
-        val style = patternOf(ScratchContext.ctx, image.filteredSource(filter) ?: return null) ?: return null
-        val slot = nextFilteredSlot
-        filteredKeys[slot] = key
-        filteredStyles[slot] = style
-        nextFilteredSlot = (slot + 1) % FilteredStyles
-        return style
-    }
-
-    /** A pattern of [source], the pixels of [image] or a copy of them, tiled as this shader tiles. */
-    private fun patternOf(ctx: Context2D, source: JsAny): JsAny? {
-        var tile: JsAny = source
-        var tileWidth = image.width
-        var tileHeight = image.height
+    fun patternOf(ctx: Context2D, filter: WebColorFilter?): JsAny? {
         val mirrorX = tileModeX == TileMode.Mirror
         val mirrorY = tileModeY == TileMode.Mirror
-        if (mirrorX || mirrorY) {
-            // Mirroring is a repetition of a tile made of the image and its reflections.
-            tileWidth = if (mirrorX) image.width * 2 else image.width
-            tileHeight = if (mirrorY) image.height * 2 else image.height
-            val canvas = createCanvas(tileWidth, tileHeight)
-            val tileCtx = getContext2D(canvas, false) ?: return null
-            tileCtx.drawImage(source, 0.0, 0.0)
-            if (mirrorX) {
-                tileCtx.setTransform(-1.0, 0.0, 0.0, 1.0, tileWidth.toDouble(), 0.0)
-                tileCtx.drawImage(source, 0.0, 0.0)
-            }
-            if (mirrorY) {
-                tileCtx.setTransform(1.0, 0.0, 0.0, -1.0, 0.0, tileHeight.toDouble())
-                tileCtx.drawImage(source, 0.0, 0.0)
-            }
-            if (mirrorX && mirrorY) {
-                tileCtx.setTransform(
-                    -1.0, 0.0, 0.0, -1.0, tileWidth.toDouble(), tileHeight.toDouble()
-                )
-                tileCtx.drawImage(source, 0.0, 0.0)
-            }
-            tile = canvas
-        }
+        val tile: JsAny = when {
+            mirrorX || mirrorY -> mirroredTile(mirrorX, mirrorY, filter)
+            filter != null -> image.filteredSource(filter)
+            else -> image.drawableSource()
+        } ?: return null
         val repeatX = tileModeX == TileMode.Repeated || mirrorX
         val repeatY = tileModeY == TileMode.Repeated || mirrorY
         val repetition = when {
@@ -690,6 +790,31 @@ internal class ImageShader(
             )
         }
         return pattern
+    }
+
+    /**
+     * The tile that a mirroring pattern repeats: the image and its reflections across the mirrored
+     * axes, drawn through [filter], if any.
+     */
+    private fun mirroredTile(mirrorX: Boolean, mirrorY: Boolean, filter: WebColorFilter?): JsAny? {
+        val source = image.drawableSource() ?: return null
+        val width = if (mirrorX) image.width * 2 else image.width
+        val height = if (mirrorY) image.height * 2 else image.height
+        return canvasThroughColorFilter(width, height, filter) { ctx ->
+            ctx.drawImage(source, 0.0, 0.0)
+            if (mirrorX) {
+                ctx.setTransform(-1.0, 0.0, 0.0, 1.0, width.toDouble(), 0.0)
+                ctx.drawImage(source, 0.0, 0.0)
+            }
+            if (mirrorY) {
+                ctx.setTransform(1.0, 0.0, 0.0, -1.0, 0.0, height.toDouble())
+                ctx.drawImage(source, 0.0, 0.0)
+            }
+            if (mirrorX && mirrorY) {
+                ctx.setTransform(-1.0, 0.0, 0.0, -1.0, width.toDouble(), height.toDouble())
+                ctx.drawImage(source, 0.0, 0.0)
+            }
+        }
     }
 
     override fun transformed(matrix: Affine): ImageShader =
@@ -831,6 +956,8 @@ internal class ColorShader(private val argb: Int) : WebShader() {
     override fun createStyle(ctx: Context2D): JsAny = CssColors.of(argb)
 
     override fun transformed(matrix: Affine): WebShader = this
+
+    override fun createFiltered(filter: WebColorFilter): WebShader = ColorShader(filter.filter(argb))
 }
 
 /**
@@ -842,6 +969,9 @@ internal object EmptyShader : WebShader() {
     override fun createStyle(ctx: Context2D): JsAny? = null
 
     override fun transformed(matrix: Affine): WebShader = this
+
+    /** Itself: nothing, through any filter. */
+    override fun createFiltered(filter: WebColorFilter): WebShader = this
 }
 
 /**

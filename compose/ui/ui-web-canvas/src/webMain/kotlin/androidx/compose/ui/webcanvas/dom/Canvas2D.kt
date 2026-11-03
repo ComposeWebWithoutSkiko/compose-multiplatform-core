@@ -367,13 +367,17 @@ internal object CanvasFeatures {
     val filter: Boolean by lazy { detectCanvasFilter(ScratchContext.ctx) }
 
     /**
-     * Whether drawing in the `soft-light` composite operation reads the whole canvas back: in
-     * Firefox, which can't draw soft-light properly. Its accelerated Canvas 2D (`DrawTargetWebgl`)
-     * doesn't support the operation (`SupportsDrawOptions`), so every such draw reads the canvas
-     * back into its software renderer (`MarkSkiaChanged`, `ReadIntoSkia`) and counts as a
-     * fallback; a canvas with fallbacks in more than 30% of its frames, from its 10th on, is taken
-     * off acceleration for good. Soft-light is then drawn as hard-light (see `HardLightPasses`),
-     * also where Firefox's canvases aren't accelerated, which gains nothing.
+     * Whether drawing in the `soft-light` composite operation reads the canvas back: in Firefox,
+     * whose accelerated Canvas 2D doesn't support soft-light, which it draws only in software. It
+     * takes multiply and screen, not soft-light (`SupportsDrawOptions` in
+     * `dom/canvas/DrawTargetWebgl.cpp`), so a draw in it goes through `DrawRectFallback`, which reads
+     * the canvas back into the software renderer (`ReadIntoSkia`) and counts a fallback, failing the
+     * frame (see [profilesAcceleration]). Soft-light is then drawn as hard-light (see
+     * `HardLightPasses`). That also happens where Firefox doesn't accelerate a canvas: one of fewer
+     * pixels than `gfx.canvas.accelerated.min-size` squared, 128 by 128, or with a side under 16
+     * (`DrawTargetWebgl::CanCreate`), or any canvas while `gfx.canvas.accelerated` is off. There it
+     * gives up the exact soft-light, and for an image makes two copies of it, for nothing: so that a
+     * draw looks the same on every canvas of the page, accelerated or not.
      *
      * No API tells it: unlike [filter], it's a fact of Firefox's engine, Gecko, which the user agent
      * names.

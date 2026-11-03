@@ -33,7 +33,9 @@ import androidx.compose.ui.webcanvas.dom.CanvasFeatures
  * `a` ends up of alpha `a·(2 − a)`, its colors a mix of the halves.
  *
  * The halves of an image are made of its pixels (see [WebImageBitmap.filteredSource]), so they apply
- * before the image is sampled rather than after.
+ * before the image is sampled rather than after. Those of a gradient are made of its stops, with a
+ * stop added where a half bends (see [GradientStops.filtered]), so they're the halves of every color
+ * the gradient draws, up to 8 bits.
  *
  * Blends of render effects in soft-light are drawn as hard-light too (see [HardLightForegrounds]).
  * These are still drawn in soft-light: layers composited in it, also in perspective, tints in it
@@ -44,12 +46,17 @@ import androidx.compose.ui.webcanvas.dom.CanvasFeatures
  */
 internal class HardLightPasses(val multiply: WebPaint, val screen: WebPaint)
 
+/** Whether a draw in [blendMode] is drawn as hard-light: soft-light, where drawing in it reads the canvas back. */
+internal fun isDrawnAsHardLight(blendMode: BlendMode): Boolean =
+    blendMode == BlendMode.Softlight && CanvasFeatures.softLightReadsBack
+
 /**
  * The foreground of a [WebRenderEffect.Blend] in soft-light drawn as hard-light, like
  * [HardLightPasses]: [multiply] in Multiply, then [screen] in Screen, each the foreground with the
- * dark or the light half ([HardLightHalves]) applied to the pixels of the image its shader fills.
- * Only a foreground filling with an image a pattern tiles has them: through tints that only scale
- * its alpha, which the halves of its colors commute with, and through offsets.
+ * dark or the light half ([HardLightHalves]) applied to the colors of the shader it fills with. Only
+ * a foreground filling with a shader that takes them without an image of it ([WebShader.filtered]:
+ * a gradient, an image a pattern tiles) has them: through tints that only scale its alpha, which the
+ * halves of its colors commute with, and through offsets.
  */
 internal class HardLightForegrounds private constructor(
     val multiply: WebRenderEffect,
@@ -58,18 +65,16 @@ internal class HardLightForegrounds private constructor(
     internal companion object {
         /** The hard-light draws of [foreground], or `null` if it hasn't any. */
         fun of(foreground: WebRenderEffect?): HardLightForegrounds? {
-            val halves = HardLightHalves.plain
+            val halves = HardLightHalves.plain()
             val multiply = foreground.through(halves.dark.webColorFilter) ?: return null
             val screen = foreground.through(halves.light.webColorFilter) ?: return null
             return HardLightForegrounds(multiply, screen)
         }
 
-        /** This effect with [half] applied to the pixels of the image it fills with, if it can be. */
+        /** This effect with [half] applied to the colors of the shader it fills with, if it can be. */
         private fun WebRenderEffect?.through(half: WebColorFilter): WebRenderEffect? =
             when (this) {
-                is WebRenderEffect.ShaderFill -> (shader as? ImageShader)
-                    ?.takeIf { !it.mayNeedRasterization }
-                    ?.let { WebRenderEffect.ShaderFill(FilteredImageShader(it, half)) }
+                is WebRenderEffect.ShaderFill -> shader.filtered(half)?.let { WebRenderEffect.ShaderFill(it) }
                 is WebRenderEffect.ColorFiltered -> {
                     val filter = filter
                     when {
@@ -91,10 +96,17 @@ internal class HardLightForegrounds private constructor(
  */
 internal class HardLightHalves private constructor(val dark: ColorFilter, val light: ColorFilter) {
     internal companion object {
-        /** The halves of the colors of a source drawn without a color filter. */
-        val plain: HardLightHalves by lazy {
-            of(floatArrayOf(1f, 0f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 0f, 0f, 1f, 0f))
-        }
+        /** The color matrix that keeps the colors as they are, as [colorMatrixOf] gives it. */
+        private val Identity = floatArrayOf(1f, 0f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 0f, 0f, 1f, 0f)
+
+        /**
+         * The halves of the colors of a source drawn without a color filter, made anew for each of
+         * their users rather than once for all: the copies of an image drawn through the halves live
+         * as long as the filters do ([WebColorFilter.keepFor]), so as long as the paints and effects
+         * drawing with them. Those of an image a pattern tiles live as long as its shader keeps them,
+         * in the patterns of its shaders through the halves ([WebShader.filtered]).
+         */
+        fun plain(): HardLightHalves = of(Identity)
 
         /**
          * The halves of the colors after the color matrix [matrix], as [colorMatrixOf] gives it (its

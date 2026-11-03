@@ -236,11 +236,7 @@ internal object Effects {
                     BlendMode.Clear ->
                         ctx.clearRect(x.toDouble(), y.toDouble(), width.toDouble(), height.toDouble())
                     else -> {
-                        val hardLight = if (effect.blendMode == BlendMode.Softlight && CanvasFeatures.softLightReadsBack) {
-                            effect.hardLightForegrounds
-                        } else {
-                            null
-                        }
+                        val hardLight = if (isDrawnAsHardLight(effect.blendMode)) effect.hardLightForegrounds else null
                         if (hardLight != null) {
                             // Soft-light would read the canvas back: hard-light instead.
                             drawResultIn(ctx, BlendMode.Multiply, hardLight.multiply, x, y)

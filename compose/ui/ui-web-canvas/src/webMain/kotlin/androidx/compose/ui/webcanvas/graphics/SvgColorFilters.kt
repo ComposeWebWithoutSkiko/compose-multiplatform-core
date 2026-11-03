@@ -54,7 +54,7 @@ internal object SvgColorFilters {
     fun filterValue(filter: WebColorFilter, ctx: Context2D): JsString? {
         if (!appliesThroughSvg(filter)) return null
         probe.key = filter.key
-        probe.values = filter.colorMatrix
+        probe.values = checkNotNull(filter.colorMatrix) { "A filter applied through SVG has a color matrix" }
         return SvgFilters.valueOf(ctx, probe)
     }
 

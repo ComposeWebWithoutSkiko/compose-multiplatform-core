@@ -279,7 +279,7 @@ class LayerEffectsTest {
                     },
                 )
             }
-            assertNull(shader.webShader.raster, "tint($color, $blendMode) made an image of the gradient")
+            assertNull(shader.webShader.rasters, "tint($color, $blendMode) made an image of the gradient")
         }
     }
 
