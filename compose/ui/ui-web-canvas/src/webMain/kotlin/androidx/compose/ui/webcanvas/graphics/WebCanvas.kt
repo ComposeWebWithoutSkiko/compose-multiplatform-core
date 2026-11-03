@@ -1339,6 +1339,14 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
         paint.shader != null && colorFilteredShader(paint)?.mayNeedRasterization != false
 
     /**
+     * The transformation of the space that the fill style of [paint]'s shader is in (see
+     * [fillThroughTransform]): of the shader that draws, through the paint's color filter (see
+     * [colorFilteredShader]), or `null` if the filter needs an image of the shader, which is in the
+     * device space already.
+     */
+    private fun fillStyleTransformOf(paint: WebPaint): Affine? = colorFilteredShader(paint)?.styleTransform
+
+    /**
      * Returns the fill style drawing [shader], filtered by [colorFilter], over the area of the
      * current draw (or the clip): an image of the shader over that area when no fill style can
      * express it. Returns `null` if nothing is visible.
@@ -1510,8 +1518,8 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
         }
         val canonicalShader = canonicalFillShader(paint, stroke)
         if (canonicalShader == null) {
-            val shaderTransform = paint.shader?.webShader?.styleTransform
-            if (shaderTransform != null && !stroke) {
+            val shaderTransform = if (stroke) null else fillStyleTransformOf(paint)
+            if (shaderTransform != null) {
                 fillThroughTransform(pathData(), paint, shaderTransform)
                 return
             }
@@ -1861,8 +1869,8 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
                 return
             }
         }
-        val shaderTransform = paint.shader?.webShader?.styleTransform
-        if (shaderTransform != null && !stroke) {
+        val shaderTransform = if (stroke) null else fillStyleTransformOf(paint)
+        if (shaderTransform != null) {
             fillThroughTransform(data, paint, shaderTransform)
             return
         }

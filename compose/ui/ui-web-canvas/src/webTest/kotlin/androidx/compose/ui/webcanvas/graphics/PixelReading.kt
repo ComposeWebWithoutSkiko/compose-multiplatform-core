@@ -81,6 +81,29 @@ private fun comparePixels(a: ImageData, b: ImageData, tolerance: Int, where: Ima
     }"""
 )
 
+/** The alphas of an image, of 255: their sum and the point (x, y) they weigh to. */
+internal external interface AlphaBalance : JsAny {
+    val mass: Double
+    val x: Double
+    val y: Double
+}
+
+/** The [AlphaBalance] of [pixels]. */
+// language=js
+internal fun alphaBalance(pixels: ImageData): AlphaBalance = js(
+    """{
+        const d = pixels.data, width = pixels.width;
+        let mass = 0, x = 0, y = 0;
+        for (let k = 0; 4 * k < d.length; k++) {
+            const alpha = d[4 * k + 3];
+            mass += alpha;
+            x += alpha * (k % width);
+            y += alpha * Math.floor(k / width);
+        }
+        return { mass, x: x / mass, y: y / mass };
+    }"""
+)
+
 /**
  * Asserts that [actual] has the pixels of [expected], premultiplied, within [tolerance] levels, or
  * fails with the largest difference and the first pixel past [tolerance], after [what]. With [where],

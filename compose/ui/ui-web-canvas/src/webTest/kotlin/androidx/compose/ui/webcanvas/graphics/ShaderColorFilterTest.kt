@@ -20,6 +20,8 @@ package androidx.compose.ui.webcanvas.graphics
 
 import androidx.compose.ui.InternalComposeUiApi
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Canvas
 import androidx.compose.ui.graphics.Color
@@ -28,9 +30,12 @@ import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.ImageShader
 import androidx.compose.ui.graphics.LinearGradientShader
+import androidx.compose.ui.graphics.Matrix
 import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.RadialGradientShader
 import androidx.compose.ui.graphics.Shader
+import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.SweepGradientShader
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.toArgb
@@ -146,6 +151,48 @@ class ShaderColorFilterTest {
         // An alpha of 128 / 255, read back from an 8-bit premultiplied pixel: within a level.
         assertColor(Color(0f, 0f, 0f, 128 / 255f), Color(argbAt(pixels, 3 * GradientWidth / 4, 0)), tolerance = 1 / 255f)
         assertNotNull(shader.webShader.rasters, "no image of the gradient was made")
+    }
+
+    @Test
+    fun aGradientWithATransformOfItsOwnThroughAFilterItsStopsDontTakeIsDrawnInPlace() {
+        // A red radial gradient scaled on one axis, whose fill style the canvas draws through that
+        // scale, through filters that need an image of it and keep the alpha of each of its pixels:
+        // a tint, and a matrix that adds the blue, none here, to the alpha.
+        val brush = ShaderBrush(RadialGradientShader(Offset(16f, 32f), 16f, listOf(Color.Red, Color.Transparent))).apply {
+            transform = Matrix().apply { scale(2f, 1f) }
+        }
+        val addingBlue = floatArrayOf(1f, 0f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 0f, 1f, 1f, 0f)
+        val filters = listOf(ColorFilter.tint(Color.Blue, BlendMode.SrcIn), ColorFilter.colorMatrix(ColorMatrix(addingBlue)))
+        val width = KindsWidth.toFloat()
+        val height = KindsHeight.toFloat()
+        // Filled as a rectangle and as a path of another shape, which canvases draw apart.
+        val shapes = listOf<Pair<String, Canvas.(Paint) -> Unit>>(
+            "rect" to { drawRect(0f, 0f, width, height, it) },
+            "oval path" to { drawPath(Path().apply { addOval(Rect(0f, 0f, width, height)) }, it) },
+        )
+        fun drawn(shape: Canvas.(Paint) -> Unit, filter: ColorFilter?): ImageData {
+            val image = ImageBitmap(KindsWidth, KindsHeight)
+            val paint = Paint()
+            brush.applyTo(Size(width, height), paint, 1f)
+            paint.colorFilter = filter
+            Canvas(image).shape(paint)
+            return image.imageData()
+        }
+        for ((name, shape) in shapes) {
+            val plain = alphaBalance(drawn(shape, null))
+            for (filter in filters) {
+                val filtered = alphaBalance(drawn(shape, filter))
+                // The placement, by the sum of the alphas and their center rather than pixel by pixel:
+                // drawn through an image of the gradient, pixels round apart from where it's drawn
+                // plain for reasons that have nothing to do with placement (Firefox 159 a level at the
+                // oval's antialiased edge; Safari 27.2, applying the matrix through the pixels, 2 or 3
+                // levels at many). Within ten times the most these moved them, 0.11% of the sum
+                // (Safari) and 0.0014 px (Firefox); scaled twice, the gradient doubled the sum.
+                assertEquals(plain.mass, filtered.mass, plain.mass * 0.011, "$name, $filter: the sum of the alphas")
+                assertEquals(plain.x, filtered.x, 0.014, "$name, $filter: x")
+                assertEquals(plain.y, filtered.y, 0.014, "$name, $filter: y")
+            }
+        }
     }
 
     @Test
