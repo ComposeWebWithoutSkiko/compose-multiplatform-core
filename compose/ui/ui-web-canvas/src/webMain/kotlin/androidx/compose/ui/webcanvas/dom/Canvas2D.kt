@@ -379,6 +379,25 @@ internal object CanvasFeatures {
      * names.
      */
     val softLightReadsBack: Boolean by lazy { isGecko() }
+
+    /**
+     * Whether the browser takes a canvas off acceleration for good once too many of its frames
+     * failed: Firefox, whose accelerated Canvas 2D profiles every canvas from its creation. As of
+     * Firefox 159, in `dom/canvas/DrawTargetWebgl.cpp`, `UsageProfile::EndFrame` fails a frame that
+     * fell back to software, or whose cache misses, readbacks and layers exceed
+     * `gfx.canvas.accelerated.profile-cache-miss-ratio` (0.66) of its draws (misses, hits,
+     * uncached draws, readbacks and layers); `UsageProfile::RequiresRefresh` holds from the
+     * `profile-frames`th frame (10) on, once failed frames exceed `profile-fallback-ratio` (0.3) of
+     * the frames. `CanvasTranslator::UnlockTexture` (`gfx/layers/ipc/CanvasTranslator.cpp`) checks
+     * it at the end of every frame and asks for a refresh, after which
+     * `CanvasRenderingContext2D::TryAcceleratedTarget` (`dom/canvas/CanvasRenderingContext2D.cpp`)
+     * sets `mAllowAcceleration` to false: the canvas is drawn in software for the rest of its
+     * context's life. The defaults are in `modules/libpref/init/StaticPrefList.yaml`. A canvas whose
+     * content is new frame after frame as an app starts fails so (see `AtlasPage`).
+     *
+     * No API tells it either: like [softLightReadsBack], it's a fact of Gecko.
+     */
+    val profilesAcceleration: Boolean by lazy { isGecko() }
 }
 
 // language=js

@@ -17,7 +17,9 @@
 package androidx.compose.ui.webcanvas.graphics
 
 import androidx.compose.ui.webcanvas.dom.CanvasElement
+import androidx.compose.ui.webcanvas.dom.CanvasFeatures
 import androidx.compose.ui.webcanvas.dom.createElementCanvas
+import androidx.compose.ui.webcanvas.dom.performanceNow
 import androidx.compose.ui.webcanvas.dom.releaseCanvas
 import androidx.compose.ui.webcanvas.dom.requireContext2D
 import kotlin.js.JsAny
@@ -183,11 +185,42 @@ internal class LayerAtlas(private val maxPixels: Long = MaxPixels) {
     }
 }
 
-/** A canvas holding the slots of layers, with the [DrawTarget] they're drawn through. */
-internal class AtlasPage {
+/**
+ * A canvas holding the slots of layers, with the [DrawTarget] they're drawn through.
+ *
+ * Where the browser takes a canvas off acceleration for good once too many of its frames failed
+ * ([CanvasFeatures.profilesAcceleration], Firefox), the page makes its canvas again when it finds it
+ * drawn in software ([AccelerationWatch]): a page whose content is new frame after frame, as an app
+ * starts, fails its frames, while a new canvas, whose first frames find that content in the caches
+ * that Firefox's accelerated canvases share (glyphs, paths, surfaces: `SharedContextWebgl` in
+ * `dom/canvas/DrawTargetWebgl.h`), keeps acceleration. Measured in Firefox 159 on macOS, scrolling the
+ * emote catalog of Emotecraft Library (emotes.redlance.org): its page was drawn in software from its
+ * 37th, 65th or 91st frame on, depending on when the content came; replaying the app's recorded
+ * Canvas 2D calls at 120 Hz, a page made again after the start drew 120 frames per second, against
+ * 55 without. Making it again at a set frame doesn't do: content comes by time and Firefox counts
+ * frames, so at 240 Hz a page made again after 120 frames lost acceleration again at its 56th. Made
+ * again when found in software, the page was, once, at its 122nd frame at 120 Hz and at its 182nd
+ * at 240 Hz, and the catalog drew 60, 120 and 160 frames per second at 60, 120 and 240 Hz (at 240,
+ * Firefox's GPU process works all the time), against 52, 56 and 56. The window canvas and the
+ * pooled canvases of layers aren't made again: in that catalog, their draws took at most 0.16 ms
+ * per frame in the tab, as accelerated canvases' do.
+ *
+ * [accelerationWatch] tells that the canvas was taken off acceleration, where the browser does that
+ * for good, and is `null` elsewhere, and once WebGL reads the page ([texture]): such a page stays
+ * drawn the way Firefox chooses. Measured in Firefox 159 at 120 Hz with the `perspective` scenario of
+ * compose-web-benchmark (24 layers in perspective, whose page WebGL uploads in every frame), its page
+ * made again and accelerated drew 73 to 91 frames per second, against 98 to 101 with the page left
+ * in software. Why an accelerated page uploads more slowly isn't established.
+ */
+internal class AtlasPage(
+    private var accelerationWatch: AccelerationWatch? =
+        if (CanvasFeatures.profilesAcceleration) AccelerationWatch() else null,
+) {
     /** A `<canvas>` element, which resolves SVG filters when layers are composited into it. */
-    val canvas: CanvasElement = createElementCanvas(0, 0)
-    val target = DrawTarget(requireContext2D(canvas), originX = 0, originY = 0, width = 0, height = 0)
+    var canvas: CanvasElement = createElementCanvas(0, 0)
+        private set
+    var target = targetOf(canvas)
+        private set
 
     private var framesTooLarge = 0
     private var framesUnused = 0
@@ -254,11 +287,15 @@ internal class AtlasPage {
         }
     }
 
-    /** Uploads into the [texture] that [into] is given, if it's of this context, and keeps the one it returns. */
+    /**
+     * Uploads into the [texture] that [into] is given, if it's of this context, and keeps the one it
+     * returns. The page is no longer watched (see [accelerationWatch]).
+     */
     private inline fun upload(into: (current: JsAny?) -> JsAny) {
         val generation = SharedWebGL.generation
         texture = into(texture.takeIf { textureGeneration == generation })
         textureGeneration = generation
+        accelerationWatch = null
     }
 
     /**
@@ -281,9 +318,23 @@ internal class AtlasPage {
             framesTooLarge >= PatienceFrames -> resize(roundUp(neededWidth), roundUp(neededHeight))
             else -> {
                 target.setPixelTransform()
-                target.ctx.clearRect(0.0, 0.0, width.toDouble(), height.toDouble())
+                if (clearShowsSoftware(width, height)) {
+                    renewCanvas()
+                    resize(width, height)
+                }
             }
         }
+    }
+
+    /**
+     * Clears the [width] x [height] page, and returns whether the time of its clears shows it drawn
+     * in software (see [AccelerationWatch]).
+     */
+    private fun clearShowsSoftware(width: Int, height: Int): Boolean {
+        val watch = accelerationWatch
+        val start = if (watch != null) performanceNow() else 0.0
+        target.ctx.clearRect(0.0, 0.0, width.toDouble(), height.toDouble())
+        return watch != null && watch.cleared(performanceNow() - start)
     }
 
     fun idle() {
@@ -293,6 +344,16 @@ internal class AtlasPage {
     fun release() {
         releaseCanvas(canvas)
         dropTexture()
+    }
+
+    /**
+     * Makes the canvas again, empty and of no size: while the page is prepared, so before anything of
+     * the frame is drawn into it. The jobs of the frame hold the page, not its canvas.
+     */
+    private fun renewCanvas() {
+        release()
+        canvas = createElementCanvas(0, 0)
+        target = targetOf(canvas)
     }
 
     /** Resizes the canvas, which clears it and resets its context. */
@@ -324,5 +385,78 @@ internal class AtlasPage {
         const val PatienceFrames = 120
 
         fun roundUp(size: Int): Int = (size + SizeStep - 1) / SizeStep * SizeStep
+
+        /** The target of an empty page drawn into through [canvas]. */
+        fun targetOf(canvas: CanvasElement): DrawTarget =
+            DrawTarget(requireContext2D(canvas), originX = 0, originY = 0, width = 0, height = 0)
+    }
+}
+
+/**
+ * Tells, from the time the clears of a page take, when the browser draws it in software, which no
+ * API tells: a clear of a canvas drawn with acceleration doesn't take longer as the canvas grows
+ * (0.001 to 0.027 ms, measured below), while one of a canvas drawn in software takes time in
+ * proportion to its size.
+ *
+ * Measured in Firefox 159 on macOS (an M4 Pro), the main-thread time of a `clearRect` of a whole
+ * canvas, each canvas getting a few draws in every frame. Over 100 frames, twelve canvases: about
+ * 0.001 ms with acceleration, whatever the size; in software 0.08 ms at 1024 x 768, 0.13 at
+ * 1792 x 768, 0.40 at 2048 x 2048, 0.56 at 3328 x 1792 and 0.96 at 4096 x 2560. Over 2400 frames at
+ * 120 Hz, six canvases, four times: in software 0.10 to 0.12 ms at 0.31 Mpx, 0.16 to 0.17 at 0.52
+ * and 0.30 to 0.32 at 1.05, about three times as long per megapixel; with acceleration 0.002 to
+ * 0.011 ms at 0.52 and 1.05 Mpx, but 0.023 to 0.027 at 0.31 Mpx, all along the run.
+ *
+ * Firefox gives the time in steps of 1 ms by default (`privacy.reduceTimerPrecision`), so the time
+ * of a clear is read over a window of [WatchFrames] clears, whose mean came close to it (0.81 ms at
+ * 4096 x 2560, 0.09 at 1024 x 768). A window says software if its clears took more than
+ * [SoftwareClearMs] each on average: four steps of 1 ms or more in a window of [WatchFrames] clears,
+ * proportionally more in the longer ones. Over the 40 windows of the second measurement, those of
+ * pages in software said so in 32 to 35 at 0.31 Mpx, 37 to 39 at 0.52 and all 40 at 1.05; those of
+ * accelerated pages in none or one at 0.52 and 1.05 Mpx, and in 2 to 6 at 0.31 Mpx, whose clears
+ * catch 1.5 steps a window on average: such a page is made again now and then while it's
+ * accelerated, which took 0.10 to 0.40 ms for a page of 4096 x 2560 in Firefox 159, against 0.03 ms
+ * for a frame of it.
+ *
+ * After a window that said software the next one is twice as long, up to [MaxWatchFrames], and
+ * after one that didn't, [WatchFrames] long again: content new in every frame takes every new canvas
+ * off acceleration again, and makes one at most every [MaxWatchFrames] frames, while a page found
+ * drawn in software later, once stable, is found within a window or two.
+ */
+internal class AccelerationWatch {
+    private var window = WatchFrames
+    private var clears = 0
+    private var time = 0.0
+
+    /**
+     * Takes the time a clear of the page took, in milliseconds, and returns whether the page is
+     * drawn in software: at the end of a window whose clears took more than [SoftwareClearMs] each
+     * on average.
+     */
+    fun cleared(milliseconds: Double): Boolean {
+        time += milliseconds
+        if (++clears < window) return false
+        val inSoftware = time > SoftwareClearMs * window
+        window = if (inSoftware) min(2 * window, MaxWatchFrames) else WatchFrames
+        clears = 0
+        time = 0.0
+        return inSoftware
+    }
+
+    internal companion object {
+        /** The clears of a window, after one that didn't say software. */
+        const val WatchFrames = 60
+
+        /**
+         * The clears of the longest window, which bounds how often a page is made again for nothing:
+         * where Firefox never accelerates canvases (no GPU, or `gfx.canvas.accelerated` off), every
+         * page found in software is made again once in this many frames. Measured in Firefox 159 with
+         * `gfx.canvas.accelerated` off, making a page of 4096 x 2560 again and drawing its first frame
+         * took 2.0 to 7.8 ms against 1.9 ms for a frame of it: one frame up to 6 ms longer every
+         * 960, every 8 s at 120 Hz, under 0.01 ms per frame on average.
+         */
+        const val MaxWatchFrames = 960
+
+        /** The mean time of a clear, in milliseconds, past which a window says software. */
+        const val SoftwareClearMs = 0.05
     }
 }
