@@ -1379,14 +1379,13 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
         if (width > MaxLayerSize || height > MaxLayerSize) return shader.canvasStyle()
         val colorFilterKey = colorFilter?.key
         val version = shader.version
-        shader.rasters?.find { it.matches(matrix, left, top, width, height, colorFilterKey, version) }
-            ?.let { return it.pattern }
+        val toRaster = rasterTransform.set(matrix)
+        toRaster.e -= left
+        toRaster.f -= top
+        shader.keptRaster(toRaster, width, height, colorFilterKey)?.let { return it }
         val canvas = createCanvas(width, height)
         val readsPixels = colorFilter != null && colorFilterReadsPixels(colorFilter)
         val ctx = getContext2D(canvas, willReadFrequently = readsPixels) ?: return null
-        val toRaster = matrix.copy()
-        toRaster.e -= left
-        toRaster.f -= top
         shader.rasterize(ctx, toRaster, width, height)
         var raster = canvas
         if (colorFilter != null) {
@@ -1394,10 +1393,10 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
             raster = applyColorFilter(canvas, ctx, width, height, colorFilter)
         }
         val pattern = ctx.createPattern(raster, JsStrings.noRepeat) ?: return null
+        val transform = toRaster.copy()
         // The pattern is in the local space of the draw: map its pixels back to the device area.
-        val toLocal = matrix.copy()
+        val toLocal = toRaster
         if (!toLocal.invert()) return null
-        toLocal.preTranslate(left.toFloat(), top.toFloat())
         setPatternTransform(
             pattern,
             toLocal.a.toDouble(),
@@ -1407,10 +1406,15 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
             toLocal.e.toDouble(),
             toLocal.f.toDouble(),
         )
-        val rasters = shader.rasters ?: LastTwo<ShaderRaster>().also { shader.rasters = it }
-        rasters.add(ShaderRaster(matrix.copy(), left, top, width, height, colorFilterKey, version, pattern))
+        shader.keepRaster(ShaderRaster(transform, width, height, colorFilterKey, version, pattern))
         return pattern
     }
+
+    /**
+     * The transformation from the space of the shader of a draw to the pixels of its image (see
+     * [shaderStyleForDraw]), inverted in place for the pattern of a new image.
+     */
+    private val rasterTransform = Affine()
 
     /**
      * Sets up the transient context state of a draw (blur, dashes) and returns a token to reset it

@@ -82,12 +82,12 @@ internal class FrameRenderer(
     internal var layersForegroundsAhead = 0
         private set
 
-    /** The start of the last frame, which keeps the images of shadows (see [ShadowSprites]). */
+    /** The start of the last frame, which keeps the images drawn since (see [FrameTicks]). */
     private var frameStart = 0.0
 
     /** Draws the frame that [block] draws into [target]. */
     fun render(block: (Canvas) -> Unit) {
-        frameStart = ShadowSprites.startFrame(frameStart)
+        frameStart = FrameTicks.startFrame(frameStart)
         recorder.beginRecording()
         try {
             block(recorder)

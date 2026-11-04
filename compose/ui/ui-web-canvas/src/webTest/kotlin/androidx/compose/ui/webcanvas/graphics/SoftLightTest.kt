@@ -364,17 +364,16 @@ class SoftLightTest {
         val canvas = Canvas(image)
         canvas.drawRect(0f, 0f, Width.toFloat(), Height.toFloat(), paint)
         val rasters = checkNotNull(shader.webShader.rasters)
-        val last = checkNotNull(rasters.last)
-        val previous = rasters.previous
-        if (CanvasFeatures.softLightReadsBack) {
-            assertTrue(previous != null && previous !== last, "an image through each half")
-        } else {
-            assertNull(previous, "one image, of the shader as it is")
-        }
+        // Where soft-light reads back, an image through each half; elsewhere one, of the shader as it is.
+        val images = if (CanvasFeatures.softLightReadsBack) 2 else 1
+        assertEquals(images, rasters.size, "the images of the first draw")
+        val first = rasters.first()
+        val last = rasters.last()
         canvas.drawRect(0f, 0f, Width.toFloat(), Height.toFloat(), paint)
         // The images of the first draw drew the second.
-        assertSame(last, rasters.last)
-        assertSame(previous, rasters.previous)
+        assertEquals(images, rasters.size, "the images after the second draw")
+        assertSame(first, rasters.first())
+        assertSame(last, rasters.last())
     }
 
     /** The shapes that the entry points of the canvas drawing with the color of a paint draw. */

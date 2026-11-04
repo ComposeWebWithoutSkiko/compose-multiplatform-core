@@ -246,14 +246,14 @@ class ShadowSpritesTest {
         val keys = List(6) { "shape $it" }
         var start = 0.0
         repeat(2) {
-            start = ShadowSprites.startFrame(start)
+            start = FrameTicks.startFrame(start)
             drawShadows(keys)
         }
-        start = ShadowSprites.startFrame(start)
+        start = FrameTicks.startFrame(start)
         val images = drawShadows(keys)
         assertEquals(4, images.count { it != null })
         repeat(5) {
-            start = ShadowSprites.startFrame(start)
+            start = FrameTicks.startFrame(start)
             assertEquals(images, drawShadows(keys))
         }
         assertEquals(4, ShadowSprites.created)
@@ -264,7 +264,7 @@ class ShadowSpritesTest {
         var start = 0.0
         for (keys in listOf(List(4) { "before $it" }, List(4) { "after $it" })) {
             repeat(3) {
-                start = ShadowSprites.startFrame(start)
+                start = FrameTicks.startFrame(start)
                 drawShadows(keys)
             }
             assertTrue(drawShadows(keys).all { it != null })
@@ -279,11 +279,11 @@ class ShadowSpritesTest {
         var second = 0.0
         val shapes = HashSet<String>()
         for (frame in 0 until 16) {
-            first = ShadowSprites.startFrame(first)
+            first = FrameTicks.startFrame(first)
             val inView = List(5) { "first ${frame / 4 + 4 - it}" }
             drawShadows(inView)
             shapes += inView
-            second = ShadowSprites.startFrame(second)
+            second = FrameTicks.startFrame(second)
             drawShadows(listOf("second"))
             shapes += "second"
         }

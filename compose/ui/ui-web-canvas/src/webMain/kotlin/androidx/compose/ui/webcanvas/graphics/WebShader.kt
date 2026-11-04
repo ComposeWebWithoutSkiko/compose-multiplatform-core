@@ -142,11 +142,56 @@ internal sealed class WebShader : PlatformShader {
         )
     }
 
+    /** The images of the shader that the canvas keeps (see [keepRaster]), or `null` before the first. */
+    internal var rasters: ArrayList<ShaderRaster>? = null
+        private set
+
+    /** The pixels of [rasters]. */
+    private var rasterPixels = 0
+
     /**
-     * The last two images of the shader made by the canvas, reused while the draws match one of
-     * them: the halves of a paint drawn as hard-light ([HardLightPasses]) alternate.
+     * Returns the pattern of the image of the shader through [toRaster] over [width] x [height]
+     * pixels, through the color filter of [colorFilterKey], if one is kept, which counts as drawn.
+     * The images are kept while the frames draw them (see [FrameTicks]), within a budget (see
+     * [keepRaster]): a frame may draw the shader at many positions, through many filters, and the
+     * halves of a paint drawn as hard-light ([HardLightPasses]) alternate. The others go as the
+     * shader is looked up, and those of an older [version] with them.
      */
-    internal var rasters: LastTwo<ShaderRaster>? = null
+    fun keptRaster(toRaster: Affine, width: Int, height: Int, colorFilterKey: Any?): JsAny? {
+        val rasters = rasters ?: return null
+        val version = version
+        var found: ShaderRaster? = null
+        var i = 0
+        while (i < rasters.size) {
+            val raster = rasters[i]
+            if (raster.version != version || raster.lastDrawn < FrameTicks.keptSince) {
+                rasters.removeAt(i)
+                rasterPixels -= raster.width * raster.height
+            } else {
+                if (found == null && raster.matches(toRaster, width, height, colorFilterKey)) found = raster
+                i++
+            }
+        }
+        found ?: return null
+        found.lastDrawn = FrameTicks.tick
+        return found.pattern
+    }
+
+    /**
+     * Keeps [raster], an image of the shader that the canvas made after [keptRaster] found none, as
+     * drawn. The images kept then were all drawn since the previous frame: when [raster] doesn't fit
+     * beside them in the budget of the shader ([RasterBudgetPixels]), it's drawn without being kept,
+     * and they stay, rather than images being made and dropped in every frame. The first
+     * [RastersKeptAtAnySize] are kept whatever their size.
+     */
+    fun keepRaster(raster: ShaderRaster) {
+        val rasters = rasters ?: ArrayList<ShaderRaster>().also { rasters = it }
+        val size = raster.width * raster.height
+        if (rasters.size >= RastersKeptAtAnySize && rasterPixels + size > RasterBudgetPixels) return
+        raster.lastDrawn = FrameTicks.tick
+        rasters.add(raster)
+        rasterPixels += size
+    }
 
     /** The shaders of this one through the last two filters asked for (see [filtered]). */
     private var filteredShaders: LastTwo<KeyedShader>? = null
@@ -225,6 +270,20 @@ private const val CanonicalRadial = 1
 private const val CanonicalSweep = 2
 
 /**
+ * The pixels of the images a shader keeps past its first [RastersKeptAtAnySize] (see
+ * [WebShader.keepRaster]): past them, its images are drawn without being kept, in frames and outside
+ * of them, where nothing ages.
+ */
+private const val RasterBudgetPixels = 4 * 1024 * 1024
+
+/**
+ * The images a shader keeps whatever their size: the halves of a paint drawn as hard-light
+ * ([HardLightPasses]) alternate, and an image larger than the budget isn't to be made again in
+ * every frame.
+ */
+private const val RastersKeptAtAnySize = 2
+
+/**
  * The last two items added: what the draws of a shader alternate between, as the halves of a paint
  * drawn as hard-light ([HardLightPasses]) do.
  */
@@ -246,11 +305,16 @@ internal class LastTwo<T : Any> {
     inline fun find(predicate: (T) -> Boolean): T? = last?.takeIf(predicate) ?: previous?.takeIf(predicate)
 }
 
-/** An image of a shader over a device area, as a pattern that fills the area. */
+/**
+ * An image of a shader over a device area, as a pattern that fills the area, known by what its
+ * pixels depend on: [transform], the size, the color filter and the [version] of the shader. The
+ * pattern maps its pixels to the local space of a draw through the inverse of [transform], which
+ * holds for every draw with the same [transform]: a draw moved by whole device pixels shows the
+ * image at its own position.
+ */
 internal class ShaderRaster(
+    /** The transformation from the space of the shader to the pixels of the image. */
     val transform: Affine,
-    val left: Int,
-    val top: Int,
     val width: Int,
     val height: Int,
     val colorFilterKey: Any?,
@@ -258,17 +322,11 @@ internal class ShaderRaster(
     val version: Int,
     val pattern: JsAny,
 ) {
-    fun matches(
-        transform: Affine,
-        left: Int,
-        top: Int,
-        width: Int,
-        height: Int,
-        colorFilterKey: Any?,
-        version: Int,
-    ): Boolean =
-        this.left == left && this.top == top && this.width == width && this.height == height &&
-            this.colorFilterKey == colorFilterKey && this.version == version &&
+    /** The tick of the frame that drew the image last (see [FrameTicks]). */
+    var lastDrawn = 0.0
+
+    fun matches(transform: Affine, width: Int, height: Int, colorFilterKey: Any?): Boolean =
+        this.width == width && this.height == height && this.colorFilterKey == colorFilterKey &&
             this.transform.contentEquals(transform)
 }
 

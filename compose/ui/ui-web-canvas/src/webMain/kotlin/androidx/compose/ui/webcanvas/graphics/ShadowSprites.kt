@@ -32,11 +32,9 @@ import androidx.compose.ui.webcanvas.dom.requireContext2D
  * transformation, the blur and the color, so that shapes alike share them. The alpha is applied
  * when an image is drawn, so fading doesn't make new ones.
  *
- * The images drawn least recently make room for new ones, except those drawn since the previous
- * frame of the renderer drawing (see [startFrame]): when these fill the budget, no image is made,
- * and the shadows that don't fit are painted directly, instead of images being made and evicted
- * in every frame. Drawing outside of frames, the images kept are those drawn since the previous
- * frame of the renderer that started a frame last.
+ * The images drawn least recently make room for new ones, except those the frames keep (see
+ * [FrameTicks]): when these fill the budget, no image is made, and the shadows that don't fit are
+ * painted directly, instead of images being made and evicted in every frame.
  */
 internal object ShadowSprites {
     /** A painted shadow at full alpha, keyed by [key], last drawn at the tick [lastDrawn]. */
@@ -140,15 +138,6 @@ internal object ShadowSprites {
     /** The key of every lookup. */
     private val probe = Key()
 
-    /**
-     * Counts the frames of all the renderers. A double counts exactly as far as needed, and is a
-     * number in JavaScript, unlike a long.
-     */
-    private var tick = 0.0
-
-    /** The sprites drawn at this tick or later aren't evicted. */
-    private var keptSince = 0.0
-
     /** The number of images made since the last [clear]. */
     internal var created = 0
         private set
@@ -158,17 +147,6 @@ internal object ShadowSprites {
         sprites.clear()
         pixels = 0
         created = 0
-    }
-
-    /**
-     * Starts a frame of a renderer whose previous frame started at [previousStart] (0 for its
-     * first frame), and returns the start of this one. Until the next frame, the sprites drawn
-     * since [previousStart] are kept: those of its previous frame and of the frames of other
-     * renderers since then.
-     */
-    fun startFrame(previousStart: Double): Double {
-        keptSince = previousStart
-        return ++tick
     }
 
     /**
@@ -190,6 +168,7 @@ internal object ShadowSprites {
     ): Sprite? {
         if (shape.key == null) return null
         val key = probe.set(shape, matrix, sigma, rgb)
+        val tick = FrameTicks.tick
         sprites[key]?.let { sprite ->
             if (sprite.lastDrawn != tick) {
                 sprites.remove(sprite.key)
@@ -216,14 +195,14 @@ internal object ShadowSprites {
     }
 
     /**
-     * Evicts the sprites drawn least recently, but none of those kept (see [startFrame]), until
+     * Evicts the sprites drawn least recently, but none of those kept (see [FrameTicks]), until
      * [size] more pixels fit in the budget. Returns whether they fit.
      */
     private fun makeRoom(size: Int): Boolean {
         val eldestFirst = sprites.values.iterator()
         while (pixels + size > BudgetPixels) {
             val sprite = eldestFirst.next()
-            if (sprite.lastDrawn >= keptSince) return false
+            if (sprite.lastDrawn >= FrameTicks.keptSince) return false
             eldestFirst.remove()
             pixels -= sprite.width * sprite.height
             releaseCanvas(sprite.canvas)
