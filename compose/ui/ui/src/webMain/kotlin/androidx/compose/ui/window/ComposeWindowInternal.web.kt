@@ -269,7 +269,10 @@ internal class ComposeWindow(
 
     private val clipTarget = clipTargetElement(canvas)
 
-    /** Draws the frames, at most one per animation frame of the browser. */
+    /**
+     * Draws the frames: at most one per animation frame of the browser, and one right after the
+     * canvas is resized (see [RenderScheduler.renderNow]).
+     */
     private val renderScheduler = RenderScheduler(::renderFrame)
 
     // TODO: It must be shared between Compose instances.
@@ -653,6 +656,7 @@ internal class ComposeWindow(
             size = state.currentSize(),
             viewportScale = getVisualViewportScale()
         )
+        renderScheduler.needRender()
         archComponentsOwner.enableSavedStateHandles()
 
         val interopContainer = WebInteropContainer(InteropViewGroup(interopContainerElement))
@@ -680,11 +684,19 @@ internal class ComposeWindow(
                         // Apply new values eagerly to improve resize smoothness and avoid performing
                         // canvas/scene resize mutations while the recomposer drains composition effects.
                         // See https://youtrack.jetbrains.com/issue/CMP-10751
+                        // Resizing the canvas clears it, and a ResizeObserver tells after the
+                        // animation frame callbacks of this rendering: the frame is drawn at once,
+                        // so that the browser doesn't paint the canvas cleared.
                         val stopObservingSize = state.observeSizeAndScaleChanges {
-                            applyResizeAndScale(
+                            val isCanvasResized = applyResizeAndScale(
                                 size = state.currentSize(),
                                 viewportScale = getVisualViewportScale()
                             )
+                            if (isCanvasResized) {
+                                renderScheduler.renderNow()
+                            } else {
+                                renderScheduler.needRender()
+                            }
                         }
                         onDispose(stopObservingSize)
                     }
@@ -733,10 +745,14 @@ internal class ComposeWindow(
         input.focus()
     }
 
+    /**
+     * Applies the [size] of the container and the [viewportScale] to the canvas and the scene, and
+     * returns whether the size of the canvas changed, which clears it.
+     */
     private fun applyResizeAndScale(
         size: IntSize,
         viewportScale: Float
-    ) = Snapshot.withMutableSnapshot {
+    ): Boolean = Snapshot.withMutableSnapshot {
         // Coerce the original value so it doesn't exceed 2.0 to avoid unlimited canvas growth and memory consumption.
         // Otherwise, the browser might clip the canvas content (tested in Chrome) making some UI parts unreachable.
         // We accept some blur might be still noticeable on higher than 2.0 scale.
@@ -760,8 +776,12 @@ internal class ComposeWindow(
 
         // we need to scale canvas both via CSS styling and HTML attributes
         // https://www.khronos.org/webgl/wiki/HandlingHighDPI
-        canvas.width = sizeInPx.width
-        canvas.height = sizeInPx.height
+        // Setting the size of a canvas clears it, even to the size it has.
+        val isCanvasResized = canvas.width != sizeInPx.width || canvas.height != sizeInPx.height
+        if (isCanvasResized) {
+            canvas.width = sizeInPx.width
+            canvas.height = sizeInPx.height
+        }
 
         // The a11y container is sized via CSS (`width: 100%; height: 100%`) at construction
         // time, so it tracks the canvas automatically without a per-resize bridge call across
@@ -772,9 +792,9 @@ internal class ComposeWindow(
 
         // TODO: Align with Container/Mediator architecture
         scene.size = sizeInPx
-        renderScheduler.needRender()
 
         insetsManager?.onCanvasResized(canvas)
+        isCanvasResized
     }
 
     // This is called automatically on destroying the corresponding DOM container
@@ -1111,29 +1131,56 @@ internal fun documentIsVisible(): Boolean = js("document.visibilityState === 'vi
 /**
  * Schedules drawing with `requestAnimationFrame`: [needRender] requests a frame, and [onFrame]
  * draws it with the frame time in nanoseconds. Requests made while a frame is pending (or being
- * drawn) are merged into one frame.
+ * drawn) are merged into one frame. [renderNow] draws a frame at once, in place of the pending one.
  */
 internal class RenderScheduler(private val onFrame: (nanoTime: Long) -> Unit) {
-    private var isScheduled = false
+    /** The id of the pending `requestAnimationFrame` request, if any. */
+    private var request: Int? = null
     private var isDisposed = false
 
     private val frameCallback: (Double) -> Unit = { timestamp ->
-        isScheduled = false
+        request = null
         if (!isDisposed) {
-            onFrame((timestamp * 1_000_000.0).toLong())
+            onFrame(nanosOf(timestamp))
         }
     }
 
     fun needRender() {
-        if (isScheduled || isDisposed) return
-        isScheduled = true
-        window.requestAnimationFrame(frameCallback)
+        if (request != null || isDisposed) return
+        request = window.requestAnimationFrame(frameCallback)
+    }
+
+    /**
+     * Draws a frame now, in place of the pending one, if any: in the rendering of the page under
+     * way, e.g. right after the canvas is resized, which clears it, so that the browser doesn't
+     * paint it cleared. The frame time is no later than the one the next animation frame callbacks
+     * get (see [currentFrameTime]), so that frame times never go back.
+     */
+    fun renderNow() {
+        if (isDisposed) return
+        request?.let {
+            window.cancelAnimationFrame(it)
+            request = null
+        }
+        onFrame(nanosOf(currentFrameTime()))
     }
 
     fun dispose() {
         isDisposed = true
     }
 }
+
+/** [milliseconds], a time of the page, in nanoseconds. */
+private fun nanosOf(milliseconds: Double): Long = (milliseconds * 1_000_000.0).toLong()
+
+/**
+ * The time of the rendering of the page under way, in milliseconds, for a frame drawn while the page
+ * renders, outside of its animation frame callbacks: in a ResizeObserver callback, the time these
+ * callbacks got; in a resize event, no later than the time of the next one (the time of this
+ * rendering in Chrome and Firefox, which update `document.timeline` before the resize steps).
+ */
+// language=js
+private fun currentFrameTime(): Double = js("document.timeline.currentTime")
 
 internal fun onDomReady(block: () -> Unit) {
     // https://developer.mozilla.org/en-US/docs/Web/API/Document/DOMContentLoaded_event
