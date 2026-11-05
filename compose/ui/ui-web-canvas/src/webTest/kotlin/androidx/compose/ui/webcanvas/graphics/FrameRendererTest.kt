@@ -83,8 +83,13 @@ class FrameRendererTest {
         layers.forEach { graphicsContext.releaseGraphicsLayer(it) }
     }
 
-    private fun layer(width: Int, height: Int, content: DrawScope.() -> Unit): GraphicsLayer =
+    /**
+     * A [width] x [height] layer of [content], with [outsets] on each side set before it's
+     * recorded, as the owner of a layer sets them.
+     */
+    private fun layer(width: Int, height: Int, outsets: Int = 0, content: DrawScope.() -> Unit): GraphicsLayer =
         graphicsContext.createGraphicsLayer().also {
+            it.setOutsets(outsets, outsets, outsets, outsets)
             it.record(Density(1f), LayoutDirection.Ltr, IntSize(width, height), content)
             layers.add(it)
         }
@@ -95,8 +100,8 @@ class FrameRendererTest {
      * drawn, so a layer drawn ahead (in a slot of the atlas) and directly (at the origin of a canvas
      * of its own) differs there by a few levels.
      */
-    private fun card(color: Color, alpha: Float, topLeft: IntOffset): GraphicsLayer =
-        layer(30, 20) {
+    private fun card(color: Color, alpha: Float, topLeft: IntOffset, outsets: Int = 0): GraphicsLayer =
+        layer(30, 20, outsets) {
             drawRect(color)
             drawRect(Color.White, topLeft = Offset(7f, 4f), size = Size(16f, 12f))
         }.also {
@@ -133,6 +138,21 @@ class FrameRendererTest {
             card(Palette[i], alpha = 0.3f + 0.1f * i, topLeft = IntOffset(4 + (i % 3) * 34, 4 + (i / 3) * 24))
         }
         assertEquals(6, assertDrawnAheadTheSame { drawLayers(*cards) })
+    }
+
+    @Test
+    fun layersWithOutsets() {
+        val cards = Array(2) { i -> card(Palette[i], alpha = 1f, topLeft = IntOffset(10 + i * 50, 10), outsets = 6) }
+        // A shader effect, in the space of the layer with its outsets, and an alpha.
+        val halves = LinearGradientShader(
+            from = Offset.Zero,
+            to = Offset(42f, 0f),
+            colors = listOf(Color.Red, Color.Red, Color.Blue, Color.Blue),
+            colorStops = listOf(0f, 0.5f, 0.5f, 1f),
+        )
+        cards[0].renderEffect = shaderRenderEffect(halves)
+        cards[1].alpha = 0.5f
+        assertEquals(2, assertDrawnAheadTheSame { drawLayers(*cards) })
     }
 
     @Test

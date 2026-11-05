@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.webcanvas.path.PathData
 import androidx.compose.ui.webcanvas.path.WebPath
+import androidx.compose.ui.webcanvas.path.asWebPath
 
 /** The light that casts the elevation shadows, in the device space of the window. */
 internal class LightingInfo {
@@ -72,6 +73,12 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
     private var topLeft = IntOffset.Zero
     private var size = IntSize.Zero
 
+    /**
+     * The outsets, which enlarge the layer around its size. Like the content of a render node, the
+     * content is recorded shifted by them (see [record]), so that its space, where its offscreen
+     * buffer and its render effects work, starts at the corner of the enlarged layer; the outline
+     * and the transformation are in the space of the layer itself.
+     */
     private var outsetLeft = 0
     private var outsetTop = 0
     private var outsetRight = 0
@@ -232,17 +239,13 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
         require(left >= 0 && top >= 0 && right >= 0 && bottom >= 0) {
             "Outsets cannot be negative! Left: $left, Top: $top, Right: $right, Bottom: $bottom"
         }
-        if (left != outsetLeft || top != outsetTop || right != outsetRight || bottom != outsetBottom) {
-            outsetLeft = left
-            outsetTop = top
-            outsetRight = right
-            outsetBottom = bottom
-            transformDirty = true
-            invalidateOutlineShapes()
-        }
+        outsetLeft = left
+        outsetTop = top
+        outsetRight = right
+        outsetBottom = bottom
     }
 
-    /** Forgets the shapes made from the outline (in the coordinates of the display list). */
+    /** Forgets the shapes made from the outline. */
     private fun invalidateOutlineShapes() {
         outlinePath = null
         cachedShadowShape = null
@@ -299,7 +302,7 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
         val displayList = displayList ?: return
         updateTransform()
         canvas.save()
-        canvas.translate((topLeft.x - outsetLeft).toFloat(), (topLeft.y - outsetTop).toFloat())
+        canvas.translate(topLeft.x.toFloat(), topLeft.y.toFloat())
         if (transformHasPerspective && drawInPerspective(canvas)) {
             canvas.restore()
             return
@@ -319,21 +322,27 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
                 lighting = lighting,
             )
         }
-        if (clipToOutline && outline != null) {
-            clipTo(canvas, outline)
-        }
         updateComposition()
         drawContent(canvas, displayList, composition, layerPaint)
         canvas.restore()
     }
 
-    /** Draws the display list into [canvas] with [composition], through [paint] if offscreen. */
+    /**
+     * Draws the display list into [canvas], which is in the space of the layer: clipped to the
+     * outline if the layer clips to it, with [composition], through [paint] if offscreen. Leaves
+     * [canvas] clipped and in the space of the content (see [outsetLeft]): the caller restores it.
+     */
     private fun drawContent(
         canvas: WebCanvas,
         displayList: DisplayList,
         composition: Composition,
         paint: WebPaint,
     ) {
+        val outline = outline
+        if (clipToOutline && outline != null) {
+            clipTo(canvas, outline)
+        }
+        canvas.translate(-outsetLeft.toFloat(), -outsetTop.toFloat())
         val width = (size.width + outsetLeft + outsetRight).toFloat()
         val height = (size.height + outsetTop + outsetBottom).toFloat()
         val drawsContent = when (composition) {
@@ -390,36 +399,33 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
         updateComposition()
         return canvas.drawInPerspective(
             transform = transform,
-            left = 0f,
-            top = 0f,
-            right = (size.width + outsetLeft + outsetRight).toFloat(),
-            bottom = (size.height + outsetTop + outsetBottom).toFloat(),
+            left = -outsetLeft.toFloat(),
+            top = -outsetTop.toFloat(),
+            right = (size.width + outsetRight).toFloat(),
+            bottom = (size.height + outsetBottom).toFloat(),
             blendMode = blendMode,
             content = projectedContent,
         )
     }
 
-    /** The content of the layer drawn in perspective, in its own space (see [drawInPerspective]). */
+    /**
+     * The content of the layer drawn in perspective, from the space of the layer (see
+     * [drawInPerspective]).
+     */
     private val projectedContent = object : JobContent {
         override fun replayContent(canvas: WebCanvas, contentOp: Int) {
             val displayList = displayList ?: return
-            val outline = outline
-            if (clipToOutline && outline != null) {
-                clipTo(canvas, outline)
-            }
             drawContent(canvas, displayList, projectedComposition, projectedLayerPaint)
         }
     }
 
     private fun clipTo(canvas: WebCanvas, outline: Outline) {
-        val dx = outsetLeft.toFloat()
-        val dy = outsetTop.toFloat()
         when (outline) {
             is Outline.Rectangle -> canvas.clipRect(
-                outline.rect.left + dx,
-                outline.rect.top + dy,
-                outline.rect.right + dx,
-                outline.rect.bottom + dy,
+                outline.rect.left,
+                outline.rect.top,
+                outline.rect.right,
+                outline.rect.bottom,
                 ClipOp.Intersect,
             )
             else -> canvas.clipPathData(outlinePath(outline), ClipOp.Intersect)
@@ -427,21 +433,19 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
     }
 
     /**
-     * The outline as a shape casting shadows, in the coordinates of the display list: a
-     * rectangle or a rounded rectangle with the same circular corners, whose shadows are drawn
-     * without blurring, or else its path, identified up to a translation for the images of its
-     * shadows (see [ShadowSprites]).
+     * The outline as a shape casting shadows, in the space of the layer: a rectangle or a rounded
+     * rectangle with the same circular corners, whose shadows are drawn without blurring, or else
+     * its path, identified up to a translation for the images of its shadows (see
+     * [ShadowSprites]).
      */
     private fun shadowShape(outline: Outline): ShadowShape {
         cachedShadowShape?.let { return it }
         val path = outlinePath(outline)
-        val dx = outsetLeft.toFloat()
-        val dy = outsetTop.toFloat()
         val requests = shadowRequests ?: ShadowSprites.Requests().also { shadowRequests = it }
         val shape = when (outline) {
             is Outline.Rectangle -> outline.rect.let {
                 ShadowShape.RoundRect(
-                    it.left + dx, it.top + dy, it.right + dx, it.bottom + dy,
+                    it.left, it.top, it.right, it.bottom,
                     radius = 0f,
                     path,
                     key = it.size,
@@ -452,7 +456,7 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
                 val key = it.translate(Offset(-it.left, -it.top))
                 if (it.isSimple) {
                     ShadowShape.RoundRect(
-                        it.left + dx, it.top + dy, it.right + dx, it.bottom + dy,
+                        it.left, it.top, it.right, it.bottom,
                         radius = it.topLeftCornerRadius.x,
                         path,
                         key,
@@ -468,19 +472,15 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
         return shape
     }
 
-    /** The outline as a path in the coordinates of the display list (shifted by the outsets). */
+    /** The outline as a path, in the space of the layer: the path of a generic outline itself. */
     private fun outlinePath(outline: Outline): PathData {
         outlinePath?.let { return it }
-        val path = WebPath()
-        when (outline) {
-            is Outline.Rectangle -> path.addRect(outline.rect)
-            is Outline.Rounded -> path.addRoundRect(outline.roundRect)
-            is Outline.Generic -> path.addPath(outline.path)
+        val data = when (outline) {
+            is Outline.Rectangle -> WebPath().apply { addRect(outline.rect) }.snapshot()
+            is Outline.Rounded -> WebPath().apply { addRoundRect(outline.roundRect) }.snapshot()
+            is Outline.Generic -> outline.path.asWebPath().snapshot()
         }
-        if (outsetLeft != 0 || outsetTop != 0) {
-            path.translate(Offset(outsetLeft.toFloat(), outsetTop.toFloat()))
-        }
-        return path.snapshot().also { outlinePath = it }
+        return data.also { outlinePath = it }
     }
 
     private fun updateTransform() {
@@ -489,11 +489,11 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
         val pivotX: Float
         val pivotY: Float
         if (pivotOffset.isUnspecified) {
-            pivotX = size.width / 2f + outsetLeft
-            pivotY = size.height / 2f + outsetTop
+            pivotX = size.width / 2f
+            pivotY = size.height / 2f
         } else {
-            pivotX = pivotOffset.x + outsetLeft
-            pivotY = pivotOffset.y + outsetTop
+            pivotX = pivotOffset.x
+            pivotY = pivotOffset.y
         }
         prepareTransformationMatrix(
             matrix = transform,

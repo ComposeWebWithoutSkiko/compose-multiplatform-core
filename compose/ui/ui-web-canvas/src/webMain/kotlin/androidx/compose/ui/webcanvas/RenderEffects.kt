@@ -29,7 +29,10 @@ import androidx.compose.ui.webcanvas.graphics.webShader
 
 // The render effects that libraries build out of `ImageFilter` on Skia.
 
-/** An effect that replaces a layer with [shader], in the space of the content of the layer. */
+/**
+ * An effect that replaces a layer with [shader], in the space of the content of the layer: for a
+ * graphics layer with outsets, a space that starts at the corner of the outsets, like on Skia.
+ */
 @InternalComposeUiApi
 public fun shaderRenderEffect(shader: Shader): RenderEffect =
     WebRenderEffect.ShaderFill(shader.webShader).asComposeRenderEffect()

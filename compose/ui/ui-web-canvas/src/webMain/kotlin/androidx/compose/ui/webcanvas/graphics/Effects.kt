@@ -43,7 +43,8 @@ internal object Effects {
      * [ctx] it restores after: a blur through the pixels changes the image smoothing of [ctx].
      * [matrix] is the transformation of the content of the layer, whose pixels start at ([left],
      * [top]): it scales the effect parameters, and places shaders, which are in the space of the
-     * content, whatever part of it the area holds. What [job] prepared ahead is used (see [plan]).
+     * content (of a graphics layer, shifted by its outsets: see [WebGraphicsLayer]), whatever part
+     * of it the area holds. What [job] prepared ahead is used (see [plan]).
      *
      * The last effect is applied while drawing into [ctx] (a blur through `ctx.filter`, an offset
      * by moving the draw), so it costs no image of its own. The parts of an effect before it work in

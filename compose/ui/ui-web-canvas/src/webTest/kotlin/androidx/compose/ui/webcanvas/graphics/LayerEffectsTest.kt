@@ -354,18 +354,24 @@ class LayerEffectsTest {
         }
     }
 
+    /**
+     * Draws a [layerSize] layer of [content] at [topLeft] into a new [width] x [height] image, with
+     * [outsets] on each side set before it's recorded, as the owner of a layer sets them.
+     */
     private fun drawLayerImage(
         width: Int,
         height: Int,
         layerSize: IntSize,
         topLeft: IntOffset,
         effect: RenderEffect? = null,
+        outsets: Int = 0,
         setUp: GraphicsLayer.() -> Unit = {},
         around: DrawScope.(drawTheLayer: DrawScope.() -> Unit) -> Unit = { it() },
         content: DrawScope.() -> Unit,
     ): ImageBitmap {
         val context = WebCanvasGraphicsContext()
         val layer = context.createGraphicsLayer()
+        layer.setOutsets(outsets, outsets, outsets, outsets)
         layer.record(Density(1f), LayoutDirection.Ltr, layerSize, content)
         layer.topLeft = topLeft
         layer.renderEffect = effect
@@ -417,6 +423,27 @@ class LayerEffectsTest {
         assertColor(Color.Blue, image.pixel(32, 10))
         assertColor(Color.Blue, image.pixel(45, 10))
         assertColor(Color.Transparent, image.pixel(55, 10))
+    }
+
+    @Test
+    fun aShaderEffectOfALayerWithOutsetsStartsAtTheCornerOfTheOutsets() {
+        val image = drawLayerImage(
+            width = 80,
+            height = 40,
+            layerSize = IntSize(40, 20),
+            topLeft = IntOffset(20, 10),
+            effect = shaderRenderEffect(halves(60f)),
+            outsets = 10,
+        ) {
+            drawRect(Color.Green, size = Size(10f, 10f))
+        }
+        // With its outsets, the layer spans 10 to 70, like a render node on Skia.
+        assertColor(Color.Transparent, image.pixel(5, 20))
+        assertColor(Color.Red, image.pixel(15, 20))
+        assertColor(Color.Red, image.pixel(38, 20))
+        assertColor(Color.Blue, image.pixel(42, 20))
+        assertColor(Color.Blue, image.pixel(65, 20))
+        assertColor(Color.Transparent, image.pixel(75, 20))
     }
 
     @Test

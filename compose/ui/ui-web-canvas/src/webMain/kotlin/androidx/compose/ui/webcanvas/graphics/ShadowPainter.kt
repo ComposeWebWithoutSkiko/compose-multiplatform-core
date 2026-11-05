@@ -16,7 +16,6 @@
 
 package androidx.compose.ui.webcanvas.graphics
 
-import androidx.compose.ui.webcanvas.dom.JsStrings
 import androidx.compose.ui.webcanvas.path.toPath2D
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -57,7 +56,7 @@ internal object ShadowPainter {
             matrix.a, matrix.b, matrix.c, matrix.d,
             (matrix.e + dx - target.originX).toDouble(), (matrix.f + dy - target.originY).toDouble(),
         )
-        target.ctx.fill(shape.path.toPath2D(), JsStrings.nonzero)
+        target.ctx.fill(shape.path.toPath2D(), shape.path.fillType.toJs())
         endShadowOnly(target.ctx)
         target.invalidateTransform()
     }
