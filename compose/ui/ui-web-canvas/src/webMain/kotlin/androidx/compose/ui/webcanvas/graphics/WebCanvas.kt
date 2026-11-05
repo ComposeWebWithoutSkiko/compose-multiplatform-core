@@ -194,6 +194,9 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
     /** Matches the layers this canvas meets with the jobs drawn ahead of the frame. */
     private val jobMatcher = JobMatcher()
 
+    /** The shadows painted ahead of the frame, drawn from their slots (see [useShadows]). */
+    private var shadowSlots: ShadowSlots? = null
+
     /** Whether a layer was met that the plan doesn't have (see [JobMatcher.isBroken]). */
     internal val isPlanBroken: Boolean get() = jobMatcher.isBroken
 
@@ -207,11 +210,17 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
         jobMatcher.start(jobs)
     }
 
+    /** Draws the shadows of [shadows] that it finds from their slots, until [finish]. */
+    internal fun useShadows(shadows: ShadowSlots) {
+        shadowSlots = shadows
+    }
+
     /**
-     * Draws the content of [job] into its slot of [page], with the state the plan noted. Returns
-     * `false` if the content met a layer that the plan doesn't have.
+     * Draws the content of [job] into its slot of [page], with the state the plan noted, the
+     * shadows of [shadows] from their slots. Returns `false` if the content met a layer that the
+     * plan doesn't have.
      */
-    internal fun drawJob(job: FramePlan.Job, page: AtlasPage): Boolean {
+    internal fun drawJob(job: FramePlan.Job, page: AtlasPage, shadows: ShadowSlots): Boolean {
         val pageTarget = page.target
         // The slot shows the device pixels of the layer.
         pageTarget.originX = job.left - job.slotX
@@ -220,6 +229,7 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
         matrix.set(job.matrix)
         clipToDevicePixels(job.left, job.top, job.left + job.width, job.top + job.height)
         useJobs(job.children)
+        useShadows(shadows)
         try {
             job.replayContent(this)
         } finally {
@@ -243,7 +253,7 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
 
     /**
      * Unwinds all pending saves and layers, so that the context is left in its initial state, and
-     * ends planning or compositing jobs.
+     * ends planning or drawing from the slots of jobs and shadows.
      */
     fun finish() {
         while (depth > 0) restore()
@@ -255,6 +265,8 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
         deferredClip = null
         plan = null
         jobMatcher.stop()
+        shadowSlots = null
+        shadowProbe.clear()
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -837,6 +849,8 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
         val lease = LayerCanvasPool.acquire(rasterWidth, rasterHeight)
         val contentCanvas = WebCanvas(DrawTarget(lease.ctx, 0, 0, rasterWidth, rasterHeight))
         contentCanvas.concat(rasterMatrix)
+        // The shadows in the content were planned in the space of its raster.
+        shadowSlots?.let { contentCanvas.useShadows(it) }
         content.replayContent(contentCanvas, DisplayList.WholeList)
         contentCanvas.finish()
         val image = WebGLRenderer.drawImageInPerspective(
@@ -2331,7 +2345,9 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
     /**
      * Draws the shadow of [shape], blurred by [blurSigma] device pixels in the color [argb] and
      * offset by ([offsetX], [offsetY]) device pixels, without the shape itself: from its image if
-     * it was drawn before (see [ShadowSprites]), painted otherwise (see [ShadowPainter]).
+     * it was drawn before (see [ShadowSprites]), from its slot if it was painted ahead of the frame
+     * (see [ShadowSlots]), painted in place otherwise (see [ShadowPainter]). Planning notes the
+     * shadows to paint ahead.
      */
     internal fun drawShadow(
         shape: ShadowShape,
@@ -2340,12 +2356,14 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
         offsetX: Float,
         offsetY: Float,
     ) {
-        // Planning must not ask for a sprite: the second request would create it.
-        if (drawsNothing) return
+        if (skipDrawing) return
         val color = argb.withAlphaMultiplied(alphaMultiplier)
         val alpha = color ushr 24
         if (alpha == 0) return
         val rgb = color or OpaqueBlack
+        val plan = plan
+        // Planning notes only the shadows the browser blurs: the others cost little where met.
+        if (plan != null && !ShadowPainter.blurs(shape, matrix, blurSigma)) return
         val margin = blurExtent(blurSigma) + 1
         val bounds = shape.path.bounds
         matrix.mapRect(bounds.left, bounds.top, bounds.right, bounds.bottom, tmpRect)
@@ -2359,24 +2377,44 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
         ) {
             return
         }
+        val fitsSprite =
+            width <= MaxLayerSize &&
+                height <= MaxLayerSize &&
+                width.toLong() * height <= ShadowSprites.MaxSpritePixels
+        if (plan != null) {
+            // Unless it has its image, kept for the frame: a new one is made only when drawn.
+            if (!fitsSprite || !ShadowSprites.keepImage(shape, matrix, blurSigma, rgb)) {
+                shadowOf(
+                    plan.shadows.next(), shape, offsetX, offsetY, blurSigma, rgb,
+                    left, top, width, height,
+                )
+            }
+            return
+        }
         val sprite =
-            if (
-                width <= MaxLayerSize &&
-                    height <= MaxLayerSize &&
-                    width.toLong() * height <= ShadowSprites.MaxSpritePixels
-            ) {
+            if (fitsSprite) {
                 ShadowSprites.spriteFor(shape, matrix, blurSigma, rgb, left, top, width, height)
             } else {
                 null
+            }
+        val slots = shadowSlots
+        val slot =
+            if (sprite != null || slots == null || slots.isEmpty) {
+                null
+            } else {
+                slots.find(
+                    shadowOf(
+                        shadowProbe, shape, offsetX, offsetY, blurSigma, rgb,
+                        left, top, width, height,
+                    ),
+                )
             }
         clipBefore(left + offsetX, top + offsetY, left + offsetX + width, top + offsetY + height)
         val t = target
         t.onDraw?.invoke()
         t.setCompositeOperation(SourceOverOperation)
         t.setGlobalAlpha(alpha / 255.0)
-        if (sprite == null) {
-            ShadowPainter.paint(t, shape, matrix, offsetX, offsetY, blurSigma, rgb)
-        } else {
+        if (sprite != null) {
             t.setImageSmoothing(1)
             // At the exact position: an image of a shadow drawn between pixels is resampled, which
             // keeps it in place relative to its shape.
@@ -2386,7 +2424,48 @@ internal class WebCanvas(root: DrawTarget) : Canvas {
             )
             t.ctx.drawImage(sprite.canvas, 0.0, 0.0)
             t.invalidateTransform()
+        } else if (slot != null) {
+            // At whole pixels, as painted.
+            t.setPixelTransform()
+            val w = slot.width.toDouble()
+            val h = slot.height.toDouble()
+            t.ctx.drawImage(
+                checkNotNull(slot.page).canvas, slot.slotX.toDouble(), slot.slotY.toDouble(), w, h,
+                (slot.left - t.originX).toDouble(), (slot.top - t.originY).toDouble(), w, h,
+            )
+        } else {
+            ShadowPainter.paint(t, shape, matrix, offsetX, offsetY, blurSigma, rgb)
         }
+    }
+
+    /** The shadow whose slot a draw looks for (see [ShadowSlots.find]). */
+    private val shadowProbe = ShadowSlots.Slot()
+
+    /**
+     * Sets [slot] to the shadow of [shape] (see [drawShadow]) whose [width] x [height] device
+     * pixels at ([left], [top]), before the offset, are cut to the bounds of the clip, as a slot
+     * holds them, and returns it.
+     */
+    private fun shadowOf(
+        slot: ShadowSlots.Slot,
+        shape: ShadowShape,
+        offsetX: Float,
+        offsetY: Float,
+        sigma: Float,
+        rgb: Int,
+        left: Float,
+        top: Float,
+        width: Int,
+        height: Int,
+    ): ShadowSlots.Slot {
+        val slotLeft = floor(max(left + offsetX, clipLeft)).toInt()
+        val slotTop = floor(max(top + offsetY, clipTop)).toInt()
+        val slotRight = ceil(min(left + offsetX + width, clipRight)).toInt()
+        val slotBottom = ceil(min(top + offsetY + height, clipBottom)).toInt()
+        return slot.set(
+            shape, matrix, offsetX, offsetY, sigma, rgb,
+            slotLeft, slotTop, slotRight - slotLeft, slotBottom - slotTop,
+        )
     }
 
     private fun Path.toPathData(): PathData = asWebPath().snapshot()

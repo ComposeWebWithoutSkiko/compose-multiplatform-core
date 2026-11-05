@@ -29,9 +29,10 @@ import kotlin.math.min
 /**
  * The pages that the content of the offscreen layers of a frame is drawn into (see [FramePlan]),
  * a set of pages per level of nesting: a level is drawn from the level below it, and drawing into
- * a canvas that was just drawn as an image costs a synchronization with the GPU every time.
+ * a canvas that was just drawn as an image costs a synchronization with the GPU every time. The
+ * shadows painted ahead of the frame have pages of their own (see [ShadowSlots]).
  *
- * @param maxPixels the pixels the layers of a frame can take in the pages
+ * @param maxPixels the pixels the layers and the shadows of a frame can take in the pages
  */
 internal class LayerAtlas(private val maxPixels: Long = MaxPixels) {
     /** What the pages of a level hold, apart from each other, in the order they're laid out. */
@@ -61,11 +62,15 @@ internal class LayerAtlas(private val maxPixels: Long = MaxPixels) {
     /** The pages of each level, of each kind. */
     private val levels = ArrayList<Array<AtlasLevel>>()
 
+    /** The pages of the shadows of the frame painted ahead (see [ShadowSlots]). */
+    private val shadowPages = ShelvedPages()
+
     /**
      * Gives the jobs of [plan] their slots, and the images of their blurs and effects to the ones
-     * that prepare them, level by level as long as [maxPixels] last, and clears the pages that get
-     * slots. The jobs without a slot are drawn where they're met. Pages that go unused for a while
-     * are released, so this is called for every frame, layers or not.
+     * that prepare them, level by level, then its shadows theirs, as long as [maxPixels] last, and
+     * clears the pages that get slots. The jobs without a slot are drawn where they're met, the
+     * shadows without one painted there. Pages that go unused for a while are released, so this is
+     * called for every frame, layers or not.
      */
     fun layOut(plan: FramePlan) {
         while (levels.size < plan.levelCount) {
@@ -77,36 +82,29 @@ internal class LayerAtlas(private val maxPixels: Long = MaxPixels) {
             val jobs = plan.jobsAt(level)
             for (pages in levels[level]) pixelsLeft -= pages.layOut(jobs, pixelsLeft)
         }
+        val shadows = plan.shadows
+        shadowPages.start(pixelsLeft)
+        for (i in 0 until shadows.count) {
+            val slot = shadows[i]
+            val page = shadowPages.place(slot.width, slot.height, ShadowPageSize) ?: continue
+            slot.place(page, shadowPages.x, shadowPages.y)
+        }
+        shadowPages.finish()
     }
 
-    /** The pages of a level holding the slots of a [kind], filled shelf by shelf. */
+    /** The pages of a level holding the slots of a [kind]. */
     private class AtlasLevel(private val kind: SlotKind) {
-        private val pages = ArrayList<AtlasPage>()
-        private var pageCount = 0
-
-        // The page being filled, and its slots.
-        private var page: AtlasPage? = null
-        private val shelves = Shelves()
+        private val pages = ShelvedPages()
 
         /** Gives [jobs] slots while [pixels] last. Returns the pixels of the jobs that got one. */
         fun layOut(jobs: List<FramePlan.Job>, pixels: Long): Long {
-            pageCount = 0
-            page = null
-            var used = 0L
+            pages.start(pixels)
             for (job in jobs) {
                 if (!holds(job)) continue
-                val jobPixels = widthOf(job).toLong() * heightOf(job)
-                if (used + jobPixels > pixels) continue
-                used += jobPixels
-                place(job)
+                val page = pages.place(widthOf(job), heightOf(job), pageSize()) ?: continue
+                place(job, page, pages.x, pages.y)
             }
-            finishPage()
-            // Pages that stay unused for a while are dropped.
-            for (i in pageCount until pages.size) pages[i].idle()
-            while (pages.size > pageCount && pages.last().isIdleForLong) {
-                pages.removeAt(pages.lastIndex).release()
-            }
-            return used
+            return pages.finish()
         }
 
         private fun holds(job: FramePlan.Job): Boolean =
@@ -136,40 +134,105 @@ internal class LayerAtlas(private val maxPixels: Long = MaxPixels) {
                 SlotKind.Results -> job.result.place(slotPage, slotX, slotY)
             }
         }
+    }
 
-        private fun place(job: FramePlan.Job) {
-            val width = widthOf(job)
-            val height = heightOf(job)
-            val pageSize = pageSize()
+    /**
+     * Pages filled with slots shelf by shelf, each made as large as its slots need, within a budget
+     * of pixels. A slot larger than a page gets a page of its own, of other pages than those of
+     * shelves, which so stay no larger than a page.
+     */
+    private class ShelvedPages {
+        private val shelfPages = PagePool()
+
+        /** The pages of the slots larger than a page, one each. */
+        private val ownPages = PagePool()
+
+        /** The page of shelves being filled, whose slots [shelves] lays out. */
+        private var page: AtlasPage? = null
+        private val shelves = Shelves()
+
+        private var pixels = 0L
+        private var used = 0L
+
+        /** Where the slot placed last is on its page. */
+        var x = 0
+            private set
+        var y = 0
+            private set
+
+        /** Starts a layout of slots taking at most [pixels]. */
+        fun start(pixels: Long) {
+            this.pixels = pixels
+            used = 0L
+            shelfPages.start()
+            ownPages.start()
+            page = null
+        }
+
+        /**
+         * Places a [width] x [height] slot on a page of at most [pageSize] pixels, at ([x], [y]),
+         * and returns the page, or returns `null` if the slot doesn't fit in the pixels left.
+         */
+        fun place(width: Int, height: Int, pageSize: Int): AtlasPage? {
+            val slotPixels = width.toLong() * height
+            if (used + slotPixels > pixels) return null
+            used += slotPixels
             if (width > pageSize || height > pageSize) {
-                // Larger than a page: a page of its own.
-                val own = nextPage()
+                val own = ownPages.next()
                 own.prepare(width, height)
-                place(job, own, 0, 0)
-                return
+                x = 0
+                y = 0
+                return own
             }
             var current = page
             if (current == null || !shelves.place(width, height)) {
                 current = startPage(pageSize)
                 shelves.place(width, height)
             }
-            place(job, current, shelves.x, shelves.y)
+            x = shelves.x
+            y = shelves.y
+            return current
+        }
+
+        /** Finishes the layout, and returns the pixels of the slots placed. */
+        fun finish(): Long {
+            finishPage()
+            shelfPages.finish()
+            ownPages.finish()
+            return used
         }
 
         private fun startPage(pageSize: Int): AtlasPage {
             finishPage()
             shelves.reset(pageSize)
-            return nextPage().also { page = it }
+            return shelfPages.next().also { page = it }
         }
 
         private fun finishPage() {
             page?.prepare(shelves.width, shelves.height)
             page = null
         }
+    }
 
-        private fun nextPage(): AtlasPage {
-            if (pageCount == pages.size) pages.add(AtlasPage())
-            return pages[pageCount++]
+    /** Pages taken in turn by each layout; those that stay unused for a while are dropped. */
+    private class PagePool {
+        private val pages = ArrayList<AtlasPage>()
+        private var count = 0
+
+        fun start() {
+            count = 0
+        }
+
+        fun next(): AtlasPage {
+            if (count == pages.size) pages.add(AtlasPage())
+            return pages[count++]
+        }
+
+        fun finish() {
+            for (i in count until pages.size) pages[i].idle()
+            while (pages.size > count && pages.last().isIdleForLong) {
+                pages.removeAt(pages.lastIndex).release()
+            }
         }
     }
 
@@ -177,16 +240,22 @@ internal class LayerAtlas(private val maxPixels: Long = MaxPixels) {
         /** The largest size of a page holding several layers. */
         internal const val PageSize = 4096
 
+        /**
+         * The largest size of a page holding several shadows: frames with shadows blurred in
+         * larger canvases came further apart (see [ShadowSlots]).
+         */
+        internal const val ShadowPageSize = 1024
+
         /** The pixels between two slots. */
         internal const val Gutter = 1
 
-        /** The pixels the layers of a frame can take in the pages, by default. */
+        /** The pixels the layers and the shadows of a frame can take in the pages, by default. */
         internal const val MaxPixels = 4096L * 4096L
     }
 }
 
 /**
- * A canvas holding the slots of layers, with the [DrawTarget] they're drawn through.
+ * A canvas holding the slots of layers or of shadows, with the [DrawTarget] they're drawn through.
  *
  * Where the browser takes a canvas off acceleration for good once too many of its frames failed
  * ([CanvasFeatures.profilesAcceleration], Firefox), the page makes its canvas again when it finds it

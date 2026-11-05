@@ -95,7 +95,7 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
      * The shadows the layer was asked for last, which outlast its shapes: the outline of a layer
      * animated through its layer block is set anew in every frame, a path one as a new object.
      */
-    private var shadowRequests: ShadowSprites.Requests? = null
+    private val shadowRequests by lazy { ShadowSprites.Requests() }
 
     private val transform = Matrix()
     private val transformAffine = Affine()
@@ -382,11 +382,13 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
             val projected = device.mapPath(outlinePath(outline))
             if (projected != null) {
                 val scale = canvas.currentMatrix.averageScale
+                // Identified by its path: the shadow of a layer that stays turned gets its image
+                // (see ShadowSprites), and its slot is found where it's drawn (see ShadowSlots).
+                val shape = ShadowShape.Path(projected, PathShapeKey(projected), shadowRequests)
                 canvas.saveInDeviceSpace()
                 ElevationShadows.draw(
                     canvas = canvas,
-                    // A new shape in every frame: no image is worth making.
-                    shape = ShadowShape.Path(projected, key = null, spriteRequests = null),
+                    shape = shape,
                     elevation = shadowElevation * scale,
                     ambientArgb = ambientShadowArgb,
                     spotArgb = spotShadowArgb,
@@ -441,7 +443,6 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
     private fun shadowShape(outline: Outline): ShadowShape {
         cachedShadowShape?.let { return it }
         val path = outlinePath(outline)
-        val requests = shadowRequests ?: ShadowSprites.Requests().also { shadowRequests = it }
         val shape = when (outline) {
             is Outline.Rectangle -> outline.rect.let {
                 ShadowShape.RoundRect(
@@ -449,7 +450,7 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
                     radius = 0f,
                     path,
                     key = it.size,
-                    requests,
+                    shadowRequests,
                 )
             }
             is Outline.Rounded -> outline.roundRect.let {
@@ -460,13 +461,13 @@ internal class WebGraphicsLayer(private val lighting: LightingInfo) : PlatformGr
                         radius = it.topLeftCornerRadius.x,
                         path,
                         key,
-                        requests,
+                        shadowRequests,
                     )
                 } else {
-                    ShadowShape.Path(path, key, requests)
+                    ShadowShape.Path(path, key, shadowRequests)
                 }
             }
-            is Outline.Generic -> ShadowShape.Path(path, key = PathShapeKey(path), requests)
+            is Outline.Generic -> ShadowShape.Path(path, key = PathShapeKey(path), shadowRequests)
         }
         cachedShadowShape = shape
         return shape

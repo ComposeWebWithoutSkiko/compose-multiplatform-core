@@ -36,6 +36,7 @@ import androidx.compose.ui.graphics.OffsetEffect
 import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.PaintingStyle
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.PointMode
 import androidx.compose.ui.graphics.RenderEffect
 import androidx.compose.ui.graphics.TileMode
@@ -43,6 +44,7 @@ import androidx.compose.ui.graphics.VertexMode
 import androidx.compose.ui.graphics.Vertices
 import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
@@ -76,11 +78,13 @@ class FrameRendererTest {
     @BeforeTest
     fun register() {
         registerWebCanvasComposeImplementation()
+        ShadowSprites.clear()
     }
 
     @AfterTest
     fun releaseLayers() {
         layers.forEach { graphicsContext.releaseGraphicsLayer(it) }
+        ShadowSprites.clear()
     }
 
     /**
@@ -115,21 +119,82 @@ class FrameRendererTest {
         }
     }
 
-    /** The renderer of the last [assertDrawnAheadTheSame]. */
+    /**
+     * A card tilted by [degrees] that casts a shadow: of a rounded rectangle, or of [outline] if
+     * given.
+     */
+    private fun tiltedCard(
+        color: Color,
+        topLeft: IntOffset,
+        degrees: Float,
+        outline: Path? = null,
+    ): GraphicsLayer =
+        card(color, alpha = 1f, topLeft = topLeft).also {
+            it.rotationZ = degrees
+            it.shadowElevation = 4f
+            if (outline != null) {
+                it.setPathOutline(outline)
+            } else {
+                it.setRoundRectOutline(Offset.Zero, Size(30f, 20f), 4f)
+            }
+        }
+
+    /** The renderer of the last frame drawn ahead. */
     private lateinit var renderer: FrameRenderer
+
+    /**
+     * Draws a [width] x [height] frame with [direct] directly and with [ahead] through a
+     * [FrameRenderer] with [atlas], asserts that they look the same, and returns how many times
+     * the renderer set the blur of shadows: twice per shadow the browser blurs (see
+     * [beginShadowOnly] and [endShadowOnly]).
+     */
+    private fun assertSameFrames(
+        atlas: LayerAtlas,
+        direct: Canvas.() -> Unit,
+        ahead: Canvas.() -> Unit,
+        width: Int = Width,
+        height: Int = Height,
+    ): Int {
+        val directImage = ImageBitmap(width, height)
+        Canvas(directImage).direct()
+        val aheadImage = ImageBitmap(width, height) as CanvasImageBitmap
+        renderer = FrameRenderer(aheadImage.drawTarget, atlas)
+        val blurWrites = propertyWritesDuring("shadowBlur") { renderer.render { it.ahead() } }
+        assertSamePixels(directImage.imageData(), aheadImage.imageData(), Tolerance, what = "drawn ahead: ")
+        return blurWrites
+    }
 
     /**
      * Draws a frame with [draw] directly and through a [FrameRenderer] with [atlas], asserts that
      * they look the same, and returns the layers the renderer drew ahead.
      */
     private fun assertDrawnAheadTheSame(atlas: LayerAtlas = LayerAtlas(), draw: Canvas.() -> Unit): Int {
-        val direct = ImageBitmap(Width, Height)
-        Canvas(direct).draw()
-        val ahead = ImageBitmap(Width, Height) as CanvasImageBitmap
-        renderer = FrameRenderer(ahead.drawTarget, atlas)
-        renderer.render { it.draw() }
-        assertSamePixels(direct.imageData(), ahead.imageData(), Tolerance, what = "drawn ahead: ")
+        assertSameFrames(atlas, draw, draw)
         return renderer.layersDrawnAhead
+    }
+
+    /**
+     * The shadows of a frame drawn through a [FrameRenderer]: those it painted ahead, and those the
+     * browser blurred, ahead or in place. A shadow drawn from its slot isn't blurred again.
+     */
+    private data class Shadows(val paintedAhead: Int, val blurred: Int)
+
+    /**
+     * Draws a [width] x [height] frame of the layers that [layers] makes directly and through a
+     * [FrameRenderer] with [atlas], each with layers made anew, whose shadows are then asked for the
+     * first time (see [ShadowSprites]), asserts that they look the same, and returns the shadows of
+     * the frame drawn through the renderer.
+     */
+    private fun assertShadowsDrawnAheadTheSame(
+        atlas: LayerAtlas = LayerAtlas(),
+        width: Int = ShadowsWidth,
+        height: Int = ShadowsHeight,
+        layers: () -> Array<GraphicsLayer>,
+    ): Shadows {
+        val direct = layers()
+        val ahead = layers()
+        val blurWrites = assertSameFrames(atlas, { drawLayers(*direct) }, { drawLayers(*ahead) }, width, height)
+        return Shadows(renderer.shadowsDrawnAhead, blurred = blurWrites / 2)
     }
 
     @Test
@@ -519,6 +584,325 @@ class FrameRendererTest {
         assertEquals(3, assertDrawnAheadTheSame(atlas) { drawLayers(group) })
     }
 
+    /** Two cards tilted both ways, the first at [topLeft], the second 60 pixels to its right. */
+    private fun tiltedCards(topLeft: IntOffset, outline: () -> Path? = { null }): Array<GraphicsLayer> =
+        Array(2) { i ->
+            val degrees = if (i == 0) 7f else -7f
+            tiltedCard(Palette[i], topLeft + IntOffset(i * 60, 0), degrees, outline())
+        }
+
+    /** The outline of a card with cut corners. */
+    private fun cutCorners(): Path = Path().apply {
+        moveTo(5f, 0f)
+        lineTo(25f, 0f)
+        lineTo(30f, 5f)
+        lineTo(30f, 15f)
+        lineTo(25f, 20f)
+        lineTo(5f, 20f)
+        lineTo(0f, 15f)
+        lineTo(0f, 5f)
+        close()
+    }
+
+    @Test
+    fun shadowsOfTiltedCardsArePaintedAhead() {
+        val shadows = assertShadowsDrawnAheadTheSame { tiltedCards(IntOffset(20, 25)) }
+        // An ambient and a spot shadow per card, in a frame without layers drawn ahead.
+        assertEquals(Shadows(paintedAhead = 4, blurred = 4), shadows)
+        assertEquals(0, renderer.layersDrawnAhead)
+    }
+
+    @Test
+    fun shadowsOfPathsArePaintedAhead() {
+        val shadows = assertShadowsDrawnAheadTheSame {
+            Array(2) { i -> tiltedCard(Palette[i], IntOffset(20 + i * 60, 25), 0f, cutCorners()) }
+        }
+        assertEquals(Shadows(paintedAhead = 4, blurred = 4), shadows)
+    }
+
+    @Test
+    fun shadowsOfEvenOddPathsArePaintedAhead() {
+        val shadows = assertShadowsDrawnAheadTheSame {
+            tiltedCards(IntOffset(20, 25)) {
+                Path().apply {
+                    fillType = PathFillType.EvenOdd
+                    addRect(Rect(0f, 0f, 30f, 20f))
+                    addRect(Rect(10f, 6f, 20f, 14f))
+                }
+            }
+        }
+        assertEquals(Shadows(paintedAhead = 4, blurred = 4), shadows)
+    }
+
+    /** A translucent group of the [cards], of [width] x [height] at [topLeft]: a layer drawn ahead. */
+    private fun group(cards: Array<GraphicsLayer>, width: Int, height: Int, topLeft: IntOffset): GraphicsLayer =
+        layer(width, height) {
+            drawRect(Color(0x40000000))
+            cards.forEach { drawLayer(it) }
+        }.also {
+            it.alpha = 0.6f
+            it.topLeft = topLeft
+        }
+
+    @Test
+    fun shadowsInALayerDrawnAheadArePaintedAhead() {
+        val shadows = assertShadowsDrawnAheadTheSame {
+            arrayOf(group(tiltedCards(IntOffset(10, 8)), 260, 140, IntOffset(5, 10)))
+        }
+        assertEquals(Shadows(paintedAhead = 4, blurred = 4), shadows)
+        assertEquals(1, renderer.layersDrawnAhead)
+    }
+
+    @Test
+    fun shadowsInALayerWithoutRoomInTheAtlasArePaintedAhead() {
+        // Room for the slots of the shadows (about 3300 pixels per card), which the atlas lays out
+        // after the layers, not for the group around them.
+        val atlas = LayerAtlas(maxPixels = 8000L)
+        val shadows = assertShadowsDrawnAheadTheSame(atlas) {
+            arrayOf(group(tiltedCards(IntOffset(10, 8)), 260, 140, IntOffset(5, 10)))
+        }
+        assertEquals(Shadows(paintedAhead = 4, blurred = 4), shadows)
+        assertEquals(0, renderer.layersDrawnAhead)
+    }
+
+    @Test
+    fun shadowsCutByAClipArePaintedAhead() {
+        val shadows = assertShadowsDrawnAheadTheSame {
+            // Cards across both edges of a clip between pixels, in a layer drawn ahead.
+            val cards = arrayOf(
+                tiltedCard(Palette[0], IntOffset(0, 20), 7f),
+                tiltedCard(Palette[1], IntOffset(85, 20), -7f),
+            )
+            val group = layer(260, 140) {
+                drawRect(Color(0x40000000))
+                clipRect(10.5f, 0f, 100.3f, 140f) { cards.forEach { drawLayer(it) } }
+            }
+            group.alpha = 0.6f
+            group.topLeft = IntOffset(5, 10)
+            arrayOf(group)
+        }
+        assertEquals(Shadows(paintedAhead = 4, blurred = 4), shadows)
+        assertEquals(1, renderer.layersDrawnAhead)
+    }
+
+    /** A card turned in perspective at [topLeft] that draws nothing: its shadow alone shows. */
+    private fun turnedCard(topLeft: IntOffset): GraphicsLayer =
+        layer(30, 20) {}.also {
+            it.topLeft = topLeft
+            it.rotationY = 30f
+            it.shadowElevation = 4f
+            it.setRoundRectOutline(Offset.Zero, Size(30f, 20f), 4f)
+        }
+
+    @Test
+    fun shadowsOfLayersInPerspectiveArePaintedAhead() {
+        val shadows = assertShadowsDrawnAheadTheSame { arrayOf(turnedCard(IntOffset(50, 25))) }
+        assertEquals(Shadows(paintedAhead = 2, blurred = 2), shadows)
+    }
+
+    @Test
+    fun shadowsOfALayerInPerspectiveDrawnTwiceArePaintedAhead() {
+        val shadows = assertShadowsDrawnAheadTheSame {
+            // Drawn by two layers, the second scaled: two projections, whose shapes are made anew
+            // wherever they're drawn.
+            val card = turnedCard(IntOffset(10, 25))
+            Array(2) { i ->
+                layer(100, 100) { drawLayer(card) }.also {
+                    it.topLeft = IntOffset(i * 120, 0)
+                    if (i == 1) {
+                        it.scaleX = 0.8f
+                        it.scaleY = 0.8f
+                    }
+                }
+            }
+        }
+        assertEquals(Shadows(paintedAhead = 4, blurred = 4), shadows)
+    }
+
+    @Test
+    fun shadowsWithoutRoomInTheAtlasArePaintedInPlace() {
+        val shadows = assertShadowsDrawnAheadTheSame(LayerAtlas(maxPixels = 0L)) { tiltedCards(IntOffset(20, 25)) }
+        assertEquals(Shadows(paintedAhead = 0, blurred = 4), shadows)
+    }
+
+    /** A card wider than a page of shadows, turned a little: its shadows are blurred. */
+    private fun wideCard(): GraphicsLayer =
+        layer(1100, 20) { drawRect(Palette[0]) }.also {
+            it.rotationZ = 1f
+            it.shadowElevation = 4f
+            it.setRoundRectOutline(Offset.Zero, Size(1100f, 20f), 4f)
+            it.topLeft = IntOffset(50, 30)
+        }
+
+    @Test
+    fun aShadowLargerThanAPageOfShadowsGetsAPageOfItsOwn() {
+        val shadows = assertShadowsDrawnAheadTheSame(width = 1200) { arrayOf(wideCard()) }
+        assertEquals(Shadows(paintedAhead = 2, blurred = 2), shadows)
+    }
+
+    /** Plans a frame of [layers] of 1200 x [ShadowsHeight], lays it out in [atlas], and returns its shadows. */
+    private fun shadowSlotsOf(atlas: LayerAtlas, vararg layers: GraphicsLayer): List<ShadowSlots.Slot> {
+        val plan = plan(recorded { drawLayers(*layers) }, 1200, ShadowsHeight)
+        atlas.layOut(plan)
+        return List(plan.shadows.count) { plan.shadows[it] }
+    }
+
+    @Test
+    fun theShadowsThatFitAPageOfShadowsNeverShareThePagesOfLargerOnes() {
+        val atlas = LayerAtlas()
+        val cards = tiltedCards(IntOffset(20, 80))
+        val (large, small) = shadowSlotsOf(atlas, wideCard(), *cards).partition {
+            it.width > LayerAtlas.ShadowPageSize
+        }
+        assertEquals(2, large.size)
+        val largePages = large.map { checkNotNull(it.page) }
+        // Next to the larger ones, then alone, when the pages of the larger ones are free.
+        for (slots in listOf(small, shadowSlotsOf(atlas, *cards))) {
+            assertEquals(4, slots.size)
+            for (slot in slots) {
+                val page = checkNotNull(slot.page)
+                assertTrue(page !in largePages, "on the page of a larger shadow")
+                assertTrue(
+                    page.target.width <= LayerAtlas.ShadowPageSize && page.target.height <= LayerAtlas.ShadowPageSize,
+                    "on a page of ${page.target.width} x ${page.target.height}",
+                )
+            }
+        }
+    }
+
+    @Test
+    fun aShadowWithoutRoomForItsImageIsPaintedAhead() {
+        // Shadows whose images fill the budget of the images (see ShadowSprites) in every frame:
+        // four of 1024 x 1024 pixels, ambient shadows in four colors, their spot shadows too large
+        // for images. They're of upright rectangles, painted without blurring.
+        val large = Array(4) { i ->
+            layer(1016, 1016) { drawRect(Color.White) }.also {
+                it.shadowElevation = 4f
+                it.ambientShadowColor = Palette[i]
+                it.setRectOutline(Offset.Zero, Size(1016f, 1016f))
+                it.topLeft = IntOffset(-1000 + i, -1000)
+            }
+        }
+        val card = tiltedCard(Palette[0], IntOffset(60, 30), 7f)
+        // Its shadows from their slots in every frame, never blurred in place: in the second, the
+        // large ones get their images and take all the room.
+        val frame = arrayOf(*large, card)
+        assertEquals(List(3) { Shadows(paintedAhead = 2, blurred = 2) }, framesOf(List(3) { frame }))
+    }
+
+    /** Draws [frames], each of its layers, through one [FrameRenderer], and returns the shadows of each. */
+    private fun framesOf(frames: List<Array<GraphicsLayer>>): List<Shadows> {
+        val image = ImageBitmap(Width, Height) as CanvasImageBitmap
+        val renderer = FrameRenderer(image.drawTarget)
+        return frames.map { layers ->
+            val blurWrites = propertyWritesDuring("shadowBlur") { renderer.render { it.drawLayers(*layers) } }
+            Shadows(renderer.shadowsDrawnAhead, blurred = blurWrites / 2)
+        }
+    }
+
+    /**
+     * The shadows of a card drawn in three frames: ahead the first time; the second, ahead as its
+     * images aren't there yet, which are made; then from them.
+     */
+    private val shadowsOfACardThatStays = listOf(
+        Shadows(paintedAhead = 2, blurred = 2),
+        Shadows(paintedAhead = 2, blurred = 2 + 2),
+        Shadows(paintedAhead = 0, blurred = 0),
+    )
+
+    @Test
+    fun aShadowThatStaysGetsItsImage() {
+        val card = tiltedCard(Palette[0], IntOffset(60, 30), 7f)
+        assertEquals(shadowsOfACardThatStays, framesOf(List(3) { arrayOf(card) }))
+        assertEquals(2, ShadowSprites.created)
+    }
+
+    @Test
+    fun aShadowBackAfterAFrameAwayIsDrawnFromItsImage() {
+        val card = tiltedCard(Palette[0], IntOffset(60, 30), 7f)
+        val frames = List(3) { arrayOf(card) } + listOf(emptyArray(), arrayOf(card))
+        // Its images are still there, not kept by the frame without it: nothing to paint ahead.
+        val expected = shadowsOfACardThatStays + List(2) { Shadows(paintedAhead = 0, blurred = 0) }
+        assertEquals(expected, framesOf(frames))
+        assertEquals(2, ShadowSprites.created)
+    }
+
+    @Test
+    fun translucentShadowsArePaintedAhead() {
+        val shadows = assertShadowsDrawnAheadTheSame {
+            // Of one rectangle each, whose alpha applies to its draw: no layer drawn offscreen.
+            Array(2) { i ->
+                layer(30, 20) { drawRect(Palette[i]) }.also {
+                    it.alpha = 0.5f
+                    it.topLeft = IntOffset(20 + i * 60, 25)
+                    it.rotationZ = if (i == 0) 7f else -7f
+                    it.shadowElevation = 4f
+                    it.setRoundRectOutline(Offset.Zero, Size(30f, 20f), 4f)
+                }
+            }
+        }
+        assertEquals(Shadows(paintedAhead = 4, blurred = 4), shadows)
+        assertEquals(0, renderer.layersDrawnAhead)
+    }
+
+    /**
+     * A layer in perspective of two tilted cards that draw nothing but their shadows, in the space
+     * of the layer's raster.
+     */
+    private fun cardsInPerspective(): GraphicsLayer {
+        val cards = Array(2) { i ->
+            layer(30, 20) {}.also {
+                it.topLeft = IntOffset(15 + i * 60, 15)
+                it.rotationZ = if (i == 0) 7f else -7f
+                it.shadowElevation = 4f
+                it.setRoundRectOutline(Offset.Zero, Size(30f, 20f), 4f)
+            }
+        }
+        return layer(140, 60) { cards.forEach { drawLayer(it) } }.also {
+            it.rotationY = 20f
+            it.topLeft = IntOffset(30, 40)
+        }
+    }
+
+    @Test
+    fun shadowsInALayerInPerspectiveArePaintedAhead() {
+        val shadows = assertShadowsDrawnAheadTheSame { arrayOf(cardsInPerspective()) }
+        assertEquals(Shadows(paintedAhead = 4, blurred = 4), shadows)
+        assertEquals(1, renderer.layersProjectedAhead)
+    }
+
+    @Test
+    fun shadowsInALayerInPerspectiveWithoutRoomInTheAtlasArePaintedAhead() {
+        // Room for the slots of the shadows, which the atlas lays out after the layers, not for
+        // the raster of the layer around them, which is drawn where it's met.
+        val plan = plan(recorded { drawLayers(cardsInPerspective()) }, ShadowsWidth, ShadowsHeight)
+        val slotPixels = (0 until plan.shadows.count).sumOf { plan.shadows[it].width.toLong() * plan.shadows[it].height }
+        val raster = plan.jobsAt(0).single()
+        assertTrue(slotPixels < raster.width.toLong() * raster.height)
+        val shadows = assertShadowsDrawnAheadTheSame(LayerAtlas(maxPixels = slotPixels)) { arrayOf(cardsInPerspective()) }
+        assertEquals(Shadows(paintedAhead = 4, blurred = 4), shadows)
+        assertEquals(0, renderer.layersProjectedAhead)
+    }
+
+    @Test
+    fun aShadowMetOutOfPlanIsPaintedInPlace() {
+        val planned = tiltedCards(IntOffset(20, 25))
+        val plan = plan(recorded { drawLayers(planned[0]) }, ShadowsWidth, ShadowsHeight)
+        LayerAtlas().layOut(plan)
+        plan.shadows.paint()
+        val direct = ImageBitmap(ShadowsWidth, ShadowsHeight)
+        Canvas(direct).drawLayers(*tiltedCards(IntOffset(20, 25)))
+        val image = ImageBitmap(ShadowsWidth, ShadowsHeight) as CanvasImageBitmap
+        val canvas = WebCanvas(image.drawTarget)
+        canvas.useShadows(plan.shadows)
+        val drawn = recorded { drawLayers(*planned) }
+        val blurWrites = propertyWritesDuring("shadowBlur") { drawn.replay(canvas) }
+        canvas.finish()
+        assertSamePixels(direct.imageData(), image.imageData(), Tolerance)
+        // The shadows of the second card, painted in place; those of the first from their slots.
+        assertEquals(2 * 2, blurWrites)
+    }
+
     @Test
     fun layersAreDrawnAsTheyAreAtTheEndOfTheFrame() {
         val card = card(Palette[0], alpha = 0.5f, topLeft = IntOffset(10, 10))
@@ -566,10 +950,10 @@ class FrameRendererTest {
         assertSamePixels(direct.imageData(), image.imageData(), Tolerance)
     }
 
-    /** Plans [frame] with a canvas whose context throws whenever it's used. */
-    private fun plan(frame: DisplayList): FramePlan {
+    /** Plans [frame] of [width] x [height] with a canvas whose context throws whenever it's used. */
+    private fun plan(frame: DisplayList, width: Int = Width, height: Int = Height): FramePlan {
         val plan = FramePlan()
-        val planner = WebCanvas(DrawTarget(createThrowingContext2D(), 0, 0, Width, Height))
+        val planner = WebCanvas(DrawTarget(createThrowingContext2D(), 0, 0, width, height))
         planner.startPlanning(plan)
         frame.replay(planner)
         planner.finish()
@@ -671,6 +1055,14 @@ class FrameRendererTest {
     private companion object {
         const val Width = 150
         const val Height = 80
+
+        /**
+         * The frames of the shadows drawn ahead: at least 128 pixels each way, which Firefox draws
+         * with acceleration, as it draws the pages of the atlas (see `gfx.canvas.accelerated.min-size`):
+         * blurred in software, a shadow differs by a few levels.
+         */
+        const val ShadowsWidth = 300
+        const val ShadowsHeight = 200
 
         /** The rounding of 8-bit channels, applied once more or less, in levels. */
         const val Tolerance = 2

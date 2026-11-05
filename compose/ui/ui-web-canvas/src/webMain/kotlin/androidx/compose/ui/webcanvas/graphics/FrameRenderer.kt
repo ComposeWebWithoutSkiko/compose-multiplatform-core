@@ -22,8 +22,10 @@ import androidx.compose.ui.webcanvas.dom.createThrowingContext2D
 /**
  * Draws frames into [target] in two phases, so that the content of the offscreen layers is drawn
  * before anything is composited (see [FramePlan]): a frame is recorded into a display list, which
- * is planned, then the content of its layers is drawn into [atlas], the deepest first, and the
- * display list is drawn into [target], compositing the layers from the atlas.
+ * is planned, then the shadows that the browser blurs and no image serves are painted into [atlas]
+ * as far as it has room (see [ShadowSlots]), the content of its layers too, the deepest first, and
+ * the display list is drawn into [target], compositing the layers and drawing those shadows from
+ * the atlas.
  *
  * Since a frame is drawn after it's recorded, what it draws is drawn as it is at the end of the
  * recording, as on Android, where a display list refers to render nodes: a graphics layer whose
@@ -82,6 +84,10 @@ internal class FrameRenderer(
     internal var layersForegroundsAhead = 0
         private set
 
+    /** The shadows painted ahead into their slots in the last frame (see [ShadowSlots]). */
+    internal var shadowsDrawnAhead = 0
+        private set
+
     /** The start of the last frame, which keeps the images drawn since (see [FrameTicks]). */
     private var frameStart = 0.0
 
@@ -112,7 +118,10 @@ internal class FrameRenderer(
         // Also with no job, so that the pages unused for a while are released.
         atlas.layOut(plan)
         try {
+            // Before the content of the layers, which draws some of them.
+            shadowsDrawnAhead = plan.shadows.paint()
             if (!plan.isEmpty && drawJobs()) canvas.useJobs(plan.rootJobs)
+            canvas.useShadows(plan.shadows)
             frame.replay(canvas)
         } finally {
             canvas.finish()
@@ -143,7 +152,7 @@ internal class FrameRenderer(
             for (job in jobs) {
                 val page = job.page ?: continue
                 val slotCanvas = slotCanvas ?: WebCanvas(page.target).also { slotCanvas = it }
-                if (!slotCanvas.drawJob(job, page)) {
+                if (!slotCanvas.drawJob(job, page, plan.shadows)) {
                     resetCounts()
                     return false
                 }

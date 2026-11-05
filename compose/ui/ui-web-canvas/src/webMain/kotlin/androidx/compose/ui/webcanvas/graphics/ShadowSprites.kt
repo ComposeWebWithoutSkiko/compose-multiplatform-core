@@ -27,14 +27,15 @@ import androidx.compose.ui.webcanvas.dom.requireContext2D
  *
  * A shadow gets its image the second time its shape casts it (see [Requests]), so that shadows
  * that change in every frame (elevation, size or transformation animations, the resizing of the
- * window, which moves the light) are painted directly, and the others are painted once. Images are
+ * window, which moves the light) are painted for each frame (those the browser blurs ahead of it,
+ * as far as the atlas has room: see [ShadowSlots]), and the others are painted once. Images are
  * keyed by what their pixels depend on: the shape up to a translation, the linear part of the
  * transformation, the blur and the color, so that shapes alike share them. The alpha is applied
  * when an image is drawn, so fading doesn't make new ones.
  *
  * The images drawn least recently make room for new ones, except those the frames keep (see
  * [FrameTicks]): when these fill the budget, no image is made, and the shadows that don't fit are
- * painted directly, instead of images being made and evicted in every frame.
+ * painted for each frame, instead of images being made and evicted in every frame.
  */
 internal object ShadowSprites {
     /** A painted shadow at full alpha, keyed by [key], last drawn at the tick [lastDrawn]. */
@@ -152,9 +153,9 @@ internal object ShadowSprites {
     /**
      * Returns the image of the shadow of [shape], transformed by the linear part of [matrix] and
      * blurred with [sigma] (device pixels) in the opaque color [rgb], or `null` if the shadow
-     * should be painted directly: when the shape has no key, the first time, or when there's no
-     * room. The image is [width] x [height] pixels, at most [MaxSpritePixels], its top-left corner
-     * at ([left], [top]) in the device space of [matrix].
+     * should be painted for the frame: when the shape has no key, the first time, or when there's
+     * no room. The image is [width] x [height] pixels, at most [MaxSpritePixels], its top-left
+     * corner at ([left], [top]) in the device space of [matrix].
      */
     fun spriteFor(
         shape: ShadowShape,
@@ -168,13 +169,8 @@ internal object ShadowSprites {
     ): Sprite? {
         if (shape.key == null) return null
         val key = probe.set(shape, matrix, sigma, rgb)
-        val tick = FrameTicks.tick
         sprites[key]?.let { sprite ->
-            if (sprite.lastDrawn != tick) {
-                sprites.remove(sprite.key)
-                sprites[sprite.key] = sprite
-                sprite.lastDrawn = tick
-            }
+            keep(sprite)
             return sprite
         }
         val requests = shape.spriteRequests ?: return null
@@ -187,11 +183,32 @@ internal object ShadowSprites {
             DrawTarget(requireContext2D(canvas), 0, 0, width, height),
             shape, matrix, -left, -top, sigma, rgb,
         )
-        val sprite = Sprite(key.copy(), canvas, width, height, lastDrawn = tick)
+        val sprite = Sprite(key.copy(), canvas, width, height, lastDrawn = FrameTicks.tick)
         sprites[sprite.key] = sprite
         pixels += size
         created++
         return sprite
+    }
+
+    /**
+     * Keeps the image of the shadow through the frame if it has one, so that [spriteFor] returns
+     * it in the frame: making room for others doesn't evict the images the frames keep (see
+     * [FrameTicks]). Returns whether it has one.
+     */
+    fun keepImage(shape: ShadowShape, matrix: Affine, sigma: Float, rgb: Int): Boolean {
+        if (shape.key == null) return false
+        val sprite = sprites[probe.set(shape, matrix, sigma, rgb)] ?: return false
+        keep(sprite)
+        return true
+    }
+
+    /** Marks [sprite] drawn in this frame: it becomes the one drawn most recently. */
+    private fun keep(sprite: Sprite) {
+        val tick = FrameTicks.tick
+        if (sprite.lastDrawn == tick) return
+        sprites.remove(sprite.key)
+        sprites[sprite.key] = sprite
+        sprite.lastDrawn = tick
     }
 
     /**

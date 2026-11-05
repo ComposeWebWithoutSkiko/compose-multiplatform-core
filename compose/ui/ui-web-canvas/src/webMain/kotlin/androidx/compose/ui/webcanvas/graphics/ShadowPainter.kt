@@ -17,6 +17,7 @@
 package androidx.compose.ui.webcanvas.graphics
 
 import androidx.compose.ui.webcanvas.path.toPath2D
+import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.max
@@ -24,13 +25,31 @@ import kotlin.math.min
 import kotlin.math.round
 
 /**
- * Paints the shadows of shapes into draw targets in opaque colors, the same way into the frame and
- * into the images of shadows (see [ShadowSprites]): the alpha of a shadow is the global alpha of
- * its target.
+ * Paints the shadows of shapes into draw targets in opaque colors, the same way into the frame,
+ * into the images of shadows (see [ShadowSprites]) and into their slots (see [ShadowSlots]): the
+ * alpha of a shadow is the global alpha of its target.
  */
 internal object ShadowPainter {
     private val region = Affine()
     private val rect = FloatArray(4)
+
+    /**
+     * The scale of the matrix of the rounded rectangle that [fitsGradients] accepted last, and how
+     * far its profile spreads on both sides of an edge and its corners reach inside its edges
+     * (corners rounded less than the blur spreads are taken as rounded that much): what
+     * [paintRoundRect] paints it with.
+     */
+    private var scale = 0f
+    private var spread = 0f
+    private var inset = 0f
+
+    /**
+     * Whether [paint] has the browser blur the shadow of [shape], placed by [matrix] and blurred by
+     * [sigma] pixels: when it's blurred at all, unless it's a rounded rectangle painted without
+     * blurring (see [paintRoundRect]).
+     */
+    fun blurs(shape: ShadowShape, matrix: Affine, sigma: Float): Boolean =
+        sigma > 0f && (shape !is ShadowShape.RoundRect || !fitsGradients(shape, matrix, sigma))
 
     /**
      * Paints the shadow of [shape], placed by [matrix] and then moved by ([dx], [dy]) in the root
@@ -47,7 +66,8 @@ internal object ShadowPainter {
         sigma: Float,
         rgb: Int,
     ) {
-        if (shape is ShadowShape.RoundRect && paintRoundRect(target, shape, matrix, dx, dy, sigma, rgb)) {
+        if (shape is ShadowShape.RoundRect && fitsGradients(shape, matrix, sigma)) {
+            paintRoundRect(target, shape, matrix, dx, dy, rgb)
             return
         }
         target.setFillColor(WebCanvas.OpaqueBlack)
@@ -62,15 +82,30 @@ internal object ShadowPainter {
     }
 
     /**
+     * Whether [paintRoundRect] can paint the shadow of [shape], blurred by [sigma] pixels: not when
+     * [matrix] does more than scaling uniformly and translating, when the blur spreads across the
+     * shape, or without blur. A shape scaled to nothing has nothing to paint. Sets [scale],
+     * [spread] and [inset].
+     */
+    private fun fitsGradients(shape: ShadowShape.RoundRect, matrix: Affine, sigma: Float): Boolean {
+        if (!matrix.isAxisAligned || !matrix.isSimilarity) return false
+        scale = matrix.averageScale
+        if (scale == 0f) return true
+        // The size of the shape on the device: an axis-aligned matrix scales it by a and d.
+        val width = abs(matrix.a) * (shape.right - shape.left)
+        val height = abs(matrix.d) * (shape.bottom - shape.top)
+        spread = ShadowGradients.Spread * sigma
+        inset = max(min(shape.radius * scale, min(width, height) / 2), spread)
+        return spread > 0f && width >= 2 * inset && height >= 2 * inset
+    }
+
+    /**
      * Paints the shadow of a rounded rectangle like [paint] does, without blurring, like Skia
      * draws the shadows of rounded rectangles: the inside filled, the edges and the corners filled
      * with the profile of a blurred edge (see [ShadowGradients]), the corners around their arcs.
-     * Corners rounded less than the blur spreads are taken as rounded that much. The regions are
-     * cut at whole pixels, so that every pixel is filled once: the antialiased edges of two fills
-     * meeting within a pixel would cover it partly.
-     *
-     * Returns `false` if it can't: when [matrix] does more than scaling uniformly and translating,
-     * when the blur spreads across the shape, or without blur.
+     * The regions are cut at whole pixels, so that every pixel is filled once: the antialiased
+     * edges of two fills meeting within a pixel would cover it partly. Only for the shadow that
+     * [fitsGradients] accepted last.
      */
     private fun paintRoundRect(
         target: DrawTarget,
@@ -78,24 +113,15 @@ internal object ShadowPainter {
         matrix: Affine,
         dx: Float,
         dy: Float,
-        sigma: Float,
         rgb: Int,
-    ): Boolean {
-        if (!matrix.isAxisAligned || !matrix.isSimilarity) return false
-        val scale = matrix.averageScale
-        if (scale == 0f) return true
+    ) {
+        if (scale == 0f) return
         // The shape in the root device space.
         matrix.mapRect(shape.left, shape.top, shape.right, shape.bottom, rect)
         val left = rect[0] + dx
         val top = rect[1] + dy
         val right = rect[2] + dx
         val bottom = rect[3] + dy
-        val width = right - left
-        val height = bottom - top
-        // How far the profile spreads on both sides of an edge.
-        val spread = ShadowGradients.Spread * sigma
-        val inset = max(min(shape.radius * scale, min(width, height) / 2), spread)
-        if (spread <= 0f || width < 2 * inset || height < 2 * inset) return false
         // The regions: outside, the edge bands and the corners, then the inside.
         val x0 = floor(left - spread)
         val x1 = round(left + inset)
@@ -123,7 +149,6 @@ internal object ShadowPainter {
         fillRegion(target, outer, 0f, 0f, outer, right - inset, top + inset, x2, y0, x3, y1)
         fillRegion(target, outer, 0f, 0f, outer, left + inset, bottom - inset, x0, y2, x1, y3)
         fillRegion(target, outer, 0f, 0f, outer, right - inset, bottom - inset, x2, y2, x3, y3)
-        return true
     }
 
     /**

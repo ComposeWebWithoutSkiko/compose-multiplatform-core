@@ -34,7 +34,8 @@ internal interface JobContent {
  * being drawn into: compositing each offscreen layer right after drawing it costs that once per
  * layer. Drawing the content of all the layers of a frame first, the deepest first, costs it once
  * per level of nesting. Layers in perspective, which WebGL draws, are drawn in perspective a level
- * at a time too (see [PerspectiveProjector]).
+ * at a time too (see [PerspectiveProjector]). The shadows that the browser blurs are painted ahead
+ * of all of them, into slots of their own ([shadows]).
  *
  * The jobs are reused from frame to frame.
  */
@@ -201,6 +202,9 @@ internal class FramePlan {
     /** The jobs that aren't in another one, in the order the frame meets them. */
     val rootJobs = ArrayList<Job>()
 
+    /** The shadows painted ahead of the frame, wherever the frame meets them. */
+    val shadows = ShadowSlots()
+
     /** The number of levels of nesting of the jobs. */
     var levelCount = 0
         private set
@@ -210,6 +214,7 @@ internal class FramePlan {
     private var jobCount = 0
     private val openJobs = ArrayList<Job>()
 
+    /** Whether the frame has no job (it may have [shadows]). */
     val isEmpty: Boolean get() = jobCount == 0
 
     /** The jobs at [level] of nesting, in the order the frame meets them. */
@@ -252,7 +257,7 @@ internal class FramePlan {
         openJobs.removeAt(openJobs.lastIndex)
     }
 
-    /** Forgets the jobs, and what they draw. */
+    /** Forgets the jobs and the shadows, and what they draw. */
     fun clear() {
         for (i in 0 until jobCount) jobs[i].clear()
         jobCount = 0
@@ -260,6 +265,7 @@ internal class FramePlan {
         levelCount = 0
         rootJobs.clear()
         openJobs.clear()
+        shadows.clear()
     }
 }
 
