@@ -56,22 +56,24 @@ internal class WebInsetsTestEnvironment {
     }
 
     /** Only this detached element has synthetic geometry; the browser viewport is unchanged. */
+    fun canvas(): Element = document.createElement("canvas").also { move(it) }
+
+    /** Gives [canvas] the given bounds in the viewport, as a page's layout or scroll would. */
     @OptIn(ExperimentalWasmJsInterop::class)
-    fun canvas(
+    fun move(
+        canvas: Element,
         left: Float = 0f,
         top: Float = 0f,
         right: Float = window.innerWidth.toFloat(),
         bottom: Float = window.innerHeight.toFloat()
-    ): Element = createCanvas(left, top, right, bottom)
+    ) = setBounds(canvas, left, top, right, bottom)
 }
 
 @OptIn(ExperimentalWasmJsInterop::class)
-private fun createCanvas(left: Float, top: Float, right: Float, bottom: Float): Element = js(
-    """(function() {
-        const canvas = document.createElement('canvas');
+private fun setBounds(canvas: Element, left: Float, top: Float, right: Float, bottom: Float): Unit = js(
+    """{
         canvas.getBoundingClientRect = function() {
             return new DOMRect(left, top, right - left, bottom - top);
         };
-        return canvas;
-    })()"""
+    }"""
 )

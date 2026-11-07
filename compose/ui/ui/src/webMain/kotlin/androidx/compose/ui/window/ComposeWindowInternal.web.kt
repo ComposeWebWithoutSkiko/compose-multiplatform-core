@@ -793,7 +793,7 @@ internal class ComposeWindow(
         // TODO: Align with Container/Mediator architecture
         scene.size = sizeInPx
 
-        insetsManager?.onCanvasResized(canvas)
+        insetsManager?.onCanvasResized()
         isCanvasResized
     }
 
@@ -1380,7 +1380,7 @@ private external interface CustomElementRegistry : JsAny {
 private external val customElements: CustomElementRegistry
 
 //language=js
-private fun getVisualViewportScale(): Float =
+internal fun getVisualViewportScale(): Float =
     js("window.visualViewport.scale")
 
 // https://developer.mozilla.org/en-US/docs/Web/API/Window/visualViewport

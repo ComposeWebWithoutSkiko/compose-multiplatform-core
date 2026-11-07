@@ -22,6 +22,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.events.EventTargetListener
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.getVisualViewportScale
 import kotlin.js.ExperimentalWasmJsInterop
 import kotlin.js.js
 import kotlinx.browser.window
@@ -33,18 +34,21 @@ private class WebWindowInsets(
     private val safeArea: () -> PlatformInsets,
     private val keyboard: () -> PlatformInsets,
 ) : PlatformWindowInsets {
+    private val liveSafeArea = liveInsets(safeArea)
+    private val liveKeyboard = liveInsets(keyboard)
+
     override val statusBars: PlatformInsets
         get() = PlatformInsets(getTop = { safeArea().top })
     override val navigationBars: PlatformInsets
         get() = PlatformInsets(getBottom = { safeArea().bottom })
     override val systemBars: PlatformInsets
-        get() = safeArea()
+        get() = liveSafeArea
     override val displayCutout: PlatformInsets
-        get() = safeArea()
+        get() = liveSafeArea
     override val ime: PlatformInsets
-        get() = keyboard()
+        get() = liveKeyboard
     override val systemGestures: PlatformInsets
-        get() = safeArea()
+        get() = liveSafeArea
     override val mandatorySystemGestures: PlatformInsets
         get() = PlatformInsets(getTop = { safeArea().top }, getBottom = { safeArea().bottom })
     override val tappableElement: PlatformInsets
@@ -52,16 +56,28 @@ private class WebWindowInsets(
 }
 
 /**
+ * Insets that read [current] whenever a side is asked for, as the other insets here do: a reader
+ * in layout then follows a change without recomposing, rather than keeping the value of the call.
+ */
+private fun liveInsets(current: () -> PlatformInsets): PlatformInsets = PlatformInsets(
+    getLeft = { current().left },
+    getTop = { current().top },
+    getRight = { current().right },
+    getBottom = { current().bottom },
+)
+
+/**
  * Reads system window insets (safe area and IME) from the browser and exposes them as Compose
  * state.
  *
  * Safe area insets are read from CSS `env(safe-area-inset-*)` environment variables via CSS custom
- * properties, and re-read on each window resize event.
+ * properties, and re-read whenever the canvas is resized or the document scrolls: a scrolled page
+ * moves the canvas without resizing it, and the insets follow where it lies.
  *
  * IME (virtual keyboard) insets are tracked using:
  * - **VirtualKeyboard API** when available — the most precise source.
- * - **VisualViewport API** as a fallback for Safari and Firefox — derived from the difference
- *   between `window.innerHeight` and `visualViewport.height`.
+ * - **VisualViewport API** as a fallback for Safari and Firefox — derived from `window.innerHeight`
+ *   and the visual viewport's height, scale and offset (see [visualViewportImeHeight]).
  *
  * All insets are clipped to the portion of the system UI zones that the [composeScene] actually
  * overlaps. For example, if the canvas is positioned below the status bar, the top inset will be
@@ -70,7 +86,7 @@ private class WebWindowInsets(
  */
 internal class WebWindowInsetsManager(
     private val densityProvider: () -> Density,
-    canvas: Element
+    private val canvas: Element
 ) {
     private var canvasRect: DOMRect = canvas.getBoundingClientRect()
         set(value) {
@@ -91,6 +107,10 @@ internal class WebWindowInsetsManager(
 
     private val imeEventsListener: EventTargetListener?
 
+    private val scrollListener = EventTargetListener(window).apply {
+        addDisposableEvent("scroll", passive = true) { readCanvasRect() }
+    }
+
     init {
         installSafeAreaCssProperties()
         imeEventsListener = initImeTracking()
@@ -98,9 +118,14 @@ internal class WebWindowInsetsManager(
 
     fun dispose() {
         imeEventsListener?.dispose()
+        scrollListener.dispose()
     }
 
-    fun onCanvasResized(canvas: Element) {
+    fun onCanvasResized() {
+        readCanvasRect()
+    }
+
+    private fun readCanvasRect() {
         canvasRect = canvas.getBoundingClientRect()
     }
 
@@ -120,8 +145,8 @@ internal class WebWindowInsetsManager(
     }
 
     private fun readAndUpdateSafeArea() {
-        val vw = window.innerWidth.toFloat()
-        val vh = window.innerHeight.toFloat()
+        val vw = layoutViewportSize(window.innerWidth, readRootClientWidth())
+        val vh = layoutViewportSize(window.innerHeight, readRootClientHeight())
         val adjustedLeft = maxOf(0f, readCssVarLeft() - canvasRect.left.toFloat())
         val adjustedTop = maxOf(0f, readCssVarTop() - canvasRect.top.toFloat())
         val adjustedRight = maxOf(0f, readCssVarRight() - (vw - canvasRect.right.toFloat()))
@@ -143,8 +168,12 @@ internal class WebWindowInsetsManager(
         } else {
             readVisualViewportImeHeight()
         }
-        val vh = window.innerHeight.toFloat()
-        val adjustedBottom = maxOf(0f, rawHeight - (vh - canvasRect.bottom.toFloat()))
+        val adjustedBottom = imeBottom(
+            keyboard = rawHeight,
+            innerHeight = window.innerHeight,
+            clientHeight = readRootClientHeight(),
+            canvasBottom = canvasRect.bottom.toFloat()
+        )
 
         imeInsets.value = with(densityProvider()) {
             PlatformInsets(bottom = adjustedBottom.dp.roundToPx())
@@ -185,6 +214,27 @@ private fun readCssVarBottom(): Float =
 private fun readCssVarLeft(): Float =
     js("(parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--cmp-safe-left')) || 0)")
 
+/**
+ * The viewport's size along one axis as the page is laid out to it. `window.inner*` drops below the
+ * root's `clientWidth`/`clientHeight` while iOS Safari's pull-to-refresh takes part of the view,
+ * which moves no browser bar over the page; where the window is larger than the layout viewport,
+ * `inner*` is the larger and stays the answer.
+ */
+internal fun layoutViewportSize(inner: Int, client: Int): Float = maxOf(inner, client).toFloat()
+
+/**
+ * The keyboard's inset from the canvas's bottom: [keyboard] above the bottom of the viewport the
+ * page is laid out to (see [layoutViewportSize]), plus the part of the canvas below that viewport.
+ */
+internal fun imeBottom(keyboard: Float, innerHeight: Int, clientHeight: Int, canvasBottom: Float): Float =
+    maxOf(0f, keyboard - (layoutViewportSize(innerHeight, clientHeight) - canvasBottom))
+
+// language=js
+private fun readRootClientWidth(): Int = js("document.documentElement.clientWidth")
+
+// language=js
+private fun readRootClientHeight(): Int = js("document.documentElement.clientHeight")
+
 // language=js
 private fun hasVirtualKeyboard(): Boolean = js("('virtualKeyboard' in navigator)")
 
@@ -221,9 +271,27 @@ private fun getVisualViewport(): EventTarget? = js("(window.visualViewport || nu
  * Estimates the IME height in CSS pixels from the visual viewport geometry.
  * Returns 0 when the keyboard is not visible.
  */
+private fun readVisualViewportImeHeight(): Float = visualViewportImeHeight(
+    innerHeight = window.innerHeight.toFloat(),
+    height = readVisualViewportHeight(),
+    scale = getVisualViewportScale(),
+    offsetTop = readVisualViewportOffsetTop()
+)
+
+/**
+ * The layout viewport below the visual viewport, as far as the keyboard reaches: below that, a
+ * pinch-zoom hides the page, not a keyboard. [height] and [offsetTop] are in page pixels, so the
+ * keyboard itself is `innerHeight / scale - height` of them.
+ */
+internal fun visualViewportImeHeight(
+    innerHeight: Float,
+    height: Float,
+    scale: Float,
+    offsetTop: Float
+): Float = maxOf(0f, minOf(innerHeight - height - offsetTop, innerHeight / scale - height))
+
 // language=js
-private fun readVisualViewportImeHeight(): Float = js("""(function() {
-    let vv = window.visualViewport;
-    if (!vv) return 0;
-    return Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-})()""")
+private fun readVisualViewportHeight(): Float = js("window.visualViewport.height")
+
+// language=js
+private fun readVisualViewportOffsetTop(): Float = js("window.visualViewport.offsetTop")

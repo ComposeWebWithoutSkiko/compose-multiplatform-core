@@ -20,12 +20,14 @@ import androidx.compose.ui.unit.Density
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlinx.browser.window
+import org.w3c.dom.Element
+import org.w3c.dom.events.Event
 
 class WebWindowInsetsManagerTest {
     @Test
-    fun safeAreaIsMappedToInsetTypes() = withManager { environment, manager ->
+    fun safeAreaIsMappedToInsetTypes() = withManager { environment, _, manager ->
         environment.setSafeArea(left = 40f, top = 10f, right = 20f, bottom = 30f)
-        manager.onCanvasResized(environment.canvas())
+        manager.onCanvasResized()
 
         val insets = manager.windowInsets
         assertInsets(insets.statusBars, top = 10)
@@ -38,27 +40,31 @@ class WebWindowInsetsManagerTest {
     }
 
     @Test
-    fun safeAreaIsClippedOnAllSides() = withManager { environment, manager ->
+    fun safeAreaIsClippedOnAllSides() = withManager { environment, canvas, manager ->
         environment.setSafeArea(left = 10f, top = 20f, right = 30f, bottom = 40f)
-        manager.onCanvasResized(environment.canvas(
+        environment.move(
+            canvas,
             left = 6f,
             top = 15f,
             right = window.innerWidth - 12f,
             bottom = window.innerHeight - 25f
-        ))
+        )
+        manager.onCanvasResized()
 
         assertInsets(manager.windowInsets.systemBars, left = 4, top = 5, right = 18, bottom = 15)
     }
 
     @Test
-    fun canvasOutsideSafeAreaHasZeroInsets() = withManager { environment, manager ->
+    fun canvasOutsideSafeAreaHasZeroInsets() = withManager { environment, canvas, manager ->
         environment.setSafeArea(left = 10f, top = 20f, right = 30f, bottom = 40f)
-        manager.onCanvasResized(environment.canvas(
+        environment.move(
+            canvas,
             left = 11f,
             top = 21f,
             right = window.innerWidth - 31f,
             bottom = window.innerHeight - 41f
-        ))
+        )
+        manager.onCanvasResized()
 
         assertInsets(manager.windowInsets.systemBars)
     }
@@ -66,60 +72,149 @@ class WebWindowInsetsManagerTest {
     @Test
     fun cssPixelsAreScaledAndRounded() = withManager(
         densityProvider = { Density(1.5f) }
-    ) { environment, manager ->
+    ) { environment, _, manager ->
         environment.setSafeArea(left = 1f, top = 2.5f, right = 3f, bottom = 4f)
-        manager.onCanvasResized(environment.canvas())
+        manager.onCanvasResized()
 
         assertInsets(manager.windowInsets.systemBars, left = 2, top = 4, right = 5, bottom = 6)
     }
 
     @Test
-    fun resizeReadsUpdatedSafeArea() = withManager { environment, manager ->
-        val canvas = environment.canvas()
+    fun resizeReadsUpdatedSafeArea() = withManager { environment, _, manager ->
         val insets = manager.windowInsets
         environment.setSafeArea(top = 10f)
-        manager.onCanvasResized(canvas)
+        manager.onCanvasResized()
         assertInsets(insets.statusBars, top = 10)
 
         environment.setSafeArea(top = 50f)
-        manager.onCanvasResized(canvas)
+        manager.onCanvasResized()
         assertInsets(insets.statusBars, top = 50)
     }
 
     @Test
-    fun resizeReadsUpdatedCanvasGeometry() = withManager { environment, manager ->
+    fun resizeReadsUpdatedCanvasGeometry() = withManager { environment, canvas, manager ->
         environment.setSafeArea(top = 20f)
-        manager.onCanvasResized(environment.canvas())
+        manager.onCanvasResized()
         assertInsets(manager.windowInsets.statusBars, top = 20)
 
-        manager.onCanvasResized(environment.canvas(top = 15f))
+        environment.move(canvas, top = 15f)
+        manager.onCanvasResized()
         assertInsets(manager.windowInsets.statusBars, top = 5)
     }
 
     @Test
     fun resizeReadsUpdatedDensity() {
         var density = Density(1f)
-        withManager(densityProvider = { density }) { environment, manager ->
+        withManager(densityProvider = { density }) { environment, _, manager ->
             environment.setSafeArea(top = 10f)
-            manager.onCanvasResized(environment.canvas())
+            manager.onCanvasResized()
             assertInsets(manager.windowInsets.statusBars, top = 10)
 
             density = Density(2f)
-            manager.onCanvasResized(environment.canvas())
+            manager.onCanvasResized()
             assertInsets(manager.windowInsets.statusBars, top = 20)
         }
     }
 
+    @Test
+    fun insetsTakenBeforeAChangeReadTheChangedValue() = withManager { environment, _, manager ->
+        val systemBars = manager.windowInsets.systemBars
+        val displayCutout = manager.windowInsets.displayCutout
+        val systemGestures = manager.windowInsets.systemGestures
+
+        environment.setSafeArea(left = 40f, top = 10f, right = 20f, bottom = 30f)
+        manager.onCanvasResized()
+
+        assertInsets(systemBars, left = 40, top = 10, right = 20, bottom = 30)
+        assertInsets(displayCutout, left = 40, top = 10, right = 20, bottom = 30)
+        assertInsets(systemGestures, left = 40, top = 10, right = 20, bottom = 30)
+    }
+
+    @Test
+    fun documentScrollReadsUpdatedCanvasGeometry() = withManager { environment, canvas, manager ->
+        environment.setSafeArea(top = 20f)
+        manager.onCanvasResized()
+        assertInsets(manager.windowInsets.statusBars, top = 20)
+
+        environment.move(canvas, top = -30f)
+        window.dispatchEvent(Event("scroll"))
+        assertInsets(manager.windowInsets.statusBars, top = 50)
+    }
+
+    @Test
+    fun disposedManagerIgnoresDocumentScroll() = withManager { environment, canvas, manager ->
+        environment.setSafeArea(top = 20f)
+        manager.onCanvasResized()
+        manager.dispose()
+
+        environment.move(canvas, top = -30f)
+        window.dispatchEvent(Event("scroll"))
+        assertInsets(manager.windowInsets.statusBars, top = 20)
+    }
+
+    @Test
+    fun visualViewportImeHeightAtScaleOne() {
+        assertEquals(0f, visualViewportImeHeight(innerHeight = 800f, height = 800f, scale = 1f, offsetTop = 0f))
+        assertEquals(300f, visualViewportImeHeight(innerHeight = 800f, height = 500f, scale = 1f, offsetTop = 0f))
+        assertEquals(200f, visualViewportImeHeight(innerHeight = 800f, height = 500f, scale = 1f, offsetTop = 100f))
+    }
+
+    @Test
+    fun visualViewportImeHeightIgnoresPinchZoom() {
+        assertEquals(0f, visualViewportImeHeight(innerHeight = 800f, height = 400f, scale = 2f, offsetTop = 0f))
+        assertEquals(0f, visualViewportImeHeight(innerHeight = 800f, height = 400f, scale = 2f, offsetTop = 200f))
+    }
+
+    @Test
+    fun visualViewportImeHeightUnderPinchZoomIsCappedByKeyboard() {
+        assertEquals(150f, visualViewportImeHeight(innerHeight = 800f, height = 250f, scale = 2f, offsetTop = 400f))
+        assertEquals(0f, visualViewportImeHeight(innerHeight = 800f, height = 250f, scale = 2f, offsetTop = 550f))
+        assertEquals(150f, visualViewportImeHeight(innerHeight = 800f, height = 250f, scale = 2f, offsetTop = 0f))
+    }
+
+    @Test
+    fun visualViewportImeHeightIsZeroWhenInnerHeightFollowsTheVisualViewport() {
+        assertEquals(0f, visualViewportImeHeight(innerHeight = 377f, height = 377f, scale = 1f, offsetTop = 337f))
+        assertEquals(0f, visualViewportImeHeight(innerHeight = 578f, height = 578.2f, scale = 1.23f, offsetTop = 135.8f))
+    }
+
+    @Test
+    fun layoutViewportSizeIgnoresTheViewDippingUnderTheLayout() {
+        assertEquals(714f, layoutViewportSize(inner = 578, client = 714))
+    }
+
+    @Test
+    fun layoutViewportSizeKeepsTheLargerWindow() {
+        assertEquals(800f, layoutViewportSize(inner = 800, client = 714))
+        assertEquals(1280f, layoutViewportSize(inner = 1280, client = 1265))
+    }
+
+    @Test
+    fun imeBottomWithoutKeyboardIsTheCanvasBelowTheViewport() {
+        assertEquals(160f, imeBottom(keyboard = 0f, innerHeight = 714, clientHeight = 714, canvasBottom = 874f))
+    }
+
+    @Test
+    fun imeBottomAddsTheKeyboard() {
+        assertEquals(497f, imeBottom(keyboard = 337f, innerHeight = 714, clientHeight = 714, canvasBottom = 874f))
+    }
+
+    @Test
+    fun imeBottomIgnoresThePullToRefreshDip() {
+        assertEquals(160f, imeBottom(keyboard = 0f, innerHeight = 578, clientHeight = 714, canvasBottom = 874f))
+    }
+
     private fun withManager(
         densityProvider: () -> Density = { Density(1f) },
-        block: (WebInsetsTestEnvironment, WebWindowInsetsManager) -> Unit
+        block: (WebInsetsTestEnvironment, Element, WebWindowInsetsManager) -> Unit
     ) {
         val environment = WebInsetsTestEnvironment()
+        val canvas = environment.canvas()
         var manager: WebWindowInsetsManager? = null
         try {
-            val createdManager = WebWindowInsetsManager(densityProvider, environment.canvas())
+            val createdManager = WebWindowInsetsManager(densityProvider, canvas)
             manager = createdManager
-            block(environment, createdManager)
+            block(environment, canvas, createdManager)
         } finally {
             try {
                 manager?.dispose()
