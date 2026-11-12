@@ -29,6 +29,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.CompositeShader
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.ImageShader
 import androidx.compose.ui.graphics.LinearGradientShader
@@ -57,6 +58,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.webcanvas.WebCanvasGraphicsContext
+import androidx.compose.ui.webcanvas.dom.JsStrings
 import kotlin.math.abs
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -406,6 +408,22 @@ class WebCanvasGraphicsTest {
             )
         }
         assertColor(Color.Red, image.pixel(10, 10))
+    }
+
+    @Test
+    fun aNewPaintDrawsImagesAtLowFilterQuality() {
+        // As on Android, and on the other platforms since Compose Multiplatform 1.13.0-beta02.
+        assertEquals(FilterQuality.Low, Paint().filterQuality)
+        val source = image(width = 2, height = 2) {
+            drawRect(Rect(0f, 0f, 2f, 2f), Paint().apply { color = Color.Red })
+        }
+        val image = ImageBitmap(20, 20)
+        val context = image.asCanvasImage().context
+        // Not the quality the draw sets, so that the test sees it set.
+        context.imageSmoothingQuality = JsStrings.high
+        Canvas(image).drawImageRect(source, IntOffset.Zero, IntSize(2, 2), IntOffset.Zero, IntSize(20, 20), Paint())
+        assertTrue(context.imageSmoothingEnabled)
+        assertEquals("low", context.imageSmoothingQuality.toString())
     }
 
     @Test

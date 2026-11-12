@@ -131,7 +131,7 @@ internal class WebPaint : Paint {
             }
         }
 
-    override var filterQuality: FilterQuality = FilterQuality.Medium
+    override var filterQuality: FilterQuality = FilterQuality.Low
         set(value) {
             if (field != value) {
                 field = value
@@ -287,23 +287,6 @@ internal class WebPaint : Paint {
         pathEffect = other.pathEffect
         blurFilter = other.blurFilter
         renderEffect = other.renderEffect
-    }
-
-    internal fun reset() {
-        color = Color.Black
-        isAntiAlias = true
-        blendMode = BlendMode.SrcOver
-        style = PaintingStyle.Fill
-        strokeWidth = 0f
-        strokeCap = StrokeCap.Butt
-        strokeJoin = StrokeJoin.Miter
-        strokeMiterLimit = 4f
-        filterQuality = FilterQuality.Medium
-        shader = null
-        colorFilter = null
-        pathEffect = null
-        blurFilter = null
-        renderEffect = null
     }
 }
 
